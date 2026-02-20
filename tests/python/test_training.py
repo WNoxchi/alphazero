@@ -190,8 +190,9 @@ class TrainingLoopTests(unittest.TestCase):
         self.assertTrue(torch.equal(augmented_policy[0, :9], expected_policy_0))
         self.assertTrue(torch.equal(augmented_policy[1, :9], expected_policy_1))
 
-    def test_train_one_step_emits_finite_metrics_and_nonzero_gradients(self) -> None:
-        """Guards the core optimization step so AMP+backprop never silently produces NaN or dead gradients."""
+    def test_single_training_step_reduces_loss_with_finite_mixed_precision_metrics(self) -> None:
+        """Covers TASK-091 directly: one synthetic mixed-precision step should improve loss with live gradients."""
+        torch.manual_seed(7)
         config = self._toy_game_config(supports_symmetry=False)
         model = _TinyPolicyValueNetwork(config)
         schedule = StepDecayLRSchedule(entries=((0, 0.1),))
@@ -204,6 +205,18 @@ class TrainingLoopTests(unittest.TestCase):
             config,
             device=torch.device("cpu"),
         )
+        with torch.no_grad():
+            policy_logits_before, value_before = model(states)
+            loss_before = compute_loss_components(
+                policy_logits_before,
+                value_before,
+                target_policy,
+                target_value,
+                value_type="scalar",
+                l2_weight=0.0,
+                model=model,
+            ).total_loss.item()
+
         metrics = train_one_step(
             model,
             optimizer,
@@ -217,10 +230,22 @@ class TrainingLoopTests(unittest.TestCase):
             scaler=scaler,
             use_mixed_precision=True,
         )
+        with torch.no_grad():
+            policy_logits_after, value_after = model(states)
+            loss_after = compute_loss_components(
+                policy_logits_after,
+                value_after,
+                target_policy,
+                target_value,
+                value_type="scalar",
+                l2_weight=0.0,
+                model=model,
+            ).total_loss.item()
 
         self.assertTrue(torch.isfinite(torch.tensor(metrics.loss_total)))
         self.assertTrue(torch.isfinite(torch.tensor(metrics.loss_policy)))
         self.assertTrue(torch.isfinite(torch.tensor(metrics.loss_value)))
+        self.assertLess(loss_after, loss_before)
         self.assertGreater(metrics.grad_nonzero_param_count, 0)
         self.assertGreater(metrics.grad_global_norm, 0.0)
 
