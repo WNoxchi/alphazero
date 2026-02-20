@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -105,6 +107,334 @@ namespace {
     return result;
 }
 
+[[nodiscard]] int algebraic_to_square(const std::string& square_name) {
+    if (square_name.size() != 2) {
+        return -1;
+    }
+
+    const char file_symbol = square_name[0];
+    const char rank_symbol = square_name[1];
+    if (file_symbol < 'a' || file_symbol > 'h' || rank_symbol < '1' || rank_symbol > '8') {
+        return -1;
+    }
+
+    const int file = file_symbol - 'a';
+    const int rank = rank_symbol - '1';
+    return (rank * 8) + file;
+}
+
+[[nodiscard]] int piece_type_from_fen_symbol(char symbol) {
+    switch (std::tolower(static_cast<unsigned char>(symbol))) {
+        case 'p':
+            return kPawn;
+        case 'n':
+            return kKnight;
+        case 'b':
+            return kBishop;
+        case 'r':
+            return kRook;
+        case 'q':
+            return kQueen;
+        case 'k':
+            return kKing;
+        default:
+            return -1;
+    }
+}
+
+[[nodiscard]] bool parse_non_negative_integer(const std::string& token, int minimum_value, int* value) {
+    if (value == nullptr || token.empty()) {
+        return false;
+    }
+
+    std::size_t parsed_length = 0;
+    long long parsed_value = 0;
+    try {
+        parsed_value = std::stoll(token, &parsed_length);
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    if (parsed_length != token.size() || parsed_value < static_cast<long long>(minimum_value) ||
+        parsed_value > static_cast<long long>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+
+    *value = static_cast<int>(parsed_value);
+    return true;
+}
+
+[[nodiscard]] bool move_equivalent(const Move& left, const Move& right) {
+    return left.from == right.from && left.to == right.to && left.piece == right.piece &&
+           left.promotion == right.promotion && left.is_en_passant == right.is_en_passant &&
+           left.is_castling == right.is_castling;
+}
+
+[[nodiscard]] bool is_valid_pgn_result(const std::string& result) {
+    return result == "1-0" || result == "0-1" || result == "1/2-1/2" || result == "*";
+}
+
+[[nodiscard]] char piece_to_san_symbol(int piece) {
+    switch (piece) {
+        case kKnight:
+            return 'N';
+        case kBishop:
+            return 'B';
+        case kRook:
+            return 'R';
+        case kQueen:
+            return 'Q';
+        case kKing:
+            return 'K';
+        default:
+            return '\0';
+    }
+}
+
+[[nodiscard]] ChessPosition parse_fen_position(const std::string& fen) {
+    std::istringstream stream(fen);
+    std::string placement;
+    std::string side_to_move;
+    std::string castling;
+    std::string en_passant;
+    std::string halfmove;
+    std::string fullmove;
+    std::string extra;
+
+    if (!(stream >> placement >> side_to_move >> castling >> en_passant >> halfmove >> fullmove) || (stream >> extra)) {
+        throw std::invalid_argument("FEN must contain exactly six space-separated fields");
+    }
+
+    ChessPosition position{};
+
+    int rank = 7;
+    int file = 0;
+    for (char symbol : placement) {
+        if (symbol == '/') {
+            if (file != 8 || rank == 0) {
+                throw std::invalid_argument("FEN has an invalid board layout");
+            }
+            --rank;
+            file = 0;
+            continue;
+        }
+
+        if (std::isdigit(static_cast<unsigned char>(symbol)) != 0) {
+            const int empty_squares = symbol - '0';
+            if (empty_squares < 1 || empty_squares > 8 || file + empty_squares > 8) {
+                throw std::invalid_argument("FEN has an invalid digit in board layout");
+            }
+            file += empty_squares;
+            continue;
+        }
+
+        const int piece = piece_type_from_fen_symbol(symbol);
+        if (piece < 0 || file >= 8) {
+            throw std::invalid_argument("FEN has an invalid piece symbol in board layout");
+        }
+
+        const int color = std::isupper(static_cast<unsigned char>(symbol)) != 0 ? kWhite : kBlack;
+        const int square = (rank * 8) + file;
+        position.pieces[color][piece] |= square_bit(square);
+        ++file;
+    }
+
+    if (rank != 0 || file != 8) {
+        throw std::invalid_argument("FEN board layout must encode exactly 64 squares");
+    }
+
+    if (side_to_move == "w") {
+        position.side_to_move = kWhite;
+    } else if (side_to_move == "b") {
+        position.side_to_move = kBlack;
+    } else {
+        throw std::invalid_argument("FEN side-to-move field must be 'w' or 'b'");
+    }
+
+    position.castling = 0;
+    if (castling != "-") {
+        if (castling.empty()) {
+            throw std::invalid_argument("FEN castling field cannot be empty");
+        }
+
+        for (char symbol : castling) {
+            std::uint8_t flag = 0;
+            switch (symbol) {
+                case 'K':
+                    flag = kWhiteKingSide;
+                    break;
+                case 'Q':
+                    flag = kWhiteQueenSide;
+                    break;
+                case 'k':
+                    flag = kBlackKingSide;
+                    break;
+                case 'q':
+                    flag = kBlackQueenSide;
+                    break;
+                default:
+                    throw std::invalid_argument("FEN castling field contains invalid characters");
+            }
+
+            if ((position.castling & flag) != 0U) {
+                throw std::invalid_argument("FEN castling field contains duplicate rights");
+            }
+            position.castling = static_cast<std::uint8_t>(position.castling | flag);
+        }
+    }
+
+    if (en_passant == "-") {
+        position.en_passant_square = -1;
+    } else {
+        const int ep_square = algebraic_to_square(en_passant);
+        if (!is_valid_square(ep_square)) {
+            throw std::invalid_argument("FEN en passant field must be '-' or a valid square");
+        }
+
+        const int ep_rank = square_rank(ep_square);
+        if (ep_rank != 2 && ep_rank != 5) {
+            throw std::invalid_argument("FEN en passant square must be on rank 3 or rank 6");
+        }
+        position.en_passant_square = ep_square;
+    }
+
+    if (!parse_non_negative_integer(halfmove, 0, &position.halfmove_clock)) {
+        throw std::invalid_argument("FEN halfmove clock must be a non-negative integer");
+    }
+    if (!parse_non_negative_integer(fullmove, 1, &position.fullmove_number)) {
+        throw std::invalid_argument("FEN fullmove number must be an integer >= 1");
+    }
+
+    if (popcount(position.pieces[kWhite][kKing]) != 1 || popcount(position.pieces[kBlack][kKing]) != 1) {
+        throw std::invalid_argument("FEN must contain exactly one king for each side");
+    }
+
+    position.repetition_count = 1;
+    return position;
+}
+
+[[nodiscard]] std::string position_to_fen(const ChessPosition& position) {
+    std::ostringstream stream;
+
+    for (int rank = 7; rank >= 0; --rank) {
+        int empty_count = 0;
+        for (int file = 0; file < 8; ++file) {
+            const int square = (rank * 8) + file;
+            const char symbol = piece_symbol_at(position, square);
+            if (symbol == '.') {
+                ++empty_count;
+                continue;
+            }
+
+            if (empty_count > 0) {
+                stream << empty_count;
+                empty_count = 0;
+            }
+            stream << symbol;
+        }
+
+        if (empty_count > 0) {
+            stream << empty_count;
+        }
+        if (rank != 0) {
+            stream << '/';
+        }
+    }
+
+    stream << ' ';
+    stream << (position.side_to_move == kBlack ? 'b' : 'w');
+    stream << ' ';
+    stream << castling_to_string(position.castling);
+    stream << ' ';
+    stream << (is_valid_square(position.en_passant_square) ? square_to_algebraic(position.en_passant_square) : "-");
+    stream << ' ';
+    stream << std::max(0, position.halfmove_clock);
+    stream << ' ';
+    stream << std::max(1, position.fullmove_number);
+    return stream.str();
+}
+
+[[nodiscard]] bool is_capture_move(const ChessPosition& position, const Move& move) {
+    if (move.is_en_passant) {
+        return true;
+    }
+
+    const int opponent = opponent_of(position.side_to_move);
+    return (occupied_by(position, opponent) & square_bit(move.to)) != 0ULL;
+}
+
+[[nodiscard]] std::string move_to_san(const ChessPosition& position, const Move& move) {
+    const std::vector<Move> legal_moves = generate_legal_moves(position);
+    auto move_it = std::find_if(legal_moves.begin(), legal_moves.end(), [&](const Move& legal_move) {
+        return move_equivalent(legal_move, move);
+    });
+    if (move_it == legal_moves.end()) {
+        throw std::invalid_argument("Cannot convert an illegal move to SAN");
+    }
+
+    const Move& legal_move = *move_it;
+    std::string san;
+
+    const bool is_castling_move =
+        legal_move.is_castling ||
+        (legal_move.piece == kKing && square_rank(legal_move.from) == square_rank(legal_move.to) &&
+         std::abs(square_file(legal_move.to) - square_file(legal_move.from)) == 2);
+    if (is_castling_move) {
+        san = square_file(legal_move.to) > square_file(legal_move.from) ? "O-O" : "O-O-O";
+    } else if (legal_move.piece == kPawn) {
+        if (is_capture_move(position, legal_move)) {
+            san.push_back(static_cast<char>('a' + square_file(legal_move.from)));
+            san.push_back('x');
+        }
+        san += square_to_algebraic(legal_move.to);
+
+        if (legal_move.promotion >= 0 && legal_move.promotion < kPieceTypeCount && legal_move.promotion != kKing &&
+            legal_move.promotion != kPawn) {
+            san.push_back('=');
+            san.push_back(piece_to_san_symbol(legal_move.promotion));
+        }
+    } else {
+        san.push_back(piece_to_san_symbol(legal_move.piece));
+
+        bool has_ambiguous_piece = false;
+        bool other_from_same_file = false;
+        bool other_from_same_rank = false;
+        for (const Move& other : legal_moves) {
+            if (other.from == legal_move.from || other.to != legal_move.to || other.piece != legal_move.piece) {
+                continue;
+            }
+
+            has_ambiguous_piece = true;
+            other_from_same_file = other_from_same_file || square_file(other.from) == square_file(legal_move.from);
+            other_from_same_rank = other_from_same_rank || square_rank(other.from) == square_rank(legal_move.from);
+        }
+
+        if (has_ambiguous_piece) {
+            if (!other_from_same_file) {
+                san.push_back(static_cast<char>('a' + square_file(legal_move.from)));
+            } else if (!other_from_same_rank) {
+                san.push_back(static_cast<char>('1' + square_rank(legal_move.from)));
+            } else {
+                san.push_back(static_cast<char>('a' + square_file(legal_move.from)));
+                san.push_back(static_cast<char>('1' + square_rank(legal_move.from)));
+            }
+        }
+
+        if (is_capture_move(position, legal_move)) {
+            san.push_back('x');
+        }
+        san += square_to_algebraic(legal_move.to);
+    }
+
+    const ChessPosition next_position = apply_move(position, legal_move);
+    if (is_in_check(next_position, next_position.side_to_move)) {
+        const std::vector<Move> next_legal_moves = generate_legal_moves(next_position);
+        san.push_back(next_legal_moves.empty() ? '#' : '+');
+    }
+
+    return san;
+}
+
 void fill_plane(float* buffer, int channel, float value) {
     if (buffer == nullptr) {
         return;
@@ -141,6 +471,69 @@ ChessState::ChessState(
       history_size_(std::clamp(history_size, 1, kHistorySteps)),
       repetition_table_(std::move(repetition_table)),
       ply_count_(std::max(0, ply_count)) {}
+
+ChessState ChessState::from_fen(const std::string& fen) { return ChessState(parse_fen_position(fen)); }
+
+std::string ChessState::to_fen() const { return position_to_fen(position_); }
+
+std::string ChessState::actions_to_pgn(
+    const std::vector<int>& action_history,
+    const std::string& result,
+    const std::string& starting_fen) {
+    if (!is_valid_pgn_result(result)) {
+        throw std::invalid_argument("PGN result must be one of: 1-0, 0-1, 1/2-1/2, *");
+    }
+
+    ChessPosition position = starting_fen.empty() ? initial_chess_position() : parse_fen_position(starting_fen);
+    const std::string canonical_starting_fen = position_to_fen(position);
+    const std::string canonical_initial_fen = position_to_fen(initial_chess_position());
+    const bool include_setup_tags = canonical_starting_fen != canonical_initial_fen;
+
+    std::ostringstream stream;
+    stream << "[Event \"AlphaZero Self-Play\"]\n";
+    stream << "[Site \"Local\"]\n";
+    stream << "[Date \"????.??.??\"]\n";
+    stream << "[Round \"-\"]\n";
+    stream << "[White \"AlphaZero\"]\n";
+    stream << "[Black \"AlphaZero\"]\n";
+    stream << "[Result \"" << result << "\"]\n";
+    if (include_setup_tags) {
+        stream << "[SetUp \"1\"]\n";
+        stream << "[FEN \"" << canonical_starting_fen << "\"]\n";
+    }
+    stream << '\n';
+
+    bool wrote_any_move = false;
+    for (std::size_t ply = 0; ply < action_history.size(); ++ply) {
+        const int action = action_history[ply];
+        const std::optional<Move> decoded_move = action_index_to_semantic_move(position, action);
+        if (!decoded_move.has_value()) {
+            throw std::invalid_argument(
+                "PGN export encountered illegal action index " + std::to_string(action) + " at ply " + std::to_string(ply));
+        }
+
+        if (position.side_to_move == kWhite) {
+            if (wrote_any_move) {
+                stream << ' ';
+            }
+            stream << position.fullmove_number << ". ";
+        } else if (!wrote_any_move) {
+            stream << position.fullmove_number << "... ";
+        } else {
+            stream << ' ';
+        }
+
+        stream << move_to_san(position, decoded_move.value());
+        wrote_any_move = true;
+        position = apply_move(position, decoded_move.value());
+    }
+
+    if (wrote_any_move) {
+        stream << ' ';
+    }
+    stream << result;
+    return stream.str();
+}
 
 std::unique_ptr<GameState> ChessState::apply_action(int action) const {
     const std::optional<Move> move = action_index_to_semantic_move(position_, action);

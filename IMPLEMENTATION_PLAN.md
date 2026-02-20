@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 through TASK-013 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 through TASK-014 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -135,12 +135,19 @@
 
 ### TASK-014: Implement chess FEN/PGN serialization
 - **Spec**: `game-interface.md` §5 (Serialization)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Implement FEN parsing and generation for `ChessState`. Implement PGN game record output for logged games. FEN round-trip must be identity.
 - **Priority rationale**: Essential for debugging, testing (perft positions specified as FEN), and evaluation against external engines.
 - **Acceptance criteria**:
   - FEN encode -> decode -> encode produces identical FEN
   - PGN output is valid and parseable by standard tools
+- **Execution notes**:
+  - Added chess serialization APIs in `src/games/chess/chess_state.h` and `src/games/chess/chess_state.cpp`: `ChessState::from_fen()`, `ChessState::to_fen()`, and `ChessState::actions_to_pgn()`.
+  - Implemented strict FEN parsing/validation (field count, board layout, side-to-move, castling rights, en-passant square, halfmove/fullmove bounds, king-count sanity) and canonical FEN export.
+  - Implemented PGN export from action history with SAN move text, check/checkmate suffixes, default PGN headers, and `SetUp`/`FEN` tags for non-initial starting positions.
+  - Added rationale-rich tests in `tests/cpp/test_chess_serialization.cpp` and registered them in `tests/cpp/CMakeLists.txt`; coverage includes FEN round-trip identity, malformed FEN rejection, SAN/PGN output for checkmate games, non-initial start positions with black-to-move numbering, and invalid PGN input rejection.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R ChessSerializationTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-020: Implement Go board representation and Zobrist hashing
 - **Spec**: `game-interface.md` §6 (Board Representation, Zobrist Hashing)

@@ -22,6 +22,12 @@ public:
 
     ChessState();
     explicit ChessState(const ChessPosition& position);
+    [[nodiscard]] static ChessState from_fen(const std::string& fen);
+    [[nodiscard]] std::string to_fen() const;
+    [[nodiscard]] static std::string actions_to_pgn(
+        const std::vector<int>& action_history,
+        const std::string& result,
+        const std::string& starting_fen = "");
 
     [[nodiscard]] std::unique_ptr<GameState> apply_action(int action) const override;
     [[nodiscard]] std::vector<int> legal_actions() const override;
