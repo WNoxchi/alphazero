@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-026 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -271,12 +271,19 @@
 
 ### TASK-030: Implement AlphaZeroNetwork base class
 - **Spec**: `neural-network.md` §2 (Python Interface)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/network/base.py` with abstract `AlphaZeroNetwork(nn.Module)` base class. Define `forward(x) -> (policy_logits, value)` interface. Accept `GameConfig` in constructor for input/output dimensions.
 - **Priority rationale**: All network architectures depend on this interface.
 - **Acceptance criteria**:
   - Abstract class with correct signature
   - Subclasses can be instantiated with GameConfig
+- **Execution notes**:
+  - Implemented `AlphaZeroNetwork` in `python/alphazero/network/base.py` as an abstract `torch.nn.Module` with a validated `GameConfig` constructor, abstract `forward()` signature returning `(policy_logits, value)`, and shared input-shape validation helper for `(batch, C, H, W)` tensors.
+  - Updated `python/alphazero/network/__init__.py` to export the base interface for downstream architecture modules.
+  - Replaced scaffold `tests/python/test_network.py` with rationale-rich interface tests covering abstract-class enforcement, constructor type validation, cross-game subclass instantiation, forward output shape contracts for chess/go, and invalid input-shape rejection.
+  - Validation passed: `python3 -m unittest -q tests/python/test_network.py tests/python/test_config.py`, `python3 -m unittest -q tests/python/test_scaffold.py tests/python/test_config.py tests/python/test_network.py`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/network/base.py tests/python/test_network.py --ignore-missing-imports`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Environment note: `torch` is not installed in this sandbox interpreter, so `tests/python/test_network.py` is auto-skipped when torch is unavailable.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-031: Implement ResNet + SE architecture
 - **Spec**: `neural-network.md` §3
