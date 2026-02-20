@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-083 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-084 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -853,9 +853,14 @@
 
 ### TASK-084: Implement MCTS tests
 - **Spec**: `infrastructure.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `tests/cpp/test_mcts.cpp`. Mock NN tests: verify visit count convergence, backup value negation, FPU computation, Dirichlet noise at root only, tree reuse statistics preservation.
 - **Acceptance criteria**: All MCTS correctness tests pass
+- **Execution notes**:
+  - Verified `tests/cpp/test_mcts.cpp` provides rationale-rich, mock-NN coverage for all acceptance criteria: visit-count convergence under PUCT, alternating-player backup negation, Leela-style FPU computation, root-only Dirichlet noise injection, and tree-reuse statistics preservation.
+  - Retained and validated additional invariants in the same suite: virtual-loss apply/revert behavior, temperature-policy sampling behavior, and concurrent simulation accounting without virtual-loss leakage.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=Mcts*`, `ctest --test-dir build --output-on-failure`, `python3 -m mypy --ignore-missing-imports python/alphazero/config.py tests/python/test_config.py`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-085: Implement eval queue tests
 - **Spec**: `infrastructure.md` §4
