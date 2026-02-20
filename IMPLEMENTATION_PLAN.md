@@ -87,12 +87,19 @@
 
 ### TASK-011: Implement chess move generation
 - **Spec**: `game-interface.md` §5 (Move Generation)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/chess/movegen.h` and `movegen.cpp`. Implement pseudo-legal move generation for all piece types: sliding pieces (using magic bitboards), knights, kings, pawns (pushes, captures, en passant, promotion). Implement castling move generation (check rights, empty squares, non-attacked squares). Filter pseudo-legal moves to legal moves (remove moves that leave king in check). Implement bidirectional mapping between semantic moves and flat action indices per the 8x8x73 encoding scheme (`action_index = from_square * 73 + move_type_index`). Handle board flipping for black-to-move positions.
 - **Priority rationale**: Chess state's `legal_actions()` and `apply_action()` depend on move generation.
 - **Acceptance criteria**:
   - Perft tests pass at depths 1-6 for initial position, kiwipete, and standard endgame positions
   - Action index round-trips correctly for all move types
+- **Execution notes**:
+  - Implemented full chess move generation in `src/games/chess/movegen.h` and `src/games/chess/movegen.cpp`, including pseudo-legal generation for pawns/knights/sliders/king, special-move handling (castling, en passant, promotions), legal-move filtering via king-safety checks, and position-state updates in `apply_move`.
+  - Added attack/check utilities (`is_square_attacked`, `is_in_check`) and legal action helpers (`legal_action_indices`) for downstream `ChessState` integration.
+  - Implemented complete 8x8x73 action encoding/decoding with black-to-move canonical mirroring, queen-plane + knight-plane + underpromotion-plane mapping, and legality-validated action decode.
+  - Replaced scaffold tests in `tests/cpp/test_chess_movegen.cpp` with rationale-rich coverage for move-family action round-trips, black-perspective mirroring, reference perft (initial, kiwipete, endgame), special-move king-safety edge cases, and illegal action decoding rejection.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=ChessMovegenTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `python3 -m unittest -q tests/python/test_config.py`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-012: Implement ChessState (GameState for chess)
 - **Spec**: `game-interface.md` §2, §4, §5
