@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -72,13 +72,18 @@
 
 ### TASK-010: Implement chess bitboard utilities
 - **Spec**: `game-interface.md` §5 (Board Representation, Bitboards)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/chess/bitboard.h` and `bitboard.cpp`. Implement `ChessPosition` struct with 12 bitboards, side to move, castling rights, en passant, halfmove clock, fullmove number, repetition count. Implement bitboard operations: population count, bit scan forward/reverse, shift operations. Implement magic bitboards or kogge-stone for sliding piece attack generation. Implement precomputed attack tables for knights and kings. Implement Zobrist hashing for position comparison and repetition detection.
 - **Priority rationale**: Chess move generation and state depend on bitboard infrastructure.
 - **Acceptance criteria**:
   - Bitboard operations produce correct results for all piece types
   - Attack tables are correct for all squares
   - Zobrist hashing produces consistent hashes
+- **Execution notes**:
+  - Implemented a full chess bitboard utility layer in `src/games/chess/bitboard.h` and `src/games/chess/bitboard.cpp`, including `ChessPosition`, population count/bit scans, directional shifts, occupancy helpers, pawn/knight/king attack helpers, and ray-based sliding attacks for bishops/rooks/queens.
+  - Added deterministic Zobrist hashing (piece-square keys, side-to-move key, castling-state keys, en-passant keys) for stable repetition hashing and position comparison.
+  - Added `tests/cpp/test_chess_bitboard.cpp` and registered it in `tests/cpp/CMakeLists.txt`; tests include rationale comments and cover bit operations, edge-safe shifts, attack table correctness across all squares, sliding attacks against naive ray tracing under varied occupancies, occupancy aggregation, and hash determinism/sensitivity.
+  - Validation passed: `cmake -S . -B build`, `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R ChessBitboardTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
 
 ### TASK-011: Implement chess move generation
 - **Spec**: `game-interface.md` §5 (Move Generation)
