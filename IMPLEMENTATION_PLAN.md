@@ -287,13 +287,21 @@
 
 ### TASK-031: Implement ResNet + SE architecture
 - **Spec**: `neural-network.md` §3
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/network/resnet_se.py`. Implement initial convolutional block (Conv2d -> BatchNorm2d -> ReLU). Implement SE-Residual block with Leela-style SE (scale + bias variant: FC -> ReLU -> FC -> split into scale/bias -> sigmoid(scale) * conv_output + bias + skip -> ReLU). Support configurable `num_blocks` (10/20/40) and `num_filters` (128/256). SE reduction ratio configurable (default 4). Weight initialization per `neural-network.md` §8: Kaiming He for conv/linear, Xavier for SE FC, zeros for final policy/value linear, standard for BatchNorm.
 - **Priority rationale**: Core network architecture needed for all training and inference.
 - **Acceptance criteria**:
   - Small (10 blocks, 128 filters), medium (20, 256), and large (40, 256) configs instantiate correctly
   - Parameter counts approximately match spec (~5M, ~25M, ~50M)
   - Weight initialization follows spec
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/network/resnet_se.py` with a full ResNet+SE implementation: spec-accurate initial conv block, Leela-style `SEResidualBlock` (scale+bias modulation), configurable tower depth/width, and `ResNetSE` presets for small/medium/large profiles.
+  - Implemented end-to-end model forward pass returning policy logits and game-specific value outputs (`tanh` scalar for Go, `softmax` WDL for Chess), with strict input-shape validation inherited from `AlphaZeroNetwork`.
+  - Implemented initialization policy per spec in `ResNetSE._initialize_weights()`: Kaiming for Conv/Linear, BN defaults (`γ=1`, `β=0`), Xavier for SE FC layers, and zero-init for final policy/value linear layers.
+  - Updated `python/alphazero/network/__init__.py` exports and expanded `tests/python/test_network.py` with rationale-rich `ResNetSETests` covering profile wiring, parameter-count scale bands, initialization invariants, and forward output contracts.
+  - Validation passed: `python3 -m unittest -q tests/python/test_network.py tests/python/test_config.py`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/network/resnet_se.py tests/python/test_network.py --ignore-missing-imports`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Environment note: `torch` is not installed in this sandbox interpreter, so torch-dependent tests in `tests/python/test_network.py` are auto-skipped.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-032: Implement policy and value heads
 - **Spec**: `neural-network.md` §3 (Policy Head, Value Heads)
