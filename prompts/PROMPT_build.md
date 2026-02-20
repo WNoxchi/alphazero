@@ -2,7 +2,7 @@
 
 ## Orientation
 
-0a. Study `specs/*` to with up to 500 parallel subagents understand the project requirements.
+0a. Study `specs/*` to with up to 500 parallel Sonnet-level subagents understand the project requirements.
 0b. Study `@IMPLEMENTATION_PLAN.md` to see the current prioritized task list.
 0c. For reference, application source code is in `src/*`.
 0d. Use only 1 subagent for build and test operations.
@@ -15,7 +15,7 @@
 2. Before writing any code, search the codebase to understand the current state 
    relevant to this task. **Do not assume code is missing — search and read first.** 
    Use grep and file reads to confirm what exists and what doesn't.
-   - You may use up to 500 parallel subagents for searches/reads, and only 1 subagent fo rbuild.tests. Use Opus subagents when complex reasoning is needed (debugging, architectural decisions).
+   - You may use up to 500 parallel Sonnet-level subagents for searches/reads, and only 1 subagent fo rbuild.tests. Use Opus-level subagents when complex reasoning is needed (debugging, architectural decisions).
 
 3. Implement the task completely. This means:
    - Full, production-quality implementation (no stubs, no placeholders, no TODOs)
