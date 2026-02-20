@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 through TASK-043 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -466,7 +466,7 @@
 
 ### TASK-050: Implement replay buffer
 - **Spec**: `pipeline.md` §5
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/selfplay/replay_buffer.h` and `replay_buffer.cpp`. Implement ring buffer with `ReplayPosition` struct (encoded_state, policy, value/value_wdl, game_id, move_number). Capacity: configurable (default 1M positions). Thread-safe with readers-writer lock: `add_game()` (write, called by self-play), `sample()` (read, uniform random sampling for training mini-batches). Atomic write head and count. V1: store full NN input tensor (uncompressed). In unified memory for zero-copy GPU access.
 - **Priority rationale**: Connects self-play (data generation) to training (data consumption).
 - **Acceptance criteria**:
@@ -475,6 +475,12 @@
   - Ring buffer wrapping works correctly
   - No data corruption or lost positions
   - Uniform random sampling is correct
+- **Execution notes**:
+  - Replaced replay-buffer scaffolds with a production implementation in `src/selfplay/replay_buffer.h` and `src/selfplay/replay_buffer.cpp`, including a fixed-shape `ReplayPosition` payload, ring-buffer overwrite semantics, atomic `write_head`/`count`, `std::shared_mutex` readers-writer synchronization, and strict shape validation for malformed inputs.
+  - Implemented uniform random sampling with deterministic RNG and two regimes: without replacement when `batch_size <= size()` and with replacement when `batch_size > size()`, preserving expected training behavior while avoiding duplicate-heavy small batches.
+  - Replaced scaffold `tests/cpp/test_replay_buffer.cpp` with rationale-rich tests covering capacity/input validation, wraparound retention semantics, concurrent writers with concurrent reader safety, corruption/loss detection under load, and approximate uniformity of repeated draws.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R ReplayBufferTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-051: Implement self-play game lifecycle
 - **Spec**: `pipeline.md` §4 (Game Lifecycle)
