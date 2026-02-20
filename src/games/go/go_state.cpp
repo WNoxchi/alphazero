@@ -2,10 +2,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <iomanip>
+#include <limits>
 #include <sstream>
+#include <string_view>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "games/go/go_rules.h"
 #include "games/go/scoring.h"
@@ -75,6 +81,326 @@ struct ZobristTable {
     }();
     return kTable;
 }
+
+struct SgfProperty {
+    std::string identifier;
+    std::vector<std::string> values;
+};
+
+using SgfNode = std::vector<SgfProperty>;
+
+[[nodiscard]] constexpr bool is_upper_ascii_letter(char symbol) {
+    return symbol >= 'A' && symbol <= 'Z';
+}
+
+[[nodiscard]] constexpr bool is_sgf_coord_symbol(char symbol) {
+    return symbol >= 'a' && symbol < static_cast<char>('a' + kBoardSize);
+}
+
+[[nodiscard]] bool parse_integer_token(const std::string& token, int* value) {
+    if (value == nullptr || token.empty()) {
+        return false;
+    }
+
+    std::size_t parsed_length = 0;
+    int parsed_value = 0;
+    try {
+        parsed_value = std::stoi(token, &parsed_length);
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    if (parsed_length != token.size()) {
+        return false;
+    }
+    *value = parsed_value;
+    return true;
+}
+
+[[nodiscard]] bool parse_float_token(const std::string& token, float* value) {
+    if (value == nullptr || token.empty()) {
+        return false;
+    }
+
+    std::size_t parsed_length = 0;
+    float parsed_value = 0.0F;
+    try {
+        parsed_value = std::stof(token, &parsed_length);
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    if (parsed_length != token.size() || !std::isfinite(parsed_value)) {
+        return false;
+    }
+    *value = parsed_value;
+    return true;
+}
+
+[[nodiscard]] std::string format_float_for_sgf(float value) {
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument("SGF serialization requires finite floating-point values");
+    }
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(6) << value;
+    std::string text = stream.str();
+    const std::size_t dot = text.find('.');
+    if (dot != std::string::npos) {
+        while (!text.empty() && text.back() == '0') {
+            text.pop_back();
+        }
+        if (!text.empty() && text.back() == '.') {
+            text.pop_back();
+        }
+    }
+
+    if (text.empty() || text == "-0") {
+        return "0";
+    }
+    return text;
+}
+
+[[nodiscard]] std::string escape_sgf_value(std::string_view raw) {
+    std::string escaped;
+    escaped.reserve(raw.size());
+
+    for (char symbol : raw) {
+        if (symbol == '\\' || symbol == ']') {
+            escaped.push_back('\\');
+            escaped.push_back(symbol);
+            continue;
+        }
+        if (symbol == '\r' || symbol == '\n') {
+            escaped.push_back(' ');
+            continue;
+        }
+        escaped.push_back(symbol);
+    }
+    return escaped;
+}
+
+[[nodiscard]] int sgf_coordinate_to_action(const std::string& coordinate, bool allow_pass) {
+    if (coordinate.empty() || coordinate == "tt") {
+        return allow_pass ? kPassAction : -1;
+    }
+
+    if (coordinate.size() != 2 || !is_sgf_coord_symbol(coordinate[0]) || !is_sgf_coord_symbol(coordinate[1])) {
+        return -1;
+    }
+
+    const int col = coordinate[0] - 'a';
+    const int sgf_row = coordinate[1] - 'a';
+    const int row = (kBoardSize - 1) - sgf_row;
+    return to_intersection(row, col);
+}
+
+[[nodiscard]] std::string action_to_sgf_coordinate(int action) {
+    if (action == kPassAction) {
+        return "";
+    }
+    if (!is_valid_intersection(action)) {
+        throw std::invalid_argument("SGF serialization encountered an invalid Go action index");
+    }
+
+    const int row = intersection_row(action);
+    const int col = intersection_col(action);
+    const int sgf_row = (kBoardSize - 1) - row;
+
+    std::string coordinate(2, 'a');
+    coordinate[0] = static_cast<char>('a' + col);
+    coordinate[1] = static_cast<char>('a' + sgf_row);
+    return coordinate;
+}
+
+[[nodiscard]] int infer_action_from_transition(const GoPosition& previous, const GoPosition& next, int mover_color) {
+    const int opponent = opponent_color(mover_color);
+
+    int placed_stone = -1;
+    int placed_count = 0;
+    int changed_count = 0;
+    for (int intersection = 0; intersection < kBoardArea; ++intersection) {
+        const std::uint8_t before = stone_at(previous, intersection);
+        const std::uint8_t after = stone_at(next, intersection);
+        if (before == after) {
+            continue;
+        }
+
+        ++changed_count;
+        if (before == kEmpty && after == mover_color) {
+            placed_stone = intersection;
+            ++placed_count;
+            continue;
+        }
+        if (before == opponent && after == kEmpty) {
+            continue;
+        }
+
+        throw std::logic_error("GoState history contains an invalid board transition for SGF export");
+    }
+
+    if (placed_count == 0) {
+        if (changed_count == 0) {
+            return kPassAction;
+        }
+        throw std::logic_error("GoState history changed board state without placing a stone");
+    }
+    if (placed_count != 1) {
+        throw std::logic_error("GoState history placed multiple stones in a single transition");
+    }
+    return placed_stone;
+}
+
+class SgfParser {
+public:
+    explicit SgfParser(std::string_view source) : source_(source) {}
+
+    [[nodiscard]] std::vector<SgfNode> parse() {
+        skip_whitespace();
+        expect('(', "SGF must start with '('");
+
+        std::vector<SgfNode> nodes;
+        while (true) {
+            skip_whitespace();
+            if (at_end()) {
+                throw std::invalid_argument("SGF is missing a closing ')'");
+            }
+
+            const char token = peek();
+            if (token == ';') {
+                nodes.push_back(parse_node());
+                continue;
+            }
+            if (token == '(') {
+                throw std::invalid_argument("SGF variations are not supported");
+            }
+            if (token == ')') {
+                ++index_;
+                break;
+            }
+
+            throw std::invalid_argument("SGF contains an unexpected token while parsing the game tree");
+        }
+
+        skip_whitespace();
+        if (!at_end()) {
+            throw std::invalid_argument("SGF contains trailing content after the game tree");
+        }
+        if (nodes.empty()) {
+            throw std::invalid_argument("SGF game tree must contain at least one node");
+        }
+        return nodes;
+    }
+
+private:
+    [[nodiscard]] SgfNode parse_node() {
+        expect(';', "SGF node must begin with ';'");
+
+        SgfNode node;
+        while (true) {
+            skip_whitespace();
+            if (at_end()) {
+                throw std::invalid_argument("SGF ended while parsing a node");
+            }
+
+            const char token = peek();
+            if (token == ';' || token == ')' || token == '(') {
+                break;
+            }
+            node.push_back(parse_property());
+        }
+        return node;
+    }
+
+    [[nodiscard]] SgfProperty parse_property() {
+        std::string identifier;
+        while (!at_end() && is_upper_ascii_letter(peek())) {
+            identifier.push_back(peek());
+            ++index_;
+        }
+
+        if (identifier.empty()) {
+            throw std::invalid_argument("SGF property identifier must use uppercase letters");
+        }
+
+        skip_whitespace();
+        std::vector<std::string> values;
+        while (!at_end() && peek() == '[') {
+            values.push_back(parse_property_value());
+            skip_whitespace();
+        }
+
+        if (values.empty()) {
+            throw std::invalid_argument("SGF property '" + identifier + "' must include at least one value");
+        }
+
+        return SgfProperty{
+            .identifier = std::move(identifier),
+            .values = std::move(values),
+        };
+    }
+
+    [[nodiscard]] std::string parse_property_value() {
+        expect('[', "SGF property value must begin with '['");
+
+        std::string value;
+        while (!at_end()) {
+            const char symbol = peek();
+            ++index_;
+
+            if (symbol == ']') {
+                return value;
+            }
+
+            if (symbol == '\\') {
+                if (at_end()) {
+                    throw std::invalid_argument("SGF property value ends with an incomplete escape sequence");
+                }
+
+                const char escaped = peek();
+                ++index_;
+                if (escaped == '\r') {
+                    if (!at_end() && peek() == '\n') {
+                        ++index_;
+                    }
+                    continue;
+                }
+                if (escaped == '\n') {
+                    continue;
+                }
+                value.push_back(escaped);
+                continue;
+            }
+
+            value.push_back(symbol);
+        }
+
+        throw std::invalid_argument("SGF property value is missing a closing ']'");
+    }
+
+    void skip_whitespace() {
+        while (!at_end()) {
+            const unsigned char symbol = static_cast<unsigned char>(peek());
+            if (std::isspace(symbol) == 0) {
+                break;
+            }
+            ++index_;
+        }
+    }
+
+    void expect(char symbol, const char* error) {
+        if (at_end() || peek() != symbol) {
+            throw std::invalid_argument(error);
+        }
+        ++index_;
+    }
+
+    [[nodiscard]] bool at_end() const { return index_ >= source_.size(); }
+    [[nodiscard]] char peek() const { return source_[index_]; }
+
+    std::string_view source_;
+    std::size_t index_ = 0;
+};
 
 }  // namespace
 
@@ -185,6 +511,249 @@ GoState::GoState(const GoPosition& position) : position_(position) {}
 GoState::GoState(GoPosition position, std::shared_ptr<const GoState> parent)
     : position_(std::move(position)),
       parent_(std::move(parent)) {}
+
+GoState GoState::from_sgf(const std::string& sgf) {
+    const std::vector<SgfNode> nodes = SgfParser(sgf).parse();
+
+    GoPosition starting_position{};
+    bool has_black_setup = false;
+    bool has_white_setup = false;
+    bool side_to_move_explicit = false;
+
+    const SgfNode& root = nodes.front();
+    for (const SgfProperty& property : root) {
+        if (property.identifier == "GM") {
+            if (property.values.size() != 1 || property.values.front() != "1") {
+                throw std::invalid_argument("SGF root property GM must be exactly '1' for Go");
+            }
+            continue;
+        }
+
+        if (property.identifier == "SZ") {
+            int parsed_size = 0;
+            if (property.values.size() != 1 || !parse_integer_token(property.values.front(), &parsed_size) ||
+                parsed_size != kBoardSize) {
+                throw std::invalid_argument("SGF root property SZ must be exactly 19");
+            }
+            continue;
+        }
+
+        if (property.identifier == "KM") {
+            float parsed_komi = 0.0F;
+            if (property.values.size() != 1 || !parse_float_token(property.values.front(), &parsed_komi)) {
+                throw std::invalid_argument("SGF root property KM must be a finite floating-point value");
+            }
+            starting_position.komi = parsed_komi;
+            continue;
+        }
+
+        if (property.identifier == "PL") {
+            if (property.values.size() != 1) {
+                throw std::invalid_argument("SGF root property PL must contain exactly one value");
+            }
+            const std::string& side = property.values.front();
+            if (side == "B") {
+                starting_position.side_to_move = kBlack;
+            } else if (side == "W") {
+                starting_position.side_to_move = kWhite;
+            } else {
+                throw std::invalid_argument("SGF root property PL must be 'B' or 'W'");
+            }
+            side_to_move_explicit = true;
+            continue;
+        }
+
+        if (property.identifier == "AB" || property.identifier == "AW") {
+            const int color = property.identifier == "AB" ? kBlack : kWhite;
+            if (color == kBlack) {
+                has_black_setup = true;
+            } else {
+                has_white_setup = true;
+            }
+
+            for (const std::string& coordinate : property.values) {
+                const int action = sgf_coordinate_to_action(coordinate, /*allow_pass=*/false);
+                if (!is_valid_intersection(action)) {
+                    throw std::invalid_argument("SGF setup properties must use valid board coordinates");
+                }
+
+                const std::uint8_t existing_stone = stone_at(starting_position, action);
+                if (existing_stone != kEmpty && existing_stone != static_cast<std::uint8_t>(color)) {
+                    throw std::invalid_argument("SGF setup properties cannot assign both colors to one point");
+                }
+                set_stone(&starting_position, action, static_cast<std::uint8_t>(color));
+            }
+            continue;
+        }
+    }
+
+    if (!side_to_move_explicit && has_black_setup && !has_white_setup) {
+        // Standard handicap SGF convention: white plays first after black setup stones.
+        starting_position.side_to_move = kWhite;
+    }
+
+    GoState state(starting_position);
+    for (std::size_t node_index = 0; node_index < nodes.size(); ++node_index) {
+        const SgfNode& node = nodes[node_index];
+
+        int node_move_color = kEmpty;
+        int node_move_action = -1;
+        for (const SgfProperty& property : node) {
+            if (property.identifier != "B" && property.identifier != "W") {
+                continue;
+            }
+
+            if (node_move_color != kEmpty) {
+                throw std::invalid_argument("SGF node contains multiple move properties");
+            }
+            if (property.values.size() != 1) {
+                throw std::invalid_argument("SGF move properties must contain exactly one value");
+            }
+
+            node_move_color = property.identifier == "B" ? kBlack : kWhite;
+            node_move_action = sgf_coordinate_to_action(property.values.front(), /*allow_pass=*/true);
+            if (node_move_action < 0 || node_move_action >= kActionSpaceSize) {
+                throw std::invalid_argument("SGF move coordinate is invalid for a 19x19 board");
+            }
+        }
+
+        if (node_move_color == kEmpty) {
+            continue;
+        }
+
+        if (state.position_.side_to_move != node_move_color) {
+            throw std::invalid_argument(
+                "SGF move color does not match side-to-move at node " + std::to_string(node_index));
+        }
+
+        std::unique_ptr<GameState> next_base;
+        try {
+            next_base = state.apply_action(node_move_action);
+        } catch (const std::exception& error) {
+            throw std::invalid_argument(
+                "SGF contains an illegal move at node " + std::to_string(node_index) + ": " + error.what());
+        }
+
+        auto* typed = dynamic_cast<GoState*>(next_base.get());
+        if (typed == nullptr) {
+            throw std::logic_error("GoState::from_sgf expected GoState transition result");
+        }
+        state = *typed;
+    }
+
+    return state;
+}
+
+std::string GoState::to_sgf(const std::string& result) const {
+    std::vector<const GoState*> lineage;
+    lineage.reserve(256);
+
+    const GoState* cursor = this;
+    while (cursor != nullptr) {
+        lineage.push_back(cursor);
+        cursor = cursor->parent_.get();
+    }
+    std::reverse(lineage.begin(), lineage.end());
+
+    if (lineage.empty()) {
+        throw std::logic_error("GoState::to_sgf cannot serialize an empty lineage");
+    }
+
+    const GoPosition& root_position = lineage.front()->position_;
+    if (!is_valid_color(root_position.side_to_move)) {
+        throw std::logic_error("GoState::to_sgf cannot serialize a root position with invalid side_to_move");
+    }
+
+    std::ostringstream stream;
+    stream << "(;";
+    stream << "GM[1]";
+    stream << "FF[4]";
+    stream << "CA[UTF-8]";
+    stream << "AP[AlphaZero]";
+    stream << "SZ[" << kBoardSize << "]";
+    stream << "KM[" << escape_sgf_value(format_float_for_sgf(root_position.komi)) << "]";
+    stream << "PB[AlphaZero]";
+    stream << "PW[AlphaZero]";
+    stream << "RE[" << escape_sgf_value(result.empty() ? "?" : result) << "]";
+
+    if (root_position.side_to_move == kWhite) {
+        stream << "PL[W]";
+    }
+
+    bool wrote_black_setup = false;
+    bool wrote_white_setup = false;
+    for (int intersection = 0; intersection < kBoardArea; ++intersection) {
+        const std::uint8_t stone = stone_at(root_position, intersection);
+        if (stone == kBlack) {
+            if (!wrote_black_setup) {
+                stream << "AB";
+                wrote_black_setup = true;
+            }
+            stream << "[" << action_to_sgf_coordinate(intersection) << "]";
+        } else if (stone == kWhite) {
+            if (!wrote_white_setup) {
+                stream << "AW";
+                wrote_white_setup = true;
+            }
+            stream << "[" << action_to_sgf_coordinate(intersection) << "]";
+        } else if (stone != kEmpty) {
+            throw std::logic_error("GoState::to_sgf encountered an invalid stone value in root setup");
+        }
+    }
+
+    for (std::size_t i = 1; i < lineage.size(); ++i) {
+        const GoPosition& previous = lineage[i - 1]->position_;
+        const GoPosition& next = lineage[i]->position_;
+        const int mover = previous.side_to_move;
+        if (!is_valid_color(mover) || next.side_to_move != opponent_color(mover)) {
+            throw std::logic_error("GoState::to_sgf encountered inconsistent side-to-move history");
+        }
+        if (next.move_number != previous.move_number + 1) {
+            throw std::logic_error("GoState::to_sgf encountered non-sequential move numbers in history");
+        }
+
+        const int action = infer_action_from_transition(previous, next, mover);
+        stream << ';' << (mover == kBlack ? 'B' : 'W') << '[';
+        if (action != kPassAction) {
+            stream << action_to_sgf_coordinate(action);
+        }
+        stream << ']';
+    }
+
+    stream << ')';
+    return stream.str();
+}
+
+std::string GoState::actions_to_sgf(const std::vector<int>& action_history, const std::string& result, float komi) {
+    if (!std::isfinite(komi)) {
+        throw std::invalid_argument("SGF export requires finite komi");
+    }
+
+    GoPosition starting_position{};
+    starting_position.komi = komi;
+    GoState state(starting_position);
+
+    for (std::size_t ply = 0; ply < action_history.size(); ++ply) {
+        const int action = action_history[ply];
+
+        std::unique_ptr<GameState> next_base;
+        try {
+            next_base = state.apply_action(action);
+        } catch (const std::exception&) {
+            throw std::invalid_argument(
+                "SGF export encountered illegal action index " + std::to_string(action) + " at ply " +
+                std::to_string(ply));
+        }
+
+        auto* typed = dynamic_cast<GoState*>(next_base.get());
+        if (typed == nullptr) {
+            throw std::logic_error("GoState::actions_to_sgf expected GoState transition result");
+        }
+        state = *typed;
+    }
+
+    return state.to_sgf(result);
+}
 
 std::unique_ptr<GameState> GoState::apply_action(int action) const {
     if (is_terminal()) {

@@ -93,6 +93,12 @@ public:
 
     GoState();
     explicit GoState(const GoPosition& position);
+    [[nodiscard]] static GoState from_sgf(const std::string& sgf);
+    [[nodiscard]] std::string to_sgf(const std::string& result = "?") const;
+    [[nodiscard]] static std::string actions_to_sgf(
+        const std::vector<int>& action_history,
+        const std::string& result = "?",
+        float komi = kDefaultKomi);
 
     [[nodiscard]] std::unique_ptr<GameState> apply_action(int action) const override;
     [[nodiscard]] std::vector<int> legal_actions() const override;
