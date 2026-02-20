@@ -25,6 +25,34 @@ using alphazero::go::kWhite;
     return (plane * kBoardArea) + intersection;
 }
 
+[[nodiscard]] float encoded_value(const std::vector<float>& encoded, int plane, int intersection) {
+    return encoded[feature_index(plane, intersection)];
+}
+
+void expect_plane_constant(const std::vector<float>& encoded, int plane, float expected_value) {
+    for (int intersection = 0; intersection < kBoardArea; ++intersection) {
+        EXPECT_FLOAT_EQ(encoded_value(encoded, plane, intersection), expected_value);
+    }
+}
+
+void expect_only_intersections_set(
+    const std::vector<float>& encoded,
+    int plane,
+    const std::vector<int>& set_intersections) {
+    std::vector<bool> expected(static_cast<std::size_t>(kBoardArea), false);
+    for (int intersection : set_intersections) {
+        if (intersection >= 0 && intersection < kBoardArea) {
+            expected[static_cast<std::size_t>(intersection)] = true;
+        }
+    }
+
+    for (int intersection = 0; intersection < kBoardArea; ++intersection) {
+        const float expected_value = expected[static_cast<std::size_t>(intersection)] ? 1.0F : 0.0F;
+        EXPECT_FLOAT_EQ(encoded_value(encoded, plane, intersection), expected_value)
+            << "plane=" << plane << " intersection=" << intersection;
+    }
+}
+
 [[nodiscard]] std::unique_ptr<GoState> apply_action_as_go_state(const GoState& state, int action) {
     std::unique_ptr<alphazero::GameState> next_base = state.apply_action(action);
     auto typed = std::unique_ptr<GoState>(dynamic_cast<GoState*>(next_base.release()));
@@ -115,6 +143,41 @@ TEST(GoStateTest, TerminalConditionsUsePassesAndMoveCapAndScoreFromTrompTaylor) 
             (void)non_terminal.outcome(2);
         },
         std::invalid_argument);
+}
+
+// WHY: NN inference expects exact 19x19x17 plane layout with perspective-relative channels and color constant plane.
+TEST(GoStateTest, EncodeMatchesSpecForKnownBlackAndWhiteToMovePositions) {
+    GoPosition black_to_move{};
+    black_to_move.side_to_move = kBlack;
+    alphazero::go::set_stone(&black_to_move, I(3, 3), kBlack);
+    alphazero::go::set_stone(&black_to_move, I(10, 10), kBlack);
+    alphazero::go::set_stone(&black_to_move, I(4, 3), kWhite);
+    alphazero::go::set_stone(&black_to_move, I(11, 10), kWhite);
+
+    const GoState black_state(black_to_move);
+    std::vector<float> black_encoded(GoState::kTotalInputChannels * kBoardArea, -1.0F);
+    black_state.encode(black_encoded.data());
+
+    ASSERT_EQ(black_encoded.size(), static_cast<std::size_t>(17 * kBoardSize * kBoardSize));
+    expect_only_intersections_set(black_encoded, 0, {I(3, 3), I(10, 10)});
+    expect_only_intersections_set(black_encoded, 1, {I(4, 3), I(11, 10)});
+
+    for (int history_index = 1; history_index < GoState::kHistorySteps; ++history_index) {
+        const int base_plane = history_index * GoState::kPlanesPerStep;
+        expect_plane_constant(black_encoded, base_plane + 0, 0.0F);
+        expect_plane_constant(black_encoded, base_plane + 1, 0.0F);
+    }
+    expect_plane_constant(black_encoded, GoState::kTotalInputChannels - 1, 1.0F);
+
+    GoPosition white_to_move = black_to_move;
+    white_to_move.side_to_move = kWhite;
+    const GoState white_state(white_to_move);
+    std::vector<float> white_encoded(GoState::kTotalInputChannels * kBoardArea, -1.0F);
+    white_state.encode(white_encoded.data());
+
+    expect_only_intersections_set(white_encoded, 0, {I(4, 3), I(11, 10)});
+    expect_only_intersections_set(white_encoded, 1, {I(3, 3), I(10, 10)});
+    expect_plane_constant(white_encoded, GoState::kTotalInputChannels - 1, 0.0F);
 }
 
 // WHY: Go requires T=8 internal history for NN input; this guards copy-on-write ancestry and zero-fill semantics.

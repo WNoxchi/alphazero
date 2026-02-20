@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-023 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-024 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -221,12 +221,17 @@
 
 ### TASK-024: Implement Go input encoding
 - **Spec**: `game-interface.md` §6 (Input Encoding)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Implement `GoState::encode()` producing a 19x19x17 tensor. 2 planes per history step (current player stones + opponent stones) x T=8 = 16 planes. 1 constant plane (color: all 1s if black to play). Zero-fill for history steps before game start.
 - **Priority rationale**: Required for neural network inference on Go positions.
 - **Acceptance criteria**:
   - Output tensor shape is (17, 19, 19)
   - Encoding matches spec for known positions
+- **Execution notes**:
+  - Verified `GoState::encode()` in `src/games/go/go_state.cpp` already satisfies the Go encoding contract: tensor layout `(17, 19, 19)`, per-step perspective-relative stone planes across `T=8` history, and black-to-move constant plane semantics.
+  - Strengthened acceptance coverage in `tests/cpp/test_go_state.cpp` with rationale-rich checks for known black-to-move and white-to-move positions, explicit shape validation (`17*19*19`), and zero-filled history planes before game start.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R GoStateTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-025: Implement Go symmetry transforms
 - **Spec**: `game-interface.md` §2 (Symmetry Interface), §6 (Symmetry)
