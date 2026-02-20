@@ -12,11 +12,17 @@ import torch
 from torch import nn
 
 from alphazero.config import GameConfig, load_yaml_config
-from alphazero.network.bn_fold import export_folded_model
 from alphazero.training.loss import DEFAULT_L2_WEIGHT, ValueHeadType, compute_loss_components
 from alphazero.training.lr_schedule import (
     StepDecayLRSchedule,
     load_lr_schedule_from_config,
+)
+from alphazero.utils.checkpoint import (
+    DEFAULT_ROLLING_CHECKPOINT_KEEP_LAST,
+    CheckpointPaths,
+    extract_replay_buffer_metadata,
+    load_checkpoint,
+    save_checkpoint,
 )
 
 
@@ -68,6 +74,7 @@ DEFAULT_MILESTONE_INTERVAL = 50_000
 DEFAULT_LOG_INTERVAL = 100
 DEFAULT_MIN_BUFFER_SIZE = 10_000
 DEFAULT_WAIT_FOR_BUFFER_SECONDS = 1.0
+DEFAULT_CHECKPOINT_KEEP_LAST = DEFAULT_ROLLING_CHECKPOINT_KEEP_LAST
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +86,7 @@ class TrainingConfig:
     momentum: float = DEFAULT_MOMENTUM
     l2_reg: float = DEFAULT_L2_WEIGHT
     checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL
+    checkpoint_keep_last: int = DEFAULT_CHECKPOINT_KEEP_LAST
     milestone_interval: int = DEFAULT_MILESTONE_INTERVAL
     log_interval: int = DEFAULT_LOG_INTERVAL
     min_buffer_size: int = DEFAULT_MIN_BUFFER_SIZE
@@ -94,6 +102,7 @@ class TrainingConfig:
         _coerce_positive_float("momentum", self.momentum)
         _coerce_non_negative_float("l2_reg", self.l2_reg)
         _coerce_positive_int("checkpoint_interval", self.checkpoint_interval)
+        _coerce_positive_int("checkpoint_keep_last", self.checkpoint_keep_last)
         _coerce_positive_int("milestone_interval", self.milestone_interval)
         _coerce_positive_int("log_interval", self.log_interval)
         _coerce_non_negative_int("min_buffer_size", self.min_buffer_size)
@@ -101,17 +110,6 @@ class TrainingConfig:
 
         if self.checkpoint_dir is not None and not isinstance(self.checkpoint_dir, Path):
             object.__setattr__(self, "checkpoint_dir", Path(self.checkpoint_dir))
-
-
-@dataclass(frozen=True, slots=True)
-class CheckpointPaths:
-    """Checkpoint artifacts emitted at a specific training step."""
-
-    step: int
-    checkpoint_path: Path
-    folded_weights_path: Path | None
-    is_milestone: bool
-
 
 @dataclass(frozen=True, slots=True)
 class TrainingLoopResult:
@@ -488,45 +486,24 @@ def save_training_checkpoint(
     *,
     step: int,
     checkpoint_dir: Path,
+    replay_buffer: ReplayBufferLike | None = None,
+    keep_last: int = DEFAULT_CHECKPOINT_KEEP_LAST,
     is_milestone: bool = False,
     export_folded_weights: bool = True,
 ) -> CheckpointPaths:
-    """Persist model/optimizer/schedule state and optional folded export."""
+    """Persist model/optimizer/schedule state with replay metadata."""
 
-    if step <= 0:
-        raise ValueError(f"step must be positive, got {step}")
-
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_stem = "milestone" if is_milestone else "checkpoint"
-    checkpoint_path = checkpoint_dir / f"{checkpoint_stem}_{step:08d}.pt"
-
-    payload = {
-        "step": step,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "lr_schedule": [list(entry) for entry in lr_schedule.entries],
-        "is_milestone": is_milestone,
-    }
-    torch.save(payload, checkpoint_path)
-
-    folded_weights_path: Path | None = None
-    if export_folded_weights:
-        folded_model = export_folded_model(model).eval()
-        folded_weights_path = checkpoint_dir / f"{checkpoint_stem}_{step:08d}_folded.pt"
-        torch.save(
-            {
-                "step": step,
-                "model_state_dict": folded_model.state_dict(),
-                "source_checkpoint": str(checkpoint_path),
-            },
-            folded_weights_path,
-        )
-
-    return CheckpointPaths(
+    replay_metadata = extract_replay_buffer_metadata(replay_buffer)
+    return save_checkpoint(
+        model,
+        optimizer,
         step=step,
-        checkpoint_path=checkpoint_path,
-        folded_weights_path=folded_weights_path,
+        checkpoint_dir=checkpoint_dir,
+        lr_schedule_entries=lr_schedule.entries,
+        replay_buffer_metadata=replay_metadata,
         is_milestone=is_milestone,
+        export_folded_weights=export_folded_weights,
+        keep_last=keep_last,
     )
 
 
@@ -539,26 +516,18 @@ def load_training_checkpoint(
 ) -> tuple[int, StepDecayLRSchedule]:
     """Load a previously saved training checkpoint into model/optimizer state."""
 
-    payload = torch.load(Path(checkpoint_path), map_location=map_location)
-    if not isinstance(payload, Mapping):
-        raise ValueError("Checkpoint payload must be a mapping")
-    if "model_state_dict" not in payload or "step" not in payload:
-        raise ValueError("Checkpoint payload is missing required keys: 'model_state_dict' and 'step'")
+    loaded = load_checkpoint(
+        checkpoint_path,
+        model,
+        optimizer,
+        map_location=map_location,
+    )
 
-    model.load_state_dict(payload["model_state_dict"])
-    if optimizer is not None and "optimizer_state_dict" in payload:
-        optimizer.load_state_dict(payload["optimizer_state_dict"])
-
-    step = int(payload["step"])
-    if step < 0:
-        raise ValueError(f"Checkpoint step must be non-negative, got {step}")
-
-    schedule_entries = payload.get("lr_schedule")
-    if schedule_entries is None:
-        schedule = StepDecayLRSchedule()
+    if loaded.lr_schedule_entries:
+        schedule = StepDecayLRSchedule(entries=loaded.lr_schedule_entries)
     else:
-        schedule = StepDecayLRSchedule(entries=tuple(tuple(entry) for entry in schedule_entries))
-    return step, schedule
+        schedule = StepDecayLRSchedule()
+    return loaded.step, schedule
 
 
 def create_optimizer(
@@ -604,6 +573,7 @@ def load_training_config_from_config(config: Mapping[str, Any]) -> TrainingConfi
         momentum=float(training.get("momentum", DEFAULT_MOMENTUM)),
         l2_reg=float(training.get("l2_reg", DEFAULT_L2_WEIGHT)),
         checkpoint_interval=int(training.get("checkpoint_interval", DEFAULT_CHECKPOINT_INTERVAL)),
+        checkpoint_keep_last=int(training.get("checkpoint_keep_last", DEFAULT_CHECKPOINT_KEEP_LAST)),
         milestone_interval=int(training.get("milestone_interval", DEFAULT_MILESTONE_INTERVAL)),
         log_interval=int(training.get("log_interval", DEFAULT_LOG_INTERVAL)),
         min_buffer_size=int(training.get("min_buffer_size", DEFAULT_MIN_BUFFER_SIZE)),
@@ -718,6 +688,8 @@ def training_loop(
                     active_schedule,
                     step=step,
                     checkpoint_dir=checkpoint_dir,
+                    replay_buffer=replay_buffer,
+                    keep_last=training_config.checkpoint_keep_last,
                     is_milestone=False,
                     export_folded_weights=training_config.export_folded_checkpoints,
                 )
@@ -731,6 +703,8 @@ def training_loop(
                         active_schedule,
                         step=step,
                         checkpoint_dir=checkpoint_dir,
+                        replay_buffer=replay_buffer,
+                        keep_last=training_config.checkpoint_keep_last,
                         is_milestone=True,
                         export_folded_weights=training_config.export_folded_checkpoints,
                     )

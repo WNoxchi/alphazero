@@ -145,6 +145,7 @@ class TrainingConfigLike(Protocol):
     momentum: float
     l2_reg: float
     checkpoint_interval: int
+    checkpoint_keep_last: int
     milestone_interval: int
     log_interval: int
     min_buffer_size: int
@@ -510,6 +511,8 @@ def run_interleaved_pipeline(
                     active_schedule,
                     step=next_step,
                     checkpoint_dir=Path(checkpoint_dir),
+                    replay_buffer=replay_buffer,
+                    keep_last=int(training_config.checkpoint_keep_last),
                     is_milestone=False,
                     export_folded_weights=bool(training_config.export_folded_checkpoints),
                 )
@@ -522,6 +525,8 @@ def run_interleaved_pipeline(
                         active_schedule,
                         step=next_step,
                         checkpoint_dir=Path(checkpoint_dir),
+                        replay_buffer=replay_buffer,
+                        keep_last=int(training_config.checkpoint_keep_last),
                         is_milestone=True,
                         export_folded_weights=bool(training_config.export_folded_checkpoints),
                     )
