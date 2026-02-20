@@ -3,6 +3,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -237,34 +238,51 @@ TEST(ChessMovegenTest, BlackPerspectiveUsesCanonicalMirroring) {
 }
 
 // WHY: Known perft references catch subtle legality bugs across castling, checks, en passant, and promotions.
-TEST(ChessMovegenTest, PerftMatchesReferencePositionsAtPracticalDepths) {
+TEST(ChessMovegenTest, PerftMatchesReferencePositions) {
     struct PerftCase {
         std::string name;
         std::string fen;
         std::vector<std::uint64_t> expected_by_depth;
+        int default_max_depth = 0;
     };
+
+    const bool run_exhaustive_kiwipete =
+        std::getenv("ALPHAZERO_EXHAUSTIVE_PERFT") != nullptr;
 
     const std::vector<PerftCase> test_cases = {
         {
             .name = "initial",
             .fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            .expected_by_depth = {20ULL, 400ULL, 8902ULL, 197281ULL, 4865609ULL},
+            .expected_by_depth = {20ULL, 400ULL, 8902ULL, 197281ULL, 4865609ULL, 119060324ULL},
+            .default_max_depth = 6,
         },
         {
             .name = "kiwipete",
             .fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            .expected_by_depth = {48ULL, 2039ULL, 97862ULL, 4085603ULL},
+            .expected_by_depth = {48ULL, 2039ULL, 97862ULL, 4085603ULL, 193690690ULL, 8031647685ULL},
+            .default_max_depth = run_exhaustive_kiwipete ? 6 : 5,
         },
         {
-            .name = "endgame",
+            .name = "endgame_rook_pawn",
             .fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
             .expected_by_depth = {14ULL, 191ULL, 2812ULL, 43238ULL, 674624ULL, 11030083ULL},
+            .default_max_depth = 6,
+        },
+        {
+            .name = "endgame_rook_pawn_mirror",
+            .fen = "8/1p1p4/8/K1P3r1/R5pk/4P3/5P2/8 b - - 0 1",
+            .expected_by_depth = {14ULL, 191ULL, 2812ULL, 43238ULL, 674624ULL, 11030083ULL},
+            .default_max_depth = 6,
         },
     };
 
     for (const PerftCase& test_case : test_cases) {
         const ChessPosition position = position_from_fen(test_case.fen);
-        for (int depth = 1; depth <= static_cast<int>(test_case.expected_by_depth.size()); ++depth) {
+        ASSERT_GT(test_case.default_max_depth, 0) << "case=" << test_case.name;
+        ASSERT_LE(test_case.default_max_depth, static_cast<int>(test_case.expected_by_depth.size()))
+            << "case=" << test_case.name;
+
+        for (int depth = 1; depth <= test_case.default_max_depth; ++depth) {
             EXPECT_EQ(perft(position, depth), test_case.expected_by_depth[depth - 1])
                 << "case=" << test_case.name << " depth=" << depth;
         }
