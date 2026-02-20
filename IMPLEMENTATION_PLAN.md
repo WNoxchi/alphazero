@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 through TASK-071 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -740,12 +740,28 @@
 
 ### TASK-071: Implement play script (play.py)
 - **Spec**: `infrastructure.md` §7
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `scripts/play.py`. Interactive human vs AI mode. AI vs external engine mode (e.g., Stockfish via UCI). Use MCTS with deterministic selection (τ→0), no Dirichlet noise, resignation enabled.
 - **Priority rationale**: Useful for evaluation but not blocking training.
 - **Acceptance criteria**:
   - Human can play against trained model interactively
   - Model can play against UCI engine
+- **Execution notes**:
+  - Replaced scaffold `scripts/play.py` with a full play entrypoint supporting:
+    - interactive human-vs-AI sessions,
+    - chess AI-vs-UCI-engine match mode (`--opponent <engine>` and `--games N`),
+    - deterministic search settings for play (`temperature=0`, `temperature_moves=0`, `enable_dirichlet_noise=false`) with resignation enabled.
+  - Extended `src/bindings/python_bindings.cpp` to expose standalone MCTS APIs (`SearchConfig`, `EdgeStats`, `MctsSearch`) for script-level move selection, plus chess UCI helpers on `ChessState` (`action_to_uci`, `uci_to_action`, `legal_actions_uci`) required for interactive input and engine protocol integration.
+  - Added rationale-rich tests in `tests/python/test_play_script.py` for runtime configuration, interactive move flow, and engine-match result aggregation with alternating colors.
+  - Extended `tests/python/test_bindings.py` with skip-safe coverage for chess UCI helper round-trips and standalone MCTS binding usage when the extension is available.
+  - Validation passed:
+    - `cmake --build build --parallel`,
+    - `ctest --test-dir build --output-on-failure`,
+    - `python3 -m unittest -q tests/python/test_play_script.py tests/python/test_bindings.py` (`test_bindings.py` is fully skipped in this sandbox because `alphazero_cpp` is not built; CMake cache reports `pybind11_DIR-NOTFOUND`),
+    - `python3 -m mypy --ignore-missing-imports scripts/play.py tests/python/test_play_script.py tests/python/test_bindings.py`,
+    - `python3 -m compileall -q python scripts tests`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check scripts/play.py tests/python/test_play_script.py tests/python/test_bindings.py`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-072: Implement benchmark script (benchmark.py)
 - **Spec**: `infrastructure.md` §6 (Performance Benchmarking)

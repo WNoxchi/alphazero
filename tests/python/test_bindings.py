@@ -110,6 +110,50 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(sample.policy.tolist(), policy)
         self.assertEqual(sample.value_wdl.tolist(), value_wdl)
 
+    def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
+        """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""
+        bindings = _require_bindings()
+        state = bindings.ChessState()
+
+        legal_pairs = state.legal_actions_uci()
+        self.assertTrue(legal_pairs)
+
+        first_action, first_uci = legal_pairs[0]
+        self.assertEqual(state.action_to_uci(first_action), first_uci)
+        self.assertEqual(state.uci_to_action(first_uci), first_action)
+
+    def test_mcts_search_binding_runs_simulations_and_selects_legal_action(self) -> None:
+        """Verifies Python can drive standalone MCTS (outside SelfPlayManager) for interactive play flows."""
+        bindings = _require_bindings()
+        game_config = bindings.go_game_config()
+        search_config = bindings.SearchConfig()
+        search_config.simulations_per_move = 8
+        search_config.enable_dirichlet_noise = False
+        search_config.temperature = 0.0
+        search_config.temperature_moves = 0
+        search_config.enable_resignation = False
+
+        search = bindings.MctsSearch(game_config, search_config, node_arena_capacity=8192)
+        state = bindings.GoState()
+        legal_actions = state.legal_actions()
+        preferred_action = legal_actions[0]
+
+        def evaluator(_state: object) -> dict[str, object]:
+            policy = [-1000.0] * game_config.action_space_size
+            policy[preferred_action] = 1000.0
+            return {
+                "policy": policy,
+                "value": 0.0,
+                "policy_is_logits": True,
+            }
+
+        search.set_root_state(state)
+        search.run_simulations(evaluator, simulation_count=8)
+        selected_action = search.select_action(1)
+
+        self.assertIn(selected_action, legal_actions)
+        self.assertFalse(search.should_resign())
+
     def test_eval_queue_processes_requests_with_python_batch_callback(self) -> None:
         """Protects the CPU↔Python batching bridge so each submitter gets the correct per-request result."""
         bindings = _require_bindings()

@@ -1,14 +1,17 @@
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -17,11 +20,13 @@
 #include <pybind11/stl.h>
 
 #include "games/chess/chess_config.h"
+#include "games/chess/movegen.h"
 #include "games/chess/chess_state.h"
 #include "games/game_config.h"
 #include "games/game_state.h"
 #include "games/go/go_config.h"
 #include "games/go/go_state.h"
+#include "mcts/arena_node_store.h"
 #include "mcts/eval_queue.h"
 #include "mcts/mcts_search.h"
 #include "selfplay/replay_buffer.h"
@@ -141,6 +146,141 @@ template <typename StateType>
     std::vector<float> encoded(value_count, 0.0F);
     state.encode(encoded.data());
     return encoded;
+}
+
+[[nodiscard]] int parse_chess_uci_square(const std::string_view token) {
+    if (token.size() != 2U) {
+        return -1;
+    }
+
+    const char file = static_cast<char>(std::tolower(static_cast<unsigned char>(token[0])));
+    const char rank = token[1];
+    if (file < 'a' || file > 'h' || rank < '1' || rank > '8') {
+        return -1;
+    }
+
+    const int file_index = static_cast<int>(file - 'a');
+    const int rank_index = static_cast<int>(rank - '1');
+    return (rank_index * 8) + file_index;
+}
+
+[[nodiscard]] std::string chess_square_to_uci(const int square) {
+    if (!alphazero::chess::is_valid_square(square)) {
+        throw std::invalid_argument("Chess square index out of range for UCI conversion");
+    }
+    const int file = square % 8;
+    const int rank = square / 8;
+    std::string uci;
+    uci.reserve(2);
+    uci.push_back(static_cast<char>('a' + file));
+    uci.push_back(static_cast<char>('1' + rank));
+    return uci;
+}
+
+[[nodiscard]] char promotion_piece_to_uci_char(const int piece_type) {
+    using alphazero::chess::kBishop;
+    using alphazero::chess::kKnight;
+    using alphazero::chess::kQueen;
+    using alphazero::chess::kRook;
+    switch (piece_type) {
+        case kQueen:
+            return 'q';
+        case kRook:
+            return 'r';
+        case kBishop:
+            return 'b';
+        case kKnight:
+            return 'n';
+        default:
+            throw std::invalid_argument("Unsupported promotion piece in chess move");
+    }
+}
+
+[[nodiscard]] int uci_char_to_promotion_piece(const char promotion_char) {
+    using alphazero::chess::kBishop;
+    using alphazero::chess::kKnight;
+    using alphazero::chess::kQueen;
+    using alphazero::chess::kRook;
+    switch (static_cast<char>(std::tolower(static_cast<unsigned char>(promotion_char)))) {
+        case 'q':
+            return kQueen;
+        case 'r':
+            return kRook;
+        case 'b':
+            return kBishop;
+        case 'n':
+            return kKnight;
+        default:
+            return -1;
+    }
+}
+
+[[nodiscard]] std::string chess_move_to_uci(const alphazero::chess::Move& move) {
+    std::string uci = chess_square_to_uci(move.from) + chess_square_to_uci(move.to);
+    if (move.promotion >= 0) {
+        uci.push_back(promotion_piece_to_uci_char(move.promotion));
+    }
+    return uci;
+}
+
+[[nodiscard]] std::string chess_action_to_uci(const ChessState& state, const int action) {
+    const std::optional<alphazero::chess::Move> move =
+        alphazero::chess::action_index_to_semantic_move(state.position(), action);
+    if (!move.has_value()) {
+        throw std::invalid_argument("Action is illegal for the current chess state");
+    }
+    return chess_move_to_uci(*move);
+}
+
+[[nodiscard]] std::vector<std::pair<int, std::string>> chess_legal_actions_uci(const ChessState& state) {
+    const std::vector<int> legal_actions = state.legal_actions();
+    std::vector<std::pair<int, std::string>> mappings;
+    mappings.reserve(legal_actions.size());
+
+    for (const int action : legal_actions) {
+        mappings.emplace_back(action, chess_action_to_uci(state, action));
+    }
+    return mappings;
+}
+
+[[nodiscard]] int chess_uci_to_action(const ChessState& state, const std::string& uci_move_text) {
+    const std::string_view uci(uci_move_text);
+    if (uci.size() != 4U && uci.size() != 5U) {
+        throw std::invalid_argument("Chess UCI move must have form e2e4 or e7e8q");
+    }
+
+    const int from = parse_chess_uci_square(uci.substr(0, 2));
+    const int to = parse_chess_uci_square(uci.substr(2, 2));
+    if (from < 0 || to < 0) {
+        throw std::invalid_argument("Chess UCI move has an invalid source or destination square");
+    }
+
+    const int promotion = uci.size() == 5U ? uci_char_to_promotion_piece(uci[4]) : -1;
+    if (uci.size() == 5U && promotion < 0) {
+        throw std::invalid_argument("Chess UCI promotion suffix must be one of q/r/b/n");
+    }
+
+    const std::vector<int> legal_actions = state.legal_actions();
+    for (const int action : legal_actions) {
+        const std::optional<alphazero::chess::Move> move =
+            alphazero::chess::action_index_to_semantic_move(state.position(), action);
+        if (!move.has_value()) {
+            continue;
+        }
+
+        if (move->from != from || move->to != to) {
+            continue;
+        }
+        if (promotion >= 0 && move->promotion != promotion) {
+            continue;
+        }
+        if (promotion < 0 && move->promotion >= 0) {
+            continue;
+        }
+        return action;
+    }
+
+    throw std::invalid_argument("Chess UCI move is illegal in the current position");
 }
 
 template <typename StateType>
@@ -318,6 +458,76 @@ private:
     };
 }
 
+class PyMctsSearch {
+public:
+    PyMctsSearch(
+        const GameConfig& game_config,
+        const alphazero::mcts::SearchConfig config,
+        const std::size_t node_arena_capacity)
+        : game_config_(game_config),
+          node_store_(node_arena_capacity),
+          search_(node_store_, game_config_, config),
+          action_space_size_(game_config_.action_space_size) {
+        if (node_arena_capacity == 0U) {
+            throw std::invalid_argument("MctsSearch node_arena_capacity must be greater than zero");
+        }
+        if (action_space_size_ <= 0) {
+            throw std::invalid_argument("MctsSearch requires a positive action space size");
+        }
+    }
+
+    void set_root_state(const GameState& state) {
+        py::gil_scoped_release release_gil;
+        search_.set_root_state(state.clone());
+    }
+
+    [[nodiscard]] bool has_root() const {
+        py::gil_scoped_release release_gil;
+        return search_.has_root();
+    }
+
+    [[nodiscard]] std::vector<float> root_policy_target(const int move_number) const {
+        py::gil_scoped_release release_gil;
+        return search_.root_policy_target(move_number);
+    }
+
+    [[nodiscard]] int select_action(const int move_number) {
+        py::gil_scoped_release release_gil;
+        return search_.select_action(move_number);
+    }
+
+    void run_simulations(py::function evaluator, const std::optional<std::size_t> simulation_count) {
+        const SelfPlayManager::EvaluateFn wrapped = make_selfplay_evaluator(std::move(evaluator), action_space_size_);
+        py::gil_scoped_release release_gil;
+        if (simulation_count.has_value()) {
+            search_.run_simulations(*simulation_count, wrapped);
+            return;
+        }
+        search_.run_simulations(wrapped);
+    }
+
+    void advance_root(const int action) {
+        py::gil_scoped_release release_gil;
+        search_.advance_root(action);
+    }
+
+    [[nodiscard]] bool should_resign() const {
+        py::gil_scoped_release release_gil;
+        return search_.should_resign();
+    }
+
+    [[nodiscard]] std::optional<alphazero::mcts::EdgeStats> root_edge_stats(const int action) const {
+        py::gil_scoped_release release_gil;
+        return search_.root_edge_stats(action);
+    }
+
+private:
+    const GameConfig& game_config_;
+    alphazero::mcts::ArenaNodeStore node_store_;
+    alphazero::mcts::MctsSearch search_;
+    int action_space_size_ = 0;
+};
+
 [[nodiscard]] SelfPlayManager::CompletionCallback make_completion_callback(const py::object& callback) {
     if (callback.is_none()) {
         return {};
@@ -384,6 +594,9 @@ PYBIND11_MODULE(alphazero_cpp, module) {
                 return downcast_state_unique_ptr<ChessState>(state.clone(), "ChessState.clone()");
             })
         .def("hash", &ChessState::hash)
+        .def("action_to_uci", &chess_action_to_uci, py::arg("action"))
+        .def("uci_to_action", &chess_uci_to_action, py::arg("uci"))
+        .def("legal_actions_uci", &chess_legal_actions_uci)
         .def("to_string", &ChessState::to_string)
         .def("__repr__", [](const ChessState& state) { return state.to_string(); })
         .def("__str__", [](const ChessState& state) { return state.to_string(); });
@@ -490,6 +703,51 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def(py::init<>())
         .def_readwrite("policy_logits", &EvalResult::policy_logits)
         .def_readwrite("value", &EvalResult::value);
+
+    py::class_<alphazero::mcts::SearchConfig>(module, "SearchConfig")
+        .def(py::init<>())
+        .def_readwrite("simulations_per_move", &alphazero::mcts::SearchConfig::simulations_per_move)
+        .def_readwrite("c_puct", &alphazero::mcts::SearchConfig::c_puct)
+        .def_readwrite("c_fpu", &alphazero::mcts::SearchConfig::c_fpu)
+        .def_readwrite("enable_dirichlet_noise", &alphazero::mcts::SearchConfig::enable_dirichlet_noise)
+        .def_readwrite("dirichlet_epsilon", &alphazero::mcts::SearchConfig::dirichlet_epsilon)
+        .def_readwrite("dirichlet_alpha_override", &alphazero::mcts::SearchConfig::dirichlet_alpha_override)
+        .def_readwrite("temperature", &alphazero::mcts::SearchConfig::temperature)
+        .def_readwrite("temperature_moves", &alphazero::mcts::SearchConfig::temperature_moves)
+        .def_readwrite("enable_resignation", &alphazero::mcts::SearchConfig::enable_resignation)
+        .def_readwrite("resign_threshold", &alphazero::mcts::SearchConfig::resign_threshold)
+        .def_readwrite("random_seed", &alphazero::mcts::SearchConfig::random_seed);
+
+    py::class_<alphazero::mcts::EdgeStats>(module, "EdgeStats")
+        .def(py::init<>())
+        .def_readwrite("action", &alphazero::mcts::EdgeStats::action)
+        .def_readwrite("visit_count", &alphazero::mcts::EdgeStats::visit_count)
+        .def_readwrite("total_value", &alphazero::mcts::EdgeStats::total_value)
+        .def_readwrite("mean_value", &alphazero::mcts::EdgeStats::mean_value)
+        .def_readwrite("prior", &alphazero::mcts::EdgeStats::prior)
+        .def_readwrite("virtual_loss", &alphazero::mcts::EdgeStats::virtual_loss)
+        .def_readwrite("child", &alphazero::mcts::EdgeStats::child);
+
+    py::class_<PyMctsSearch>(module, "MctsSearch")
+        .def(
+            py::init<const GameConfig&, alphazero::mcts::SearchConfig, std::size_t>(),
+            py::arg("game_config"),
+            py::arg("config") = alphazero::mcts::SearchConfig{},
+            py::arg("node_arena_capacity") = alphazero::mcts::ArenaNodeStore::kDefaultCapacity,
+            py::keep_alive<1, 2>())
+        .def("set_root_state", &PyMctsSearch::set_root_state, py::arg("state"))
+        .def("has_root", &PyMctsSearch::has_root)
+        .def("root_policy_target", &PyMctsSearch::root_policy_target, py::arg("move_number"))
+        .def("select_action", &PyMctsSearch::select_action, py::arg("move_number"))
+        .def(
+            "run_simulations",
+            &PyMctsSearch::run_simulations,
+            py::arg("evaluator"),
+            py::arg("simulation_count") = py::none(),
+            py::keep_alive<1, 2>())
+        .def("advance_root", &PyMctsSearch::advance_root, py::arg("action"))
+        .def("should_resign", &PyMctsSearch::should_resign)
+        .def("root_edge_stats", &PyMctsSearch::root_edge_stats, py::arg("action"));
 
     py::class_<alphazero::mcts::EvalQueueConfig>(module, "EvalQueueConfig")
         .def(py::init<>())
