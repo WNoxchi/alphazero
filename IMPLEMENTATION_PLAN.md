@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-032 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-033 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -322,7 +322,7 @@
 
 ### TASK-033: Implement loss functions
 - **Spec**: `neural-network.md` §4, `pipeline.md` §6 (Loss Computation)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/training/loss.py`. Implement policy loss: cross-entropy between MCTS policy target and network logits (only over legal actions). Implement scalar value loss: MSE between tanh output and game outcome. Implement WDL value loss: cross-entropy between WDL target and network WDL output. Implement L2 regularization (c=1e-4, applied to all parameters). Combined loss: L_policy + L_value + c * L2.
 - **Priority rationale**: Training loop depends on correct loss computation.
 - **Acceptance criteria**:
@@ -330,6 +330,14 @@
   - Value losses (MSE and CE) match hand-computed values
   - L2 regularization includes all parameters
   - Policy and value losses weighted equally (unit-scaled)
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/training/loss.py` with a full loss module implementing policy cross-entropy, scalar-value MSE, WDL cross-entropy, explicit L2 regularization over model parameters, and combined-loss composition with configurable `l2_weight`.
+  - Added production loss API helpers (`compute_loss`, `compute_loss_components`, `LossComponents`) plus shape/probability validation and optional legal-action masking so policy loss can be computed over legal moves only.
+  - Replaced scaffold `tests/python/test_loss.py` with rationale-rich tests that validate policy/value/L2 terms against hand-computed references, legal-action-mask behavior, total-loss composition, and invalid-input error paths.
+  - Updated `python/alphazero/training/__init__.py` exports for downstream trainer integration.
+  - Validation passed: `python3 -m unittest -q tests/python/test_loss.py tests/python/test_config.py`, `python3 -m mypy python/alphazero/training/loss.py tests/python/test_loss.py python/alphazero/training/__init__.py --ignore-missing-imports`, `python3 -m compileall -q python tests scripts`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Environment note: `torch` is not installed in this sandbox interpreter, so torch-dependent loss tests are auto-skipped.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-034: Implement learning rate schedule
 - **Spec**: `neural-network.md` §5 (Training Configuration, LR Schedule)
