@@ -2,7 +2,7 @@
 
 ## Orientation
 
-0a. Study `specs/*` to with up to 500 parallel Sonnet subagents understand the project requirements.
+0a. Study `specs/*` to with up to 500 parallel subagents understand the project requirements.
 0b. Study `@IMPLEMENTATION_PLAN.md` to see the current prioritized task list.
 0c. For reference, application source code is in `src/*`.
 0d. Use only 1 subagent for build and test operations.
@@ -15,11 +15,11 @@
 2. Before writing any code, search the codebase to understand the current state 
    relevant to this task. **Do not assume code is missing — search and read first.** 
    Use grep and file reads to confirm what exists and what doesn't.
-   - You may use up to 500 parallel Sonnet subagents for searches/reads, and only 1 Sonnet subagent fo rbuild.tests. Use Opus subagents when complex reasoning is needed (debugging, architectural decisions).
+   - You may use up to 500 parallel subagents for searches/reads, and only 1 subagent fo rbuild.tests. Use Opus subagents when complex reasoning is needed (debugging, architectural decisions).
 
 3. Implement the task completely. This means:
    - Full, production-quality implementation (no stubs, no placeholders, no TODOs)
-   - Follows patterns established in `@CLAUDE.md` and existing code
+   - Follows patterns established in `@AGENTS.md` and existing code
    - Includes appropriate error handling and edge cases per the spec
    - Code is clean, well-structured, and would pass professional review
 
@@ -31,7 +31,7 @@
    - Cover edge cases and error paths
    - Tests should be specific enough to catch regressions
 
-5. Run the validation suite per `@CLAUDE.md`:
+5. Run the validation suite per `@AGENTS.md`:
    - Run tests for the unit of code you changed
    - Run the type checker / static analysis
    - Run the linter
@@ -44,7 +44,7 @@
 7. Once all validation passes:
    - Update `@IMPLEMENTATION_PLAN.md`: mark your task complete, note any 
      discoveries or new tasks uncovered during implementation
-   - Update `@CLAUDE.md` if you learned something operational (e.g., a command 
+   - Update `@AGENTS.md` if you learned something operational (e.g., a command 
      that works differently than documented)
    - Stage and commit: `git add -A && git commit -m "<descriptive message>"`
 
@@ -81,4 +81,4 @@
 - Do NOT mark a task complete without running validation.
 - Do NOT modify specs unless you find a genuine inconsistency (and if you do, 
   document the change clearly).
-- Keep `@CLAUDE.md` operational only - status updates and progress notes belong in `@IMPLEMENTATION_PLAN.md`. A bloaded CLAUDE.md pollutes every future loop's context.
+- Keep `@AGENTS.md` operational only - status updates and progress notes belong in `@IMPLEMENTATION_PLAN.md`. A bloaded AGENTS.md pollutes every future loop's context.

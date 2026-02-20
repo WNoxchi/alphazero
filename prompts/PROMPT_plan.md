@@ -2,10 +2,10 @@
 
 ## Orientation
 
-0a. Study all files in `specs/*` with up to 250 parallel Sonnet subagents to understand the complete project requirements.
+0a. Study all files in `specs/*` with up to 250 parallel subagents to understand the complete project requirements.
     Use subagents to read specs in parallel — do not load all spec content 
     into the main context.
-0b. Study `src/lib/*` with up to 250 parallel Sonnet subagents to understand shared utilities & components.
+0b. Study `src/lib/*` with up to 250 parallel subagents to understand shared utilities & components.
 0c. Study `@IMPLEMENTATION_PLAN.md` if it exists (it may be stale or incorrect).
 0d. The application source code is in `src/*`. Use subagents to study 
     existing implementations — do not read entire source files into main context.
