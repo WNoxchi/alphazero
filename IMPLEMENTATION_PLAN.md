@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-091 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-092 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -944,10 +944,15 @@
 
 ### TASK-092: Implement integration smoke test
 - **Spec**: `infrastructure.md` §4 (Integration Tests — Smoke test)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Full pipeline (self-play + training) for 100 training steps. Verify replay buffer fills, checkpoints saved, metrics logged. No crash.
 - **Priority rationale**: Validates the entire system end-to-end.
 - **Acceptance criteria**: Pipeline runs 100 steps without crashing
+- **Execution notes**:
+  - Added `tests/python/test_integration_smoke.py` with a rationale-rich integration test (`PipelineIntegrationSmokeTests::test_pipeline_smoke_runs_100_steps_and_emits_artifacts`) that exercises `run_interleaved_pipeline()` for 100 steps using real training/inference code paths and synthetic self-play doubles.
+  - The test validates all task acceptance criteria in one run: replay buffer growth past gating threshold, successful 100-step completion without early termination, periodic step/cycle metric emission, and checkpoint artifact creation at expected intervals (including milestone behavior).
+  - Validation passed: `python3 -m unittest -q tests/python/test_integration_smoke.py`, `python3 -m mypy --ignore-missing-imports tests/python/test_integration_smoke.py`, `python3 -m compileall -q python tests scripts`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check tests/python/test_integration_smoke.py`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-093: Implement Connect Four learning test
 - **Spec**: `infrastructure.md` §4 (Integration Tests — Learning test)
