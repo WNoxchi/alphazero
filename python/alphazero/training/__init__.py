@@ -45,3 +45,45 @@ else:
             "l2_regularization_loss",
         ]
     )
+
+try:
+    from alphazero.training.trainer import (
+        CheckpointPaths,
+        TrainingConfig,
+        TrainingLoopResult,
+        TrainingStepMetrics,
+        apply_random_go_symmetry,
+        build_training_components_from_config,
+        build_training_components_from_yaml,
+        create_optimizer,
+        load_training_checkpoint,
+        load_training_config_from_config,
+        load_training_config_from_yaml,
+        prepare_replay_batch,
+        save_training_checkpoint,
+        train_one_step,
+        training_loop,
+    )
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional torch install
+    if exc.name != "torch":
+        raise
+else:
+    __all__.extend(
+        [
+            "CheckpointPaths",
+            "TrainingConfig",
+            "TrainingLoopResult",
+            "TrainingStepMetrics",
+            "apply_random_go_symmetry",
+            "build_training_components_from_config",
+            "build_training_components_from_yaml",
+            "create_optimizer",
+            "load_training_checkpoint",
+            "load_training_config_from_config",
+            "load_training_config_from_yaml",
+            "prepare_replay_batch",
+            "save_training_checkpoint",
+            "train_one_step",
+            "training_loop",
+        ]
+    )

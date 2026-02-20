@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-054 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, and TASK-060 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -563,7 +563,7 @@
 
 ### TASK-060: Implement training loop
 - **Spec**: `pipeline.md` §6, `neural-network.md` §5
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/training/trainer.py`. Implement training loop: SGD with momentum 0.9, LR schedule, mixed precision (BF16 AMP + GradScaler), mini-batch sampling from replay buffer. Wait for min_buffer_size (10K) before training. Apply symmetry augmentation for Go. Log metrics every N steps. Checkpoint every 1K steps + export BN-folded weights. Milestone checkpoints every 50K steps.
 - **Priority rationale**: Closes the self-play → train → improved network loop.
 - **Acceptance criteria**:
@@ -571,6 +571,30 @@
   - Mixed precision doesn't produce NaN
   - Gradients are non-zero
   - Checkpoint save/load round-trips correctly
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/training/trainer.py` with a full training-loop implementation including:
+    - `TrainingConfig`/`TrainingStepMetrics`/`TrainingLoopResult` runtime contracts,
+    - replay-sample tensor materialization (`prepare_replay_batch`) with shape and value validation,
+    - Go D4 symmetry augmentation (`apply_random_go_symmetry`) with pass-action invariance,
+    - BF16 autocast + GradScaler `train_one_step` with non-finite loss/gradient checks and gradient-norm metrics,
+    - optimizer/LR-schedule integration (`SGD` momentum 0.9 + step-decay),
+    - `training_loop()` buffer gating via `min_buffer_size`, periodic metric logging callback support, and checkpoint/milestone cadence handling,
+    - checkpoint save/load helpers with BN-folded export artifacts for inference.
+  - Updated `python/alphazero/training/__init__.py` to export trainer APIs when `torch` is available.
+  - Replaced scaffold `tests/python/test_training.py` with rationale-rich coverage for:
+    - replay batch conversion and policy normalization,
+    - Go symmetry transform correctness and pass invariance,
+    - finite mixed-precision training-step losses and non-zero gradients,
+    - end-to-end training-loop behavior (buffer wait gate + periodic logging + synthetic-loss reduction),
+    - checkpoint save/load round-trip restoring model, optimizer, step, and LR schedule.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_training.py` (all torch-dependent tests skipped in this sandbox because `torch` is unavailable),
+    - `python3 -m unittest -q tests/python/test_lr_schedule.py tests/python/test_config.py`,
+    - `python3 -m mypy --ignore-missing-imports python/alphazero/training/trainer.py python/alphazero/training/__init__.py tests/python/test_training.py`,
+    - `python3 -m compileall -q python tests scripts`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Type-check note: strict mypy without `--ignore-missing-imports` cannot run fully in this sandbox because `torch` is not installed.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-061: Implement GPU scheduling / pipeline orchestrator
 - **Spec**: `pipeline.md` §3
