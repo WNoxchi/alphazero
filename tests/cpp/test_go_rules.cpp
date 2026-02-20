@@ -207,6 +207,72 @@ TEST(GoRulesEngineTest, PlayActionCapturesMultiStoneGroupInOneMove) {
     EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 11)), kBlack);
 }
 
+// WHY: Snapback is an immediate recapture that must remain legal because it does not recreate the prior board.
+TEST(GoRulesEngineTest, SnapbackRecaptureIsLegalWhenBoardDoesNotRepeat) {
+    GoPosition position{};
+    position.side_to_move = kWhite;
+
+    // Local shape (top-left 4x2):
+    // Row 0: X . O X
+    // Row 1: O X X .
+    alphazero::go::set_stone(&position, I(0, 0), kBlack);
+    alphazero::go::set_stone(&position, I(0, 2), kWhite);
+    alphazero::go::set_stone(&position, I(0, 3), kBlack);
+    alphazero::go::set_stone(&position, I(1, 0), kWhite);
+    alphazero::go::set_stone(&position, I(1, 1), kBlack);
+    alphazero::go::set_stone(&position, I(1, 2), kBlack);
+
+    const auto white_capture = alphazero::go::play_action(position, I(0, 1));
+    ASSERT_TRUE(white_capture.legal());
+    EXPECT_EQ(white_capture.captured_stones, 1);
+    EXPECT_EQ(white_capture.position.ko_point, -1);
+
+    const auto black_recapture = alphazero::go::play_action(white_capture.position, I(0, 0));
+    ASSERT_TRUE(black_recapture.legal());
+    EXPECT_EQ(black_recapture.status, MoveStatus::kLegal);
+    EXPECT_EQ(black_recapture.captured_stones, 2);
+    EXPECT_EQ(alphazero::go::stone_at(black_recapture.position, I(0, 0)), kBlack);
+    EXPECT_EQ(alphazero::go::stone_at(black_recapture.position, I(0, 1)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(black_recapture.position, I(0, 2)), kEmpty);
+    EXPECT_NE(alphazero::go::zobrist_board_hash(black_recapture.position),
+              alphazero::go::zobrist_board_hash(position));
+}
+
+// WHY: Larger-chain capture scenarios protect against regressions in whole-group removal and liberty recomputation.
+TEST(GoRulesEngineTest, PlayActionCapturesLargeConnectedGroup) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+
+    // White chain with one remaining liberty at (12, 11).
+    alphazero::go::set_stone(&position, I(10, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 11), kWhite);
+    alphazero::go::set_stone(&position, I(10, 12), kWhite);
+    alphazero::go::set_stone(&position, I(11, 10), kWhite);
+    alphazero::go::set_stone(&position, I(11, 11), kWhite);
+    alphazero::go::set_stone(&position, I(11, 12), kWhite);
+
+    alphazero::go::set_stone(&position, I(9, 10), kBlack);
+    alphazero::go::set_stone(&position, I(9, 11), kBlack);
+    alphazero::go::set_stone(&position, I(9, 12), kBlack);
+    alphazero::go::set_stone(&position, I(10, 9), kBlack);
+    alphazero::go::set_stone(&position, I(11, 9), kBlack);
+    alphazero::go::set_stone(&position, I(10, 13), kBlack);
+    alphazero::go::set_stone(&position, I(11, 13), kBlack);
+    alphazero::go::set_stone(&position, I(12, 10), kBlack);
+    alphazero::go::set_stone(&position, I(12, 12), kBlack);
+
+    const auto result = alphazero::go::play_action(position, I(12, 11));
+    ASSERT_TRUE(result.legal());
+    EXPECT_EQ(result.captured_stones, 6);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 10)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 11)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 12)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 10)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 11)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 12)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(12, 11)), kBlack);
+}
+
 // WHY: Ko tracking must forbid immediate single-stone recapture that would recreate the previous board.
 TEST(GoRulesEngineTest, KoRecaptureIsBlockedAtTrackedKoPoint) {
     GoPosition position{};

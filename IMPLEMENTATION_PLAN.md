@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-081 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-082 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -831,9 +831,14 @@
 
 ### TASK-082: Implement Go rules tests
 - **Spec**: `game-interface.md` §8, `infrastructure.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `tests/cpp/test_go_rules.cpp`. Test capture scenarios (simple, snapback, large group). Ko detection and prohibition. Superko detection. Liberty counting. Tromp-Taylor scoring. Self-capture prohibition.
 - **Acceptance criteria**: All Go rules tests pass
+- **Execution notes**:
+  - Extended `tests/cpp/test_go_rules.cpp` with rationale-rich regression coverage for the remaining `TASK-082` capture scenarios: `SnapbackRecaptureIsLegalWhenBoardDoesNotRepeat` validates immediate legal recapture in a true snapback (non-repeating board), and `PlayActionCapturesLargeConnectedGroup` validates full removal of a six-stone connected chain.
+  - Retained existing coverage for simple and multi-stone captures, ko prohibition, positional superko, liberty counting, Tromp-Taylor scoring, self-capture rejection, and two-pass termination so the full Go rules acceptance surface is exercised in one suite.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=GoRulesEngineTest.*:GoScoringTest.*:GoStateRepresentationTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check tests/cpp/test_go_rules.cpp`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-083: Implement Go encoding tests
 - **Spec**: `game-interface.md` §8, `infrastructure.md` §4
