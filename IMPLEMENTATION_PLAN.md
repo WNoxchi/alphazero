@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-053 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-054 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -536,13 +536,26 @@
 
 ### TASK-054: Implement pybind11 bindings
 - **Spec**: `infrastructure.md` §1 (bindings/), `overview.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/bindings/python_bindings.cpp`. Expose to Python: GameState, GameConfig, ChessState, GoState, ReplayBuffer (sample method for training), SelfPlayManager (start/stop), EvalQueue. Bridge between C++ self-play engine and Python training loop.
 - **Priority rationale**: Training loop (Python) needs to read from replay buffer and control self-play (C++).
 - **Acceptance criteria**:
   - Python can create game states and call all interface methods
   - Python can sample from replay buffer
   - Python can start/stop self-play
+- **Execution notes**:
+  - Replaced the scaffold `src/bindings/python_bindings.cpp` with production pybind11 bindings for `GameState`, `GameConfig` (`ChessGameConfig`/`GoGameConfig`), `ChessState`, `GoState`, `ReplayPosition`, `ReplayBuffer`, `EvalQueue`, and `SelfPlayManager`.
+  - Added explicit Python↔C++ adapter validation for callback results:
+    - `SelfPlayManager` evaluator accepts `EvaluationResult`, dict (`policy`, `value`, optional `policy_is_logits`), or tuple/list (`policy`, `value`, optional `policy_is_logits`) with strict action-space-size checks.
+    - `EvalQueue` evaluator accepts `EvalResult`, dict (`policy_logits`, `value`), or tuple/list (`policy_logits`, `value`) with strict batch-size matching.
+  - Added a Python-facing `PyEvalQueue` wrapper to safely carry `encoded_state_size`, validate submitted state lengths, and avoid pointer-lifetime hazards across batched callback boundaries.
+  - Added `tests/python/test_bindings.py` with rationale-rich contract coverage for:
+    - game state creation/interface calls from Python,
+    - replay buffer add/sample round-trips,
+    - eval queue producer/consumer callback routing,
+    - self-play manager lifecycle control (`start`/`stop`) and replay-data production.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure`, `python3 -m unittest -q tests/python/test_bindings.py`, `python3 -m mypy tests/python/test_bindings.py`, `python3 -m compileall -q python tests scripts`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ---
 
