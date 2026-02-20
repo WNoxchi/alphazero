@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-084 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-085 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -864,9 +864,13 @@
 
 ### TASK-085: Implement eval queue tests
 - **Spec**: `infrastructure.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `tests/cpp/test_eval_queue.cpp`. Multi-producer single-consumer threading test. Verify all requests processed. Verify flush timeout. Stress test under high contention.
 - **Acceptance criteria**: No deadlocks, all results dispatched correctly
+- **Execution notes**:
+  - Verified `tests/cpp/test_eval_queue.cpp` satisfies the full acceptance surface with rationale-rich coverage: concurrent multi-producer/single-consumer dispatch correctness, flush-timeout partial-batch behavior, high-contention processing without dropped requests, and post-stop submission rejection.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=EvalQueueTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m mypy --ignore-missing-imports python/alphazero/config.py tests/python/test_config.py`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-086: Implement arena node store tests
 - **Spec**: `infrastructure.md` §4
