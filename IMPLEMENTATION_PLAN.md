@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 through TASK-041 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -394,7 +394,7 @@
 
 ### TASK-041: Implement NodeStore interface and ArenaNodeStore
 - **Spec**: `mcts.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/mcts/node_store.h` (interface: `allocate()`, `get()`, `release_subtree()`, `reset()`, `nodes_allocated()`, `memory_used_bytes()`). Create `src/mcts/arena_node_store.h` and `arena_node_store.cpp` with bump-pointer allocation from pre-allocated vector. Default capacity 8192 per game. Implement tree reuse: preserve chosen child's subtree, release siblings. Implement `reset()` as O(1) pointer reset.
 - **Priority rationale**: MCTS search needs a node allocator.
 - **Acceptance criteria**:
@@ -402,6 +402,13 @@
   - release_subtree correctly frees sibling trees
   - reset is O(1)
   - Memory tracking is accurate
+- **Execution notes**:
+  - Implemented `NodeStore` in `src/mcts/node_store.h` with the full allocator/access/release/reset/statistics interface from `mcts.md` §4.
+  - Replaced `src/mcts/arena_node_store.h` and `src/mcts/arena_node_store.cpp` scaffolds with a production `ArenaNodeStore` using pre-allocated contiguous storage, O(1) bump/free-list allocation, O(1) reset via allocator rewind + epoch invalidation, and accurate live-node memory accounting.
+  - Implemented subtree release with iterative traversal and parent-link validation, plus `reuse_subtree(old_root, preserved_child)` to preserve the selected child subtree while releasing siblings and detaching the new root for tree reuse.
+  - Replaced scaffold `tests/cpp/test_arena.cpp` with rationale-rich coverage for default capacity/accounting, allocation/overflow behavior, subtree release correctness, tree reuse semantics, reset behavior, and defensive no-op release paths.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=ArenaNodeStoreTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python tests scripts`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-042: Implement MCTS search (PUCT, FPU, Dirichlet, virtual loss, backup)
 - **Spec**: `mcts.md` §2, §6, §8, §9, §10, §11, §14
