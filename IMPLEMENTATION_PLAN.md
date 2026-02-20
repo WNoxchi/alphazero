@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-035 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -379,12 +379,18 @@
 
 ### TASK-040: Implement MCTSNode data structure (SoA layout)
 - **Spec**: `mcts.md` §3
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/mcts/mcts_node.h`. Implement `MCTSNode` struct with SoA layout: `visit_count[MAX_ACTIONS]`, `total_value[MAX_ACTIONS]`, `mean_value[MAX_ACTIONS]`, `prior[MAX_ACTIONS]`, `actions[MAX_ACTIONS]`, `num_actions`, `total_visits`, `node_value`, `children[MAX_ACTIONS]`, `parent`, `parent_action`, `virtual_loss[MAX_ACTIONS]`. Define `NodeId` as `uint32_t` with `NULL_NODE = UINT32_MAX`. Define `MAX_ACTIONS` per game (218 for chess, 362 for Go) — use compile-time constant or template.
 - **Priority rationale**: MCTS search, node store, and self-play all depend on this data structure.
 - **Acceptance criteria**:
   - Struct compiles and has correct layout
   - SoA arrays are contiguous for vectorized PUCT
+- **Execution notes**:
+  - Implemented `src/mcts/mcts_node.h` with `NodeId`, `NULL_NODE`, compile-time action-space constants (`218` chess, `362` Go), and a template-backed SoA node representation (`MCTSNodeT`) with `reset()` for deterministic reuse.
+  - Added concrete aliases `ChessMCTSNode`, `GoMCTSNode`, and default `MCTSNode` (Go-sized superset) plus standard-layout static assertions for ABI-stable storage.
+  - Replaced scaffold `tests/cpp/test_mcts.cpp` with rationale-rich tests validating capacity/type contracts, default/sentinel initialization, reset behavior, and per-array contiguous memory stride for vectorized PUCT access.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=MctsNodeStructureTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-041: Implement NodeStore interface and ArenaNodeStore
 - **Spec**: `mcts.md` §4
