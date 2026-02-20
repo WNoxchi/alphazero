@@ -2,8 +2,12 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_set>
+#include <vector>
+
+#include "games/game_state.h"
 
 namespace alphazero::go {
 
@@ -68,6 +72,55 @@ struct GoPosition {
 [[nodiscard]] constexpr int opponent_color(int color) {
     return color == kBlack ? kWhite : (color == kWhite ? kBlack : kEmpty);
 }
+
+[[nodiscard]] constexpr int color_to_player_index(int color) {
+    return color == kBlack ? 0 : (color == kWhite ? 1 : -1);
+}
+
+[[nodiscard]] constexpr int player_index_to_color(int player) {
+    return player == 0 ? kBlack : (player == 1 ? kWhite : kEmpty);
+}
+
+class GoState final : public GameState {
+public:
+    static constexpr int kHistorySteps = 8;
+    static constexpr int kPlanesPerStep = 2;
+    static constexpr int kConstantPlanes = 1;
+    static constexpr int kTotalInputChannels = (kHistorySteps * kPlanesPerStep) + kConstantPlanes;
+    static constexpr int kBlackPlayer = 0;
+    static constexpr int kWhitePlayer = 1;
+    static constexpr int kMaxGameLength = alphazero::go::kMaxGameLength;
+
+    GoState();
+    explicit GoState(const GoPosition& position);
+
+    [[nodiscard]] std::unique_ptr<GameState> apply_action(int action) const override;
+    [[nodiscard]] std::vector<int> legal_actions() const override;
+    [[nodiscard]] bool is_terminal() const override;
+    [[nodiscard]] float outcome(int player) const override;
+    [[nodiscard]] int current_player() const override;
+    void encode(float* buffer) const override;
+    [[nodiscard]] std::unique_ptr<GameState> clone() const override;
+    [[nodiscard]] std::uint64_t hash() const override;
+    [[nodiscard]] std::string to_string() const override;
+
+    [[nodiscard]] const GoPosition& position() const { return position_; }
+    [[nodiscard]] int history_size() const;
+    [[nodiscard]] const GoPosition& history_position(int steps_ago) const;
+
+private:
+    GoState(GoPosition position, std::shared_ptr<const GoState> parent);
+
+    static void fill_plane(float* buffer, int plane_index, float value);
+    static void encode_position_planes(
+        const GoPosition& encoded_position,
+        int perspective_color,
+        int history_index,
+        float* buffer);
+
+    GoPosition position_{};
+    std::shared_ptr<const GoState> parent_{};
+};
 
 [[nodiscard]] std::uint8_t stone_at(const GoPosition& position, int row, int col);
 [[nodiscard]] std::uint8_t stone_at(const GoPosition& position, int intersection);

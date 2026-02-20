@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-022 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-023 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -204,13 +204,20 @@
 
 ### TASK-023: Implement GoState (GameState for Go)
 - **Spec**: `game-interface.md` §2, §4, §6
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/go/go_state.cpp`. Implement `GoState` inheriting from `GameState`. Implement `apply_action()` (stone placement or pass, using go_rules). Implement `legal_actions()` (all empty intersections that don't violate ko/superko/self-capture, plus pass). Implement `is_terminal()` (two consecutive passes, max game length 722). Implement `outcome()` (Tromp-Taylor scoring). Implement history management via copy-on-write linked list (spec recommendation for Go). Implement `encode()`, `clone()`, `hash()`, `to_string()`. Create `go_config.cpp` with `GoGameConfig` (board 19x19, 17 input planes, 362 actions, scalar value head, 8 symmetries).
 - **Priority rationale**: Needed by MCTS and self-play to play Go games.
 - **Acceptance criteria**:
   - All terminal conditions detected correctly
   - History tracking supports T=8 positions
   - GameConfig values match spec exactly
+- **Execution notes**:
+  - Implemented a full `GoState` in `src/games/go/go_state.h` and `src/games/go/go_state.cpp` with immutable `apply_action()`, legality filtering through `go_rules`, terminal detection (`two passes` or `move_number >= 722`), Tromp-Taylor outcomes, copy-on-write linked-list ancestry for T=8 history, tensor encoding (`19x19x17`), cloning, hashing, and string rendering.
+  - Added Go player-index helpers (`0=black`, `1=white`) at the `GameState` boundary while preserving internal Go stone-color representation (`1=black`, `2=white`) in `GoPosition`.
+  - Added `src/games/go/go_config.h` and replaced the scaffold in `src/games/go/go_config.cpp` with `GoGameConfig`, including spec-accurate dimensions (`19x19`, `2*8+1=17`, `362` actions), scalar value head, symmetry flags (`supports_symmetry=true`, `num_symmetries=8`), and Go Dirichlet alpha (`0.03`).
+  - Added `tests/cpp/test_go_state.cpp` (rationale-rich) and registered it in `tests/cpp/CMakeLists.txt`; tests cover config fidelity, immutable state transitions and illegal-move rejection, terminal/outcome semantics, T=8 history window behavior, and encode perspective/zero-fill guarantees.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R GoStateTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-024: Implement Go input encoding
 - **Spec**: `game-interface.md` §6 (Input Encoding)

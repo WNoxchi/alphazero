@@ -20,6 +20,7 @@ if(ALPHAZERO_HAS_GTEST)
         test_chess_encoding.cpp
         test_chess_serialization.cpp
         test_go_rules.cpp
+        test_go_state.cpp
         test_go_encoding.cpp
         test_mcts.cpp
         test_eval_queue.cpp
