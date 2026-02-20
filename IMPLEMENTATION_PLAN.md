@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-034 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-035 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -357,12 +357,21 @@
 
 ### TASK-035: Implement batch norm folding utility
 - **Spec**: `neural-network.md` §6 (Batch Normalization Folding)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/network/bn_fold.py`. Implement BN folding: compute W_folded = W * γ / sqrt(σ² + ε) and b_folded = (b - μ) * γ / sqrt(σ² + ε) + β. Export a folded model copy (no BatchNorm layers, folded weights in Conv layers). Run after each training checkpoint.
 - **Priority rationale**: Self-play inference performance depends on BN folding.
 - **Acceptance criteria**:
   - Folded model produces identical outputs to original model (within 1e-5 tolerance)
   - Folded model has no BatchNorm layers
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/network/bn_fold.py` with a production BN-folding utility: `fold_conv_bn_pair()`, recursive model folding via `fold_batch_norms()`, `export_folded_model()`, and `has_batch_norm_layers()` for validation.
+  - Implemented Conv+BatchNorm parameter folding with the spec formula (`W_folded`, `b_folded`) while preserving convolution topology (stride/padding/groups/dilation/padding_mode), dtype/device placement, and gradient flags.
+  - Added recursive Conv/BN attribute-pair discovery by module naming patterns (`conv`↔`bn`, `conv_1`↔`bn_1`, `input_conv`↔`input_bn`) and replacement of folded BN modules with `nn.Identity()` so exported models contain no `BatchNorm2d` layers.
+  - Updated `python/alphazero/network/__init__.py` exports to include BN-folding APIs for downstream checkpoint/export integration.
+  - Replaced scaffold `tests/python/test_bn_fold.py` with rationale-rich tests covering formula-level Conv+BN equivalence, full-model export equivalence/tolerance (`1e-5`) with BN elimination, in-place folding behavior, and error handling for non-foldable BN modules (no running statistics).
+  - Validation passed: `python3 -m unittest -q tests/python/test_bn_fold.py tests/python/test_network.py`, `python3 -m unittest -q tests/python/test_config.py tests/python/test_lr_schedule.py`, `python3 -m mypy python/alphazero/network/bn_fold.py tests/python/test_bn_fold.py python/alphazero/network/__init__.py --ignore-missing-imports`, `python3 -m compileall -q python tests scripts`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Environment note: `torch` is not installed in this sandbox interpreter, so torch-dependent BN-folding/network tests are auto-skipped.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ---
 
