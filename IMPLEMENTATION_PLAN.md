@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, and TASK-060 through TASK-061 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, and TASK-060 through TASK-063 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -658,13 +658,31 @@
 
 ### TASK-063: Implement TensorBoard logging
 - **Spec**: `pipeline.md` §8, `infrastructure.md` §5
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/utils/logging.py`. Log all training metrics (loss/total, loss/policy, loss/value, loss/l2, lr, throughput, buffer size/games). Log self-play metrics (game length, outcome, resignation, moves/sec, games/hr). Write to `logs/<run_name>/`. Include periodic console summaries.
 - **Priority rationale**: Required for monitoring training progress.
 - **Acceptance criteria**:
   - All metrics from spec §8 are logged
   - TensorBoard can read the log files
   - Console output matches spec format
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/utils/logging.py` with a full `TensorBoardMetricsLogger` implementation that:
+    - creates run directories under `logs/<run_name>/`,
+    - logs the full spec training scalar set (`loss/*`, `lr`, `throughput/train_steps_per_sec`, `buffer/size`, `buffer/games_total`),
+    - logs the full spec self-play scalar set (`selfplay/game_length`, `selfplay/outcome`, `selfplay/resigned`, `selfplay/resign_false_positive`, `selfplay/moves_per_second`, `selfplay/games_per_hour`, `selfplay/avg_simulations_per_second`),
+    - supports per-game logging and snapshot-based logging with duplicate-game suppression via `latest_game_id`,
+    - emits periodic multi-line console summaries in the spec style (step/loss/LR + self-play + buffer/throughput).
+  - Added config/run utilities in `python/alphazero/utils/logging.py` (`load_log_dir_from_config()`, `build_run_name()`, and `create_metrics_logger()`), plus safe fallback behavior when `torch/tensorboard` is unavailable (clear runtime error unless a custom writer factory is provided).
+  - Updated `python/alphazero/utils/__init__.py` to export the new logging APIs.
+  - Added rationale-rich tests in `tests/python/test_logging.py` covering required metric emission, run-directory creation, self-play game logging, snapshot deduplication behavior, console summary output, and config-driven log directory resolution.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_logging.py`,
+    - `python3 -m unittest -q tests/python/test_checkpoint_utils.py` (executed; skipped in this sandbox because `torch` is unavailable),
+    - `python3 -m unittest -q tests/python/test_orchestrator.py` (executed; torch-dependent tests skipped),
+    - `python3 -m mypy --ignore-missing-imports python/alphazero/utils/logging.py python/alphazero/utils/__init__.py tests/python/test_logging.py`,
+    - `python3 -m compileall -q python tests scripts`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-064: Implement periodic Elo estimation
 - **Spec**: `pipeline.md` §8 (Elo Estimation)
