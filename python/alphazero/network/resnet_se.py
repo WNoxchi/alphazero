@@ -8,6 +8,7 @@ from torch import nn
 
 from alphazero.config import GameConfig
 from alphazero.network.base import AlphaZeroNetwork
+from alphazero.network.heads import PolicyHead, ScalarValueHead, WDLValueHead
 
 
 def _validate_positive_int(name: str, value: int) -> None:
@@ -70,11 +71,6 @@ class ResNetSE(AlphaZeroNetwork):
         self.num_filters = num_filters
         self.se_reduction = se_reduction
 
-        board_rows, board_cols = self.game_config.board_shape
-        flattened_policy_size = 32 * board_rows * board_cols
-        flattened_value_size = board_rows * board_cols
-        value_output_dim = 1 if self.game_config.value_head_type == "scalar" else 3
-
         self.input_conv = nn.Conv2d(
             self.game_config.input_channels,
             num_filters,
@@ -89,14 +85,17 @@ class ResNetSE(AlphaZeroNetwork):
             [SEResidualBlock(num_filters=num_filters, se_reduction=se_reduction) for _ in range(num_blocks)]
         )
 
-        self.policy_conv = nn.Conv2d(num_filters, 32, kernel_size=1, stride=1, padding=0, bias=False)
-        self.policy_bn = nn.BatchNorm2d(32)
-        self.policy_linear = nn.Linear(flattened_policy_size, self.game_config.action_space_size)
+        self.policy_head = PolicyHead(
+            num_filters=num_filters,
+            board_shape=self.game_config.board_shape,
+            action_space_size=self.game_config.action_space_size,
+        )
 
-        self.value_conv = nn.Conv2d(num_filters, 1, kernel_size=1, stride=1, padding=0, bias=False)
-        self.value_bn = nn.BatchNorm2d(1)
-        self.value_hidden = nn.Linear(flattened_value_size, 256)
-        self.value_linear = nn.Linear(256, value_output_dim)
+        self.value_head: ScalarValueHead | WDLValueHead
+        if self.game_config.value_head_type == "scalar":
+            self.value_head = ScalarValueHead(num_filters=num_filters, board_shape=self.game_config.board_shape)
+        else:
+            self.value_head = WDLValueHead(num_filters=num_filters, board_shape=self.game_config.board_shape)
 
         self._initialize_weights()
 
@@ -137,10 +136,10 @@ class ResNetSE(AlphaZeroNetwork):
             nn.init.xavier_uniform_(block.se_fc_2.weight)
             nn.init.zeros_(block.se_fc_2.bias)
 
-        nn.init.zeros_(self.policy_linear.weight)
-        nn.init.zeros_(self.policy_linear.bias)
-        nn.init.zeros_(self.value_linear.weight)
-        nn.init.zeros_(self.value_linear.bias)
+        nn.init.zeros_(self.policy_head.linear.weight)
+        nn.init.zeros_(self.policy_head.linear.bias)
+        nn.init.zeros_(self.value_head.linear.weight)
+        nn.init.zeros_(self.value_head.linear.bias)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self.validate_input_shape(x)
@@ -149,17 +148,8 @@ class ResNetSE(AlphaZeroNetwork):
         for block in self.residual_blocks:
             features = block(features)
 
-        policy = functional.relu(self.policy_bn(self.policy_conv(features)))
-        policy_logits = self.policy_linear(policy.flatten(start_dim=1))
-
-        value = functional.relu(self.value_bn(self.value_conv(features)))
-        value = functional.relu(self.value_hidden(value.flatten(start_dim=1)))
-        value = self.value_linear(value)
-        if self.game_config.value_head_type == "scalar":
-            value = torch.tanh(value)
-        else:
-            value = torch.softmax(value, dim=-1)
-
+        policy_logits = self.policy_head(features)
+        value = self.value_head(features)
         return policy_logits, value
 
 

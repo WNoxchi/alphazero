@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-032 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -305,13 +305,20 @@
 
 ### TASK-032: Implement policy and value heads
 - **Spec**: `neural-network.md` §3 (Policy Head, Value Heads)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/network/heads.py`. Implement policy head: Conv2d(F, 32, 1) -> BN -> ReLU -> Flatten -> Linear(32*H*W, action_space_size). Implement scalar value head (Go): Conv2d(F, 1, 1) -> BN -> ReLU -> Flatten -> Linear(H*W, 256) -> ReLU -> Linear(256, 1) -> Tanh. Implement WDL value head (Chess): same structure but Linear(256, 3) -> Softmax.
 - **Priority rationale**: Network outputs depend on correct head implementations.
 - **Acceptance criteria**:
   - Policy head output shape: (batch, action_space_size)
   - Scalar value output shape: (batch, 1), range [-1, 1]
   - WDL value output shape: (batch, 3), probabilities summing to 1
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/network/heads.py` with production head modules: `PolicyHead`, `ScalarValueHead`, and `WDLValueHead`, matching the exact spec layer topology and output activations.
+  - Refactored `python/alphazero/network/resnet_se.py` to compose these reusable head modules instead of inline head logic, while preserving required initialization behavior (Kaiming defaults and zero-init on final policy/value linear layers).
+  - Updated `python/alphazero/network/__init__.py` exports and expanded `tests/python/test_network.py` with rationale-rich tests that directly validate head output shapes, scalar range bounds, WDL probability normalization, and correct game-specific value-head selection in `ResNetSE`.
+  - Validation passed: `python3 -m unittest -q tests/python/test_network.py tests/python/test_config.py`, `mypy python/alphazero/network/heads.py python/alphazero/network/resnet_se.py tests/python/test_network.py --ignore-missing-imports`, `python3 -m compileall -q python tests scripts`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Environment note: `torch` is not installed in this sandbox interpreter, so torch-dependent network tests are auto-skipped.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-033: Implement loss functions
 - **Spec**: `neural-network.md` §4, `pipeline.md` §6 (Loss Computation)

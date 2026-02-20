@@ -21,7 +21,13 @@ if _TORCH_AVAILABLE:
     import torch
     from torch import nn
 
-    from alphazero.network import AlphaZeroNetwork, ResNetSE  # noqa: E402
+    from alphazero.network import (  # noqa: E402
+        AlphaZeroNetwork,
+        PolicyHead,
+        ResNetSE,
+        ScalarValueHead,
+        WDLValueHead,
+    )
 
 
 if _TORCH_AVAILABLE:
@@ -96,6 +102,45 @@ class AlphaZeroNetworkBaseTests(unittest.TestCase):
             model.validate_input_shape(torch.randn(119, 8, 8, dtype=torch.float32))
 
 
+@unittest.skipUnless(_TORCH_AVAILABLE, "torch is required for network head tests")
+class NetworkHeadTests(unittest.TestCase):
+    def test_policy_head_outputs_logits_with_expected_action_dimension(self) -> None:
+        """Guards the policy contract consumed by move selection and loss computation."""
+        head = PolicyHead(
+            num_filters=128,
+            board_shape=GO_CONFIG.board_shape,
+            action_space_size=GO_CONFIG.action_space_size,
+        )
+        features = torch.randn(4, 128, *GO_CONFIG.board_shape, dtype=torch.float32)
+        logits = head(features)
+        self.assertEqual(tuple(logits.shape), (4, GO_CONFIG.action_space_size))
+
+    def test_scalar_value_head_outputs_tanh_bounded_values(self) -> None:
+        """Prevents regressions where scalar heads emit unbounded values outside [-1, 1]."""
+        head = ScalarValueHead(num_filters=256, board_shape=GO_CONFIG.board_shape)
+        features = torch.randn(3, 256, *GO_CONFIG.board_shape, dtype=torch.float32)
+        values = head(features)
+        self.assertEqual(tuple(values.shape), (3, 1))
+        self.assertTrue(torch.all(values >= -1.0).item())
+        self.assertTrue(torch.all(values <= 1.0).item())
+
+    def test_wdl_value_head_outputs_normalized_probabilities(self) -> None:
+        """Ensures chess value output remains a valid categorical distribution."""
+        head = WDLValueHead(num_filters=256, board_shape=CHESS_CONFIG.board_shape)
+        features = torch.randn(5, 256, *CHESS_CONFIG.board_shape, dtype=torch.float32)
+        probabilities = head(features)
+        self.assertEqual(tuple(probabilities.shape), (5, 3))
+        self.assertTrue(torch.all(probabilities >= 0.0).item())
+        self.assertTrue(torch.all(probabilities <= 1.0).item())
+        self.assertTrue(
+            torch.allclose(
+                probabilities.sum(dim=1),
+                torch.ones(probabilities.shape[0], dtype=probabilities.dtype),
+                atol=1e-6,
+            )
+        )
+
+
 @unittest.skipUnless(_TORCH_AVAILABLE, "torch is required for ResNet+SE tests")
 class ResNetSETests(unittest.TestCase):
     def test_small_medium_and_large_profiles_construct_with_expected_depth_and_width(self) -> None:
@@ -141,10 +186,12 @@ class ResNetSETests(unittest.TestCase):
         """Prevents training instability from initialization regressions in critical layers."""
         model = ResNetSE.small(CHESS_CONFIG)
 
-        self.assertTrue(torch.allclose(model.policy_linear.weight, torch.zeros_like(model.policy_linear.weight)))
-        self.assertTrue(torch.allclose(model.policy_linear.bias, torch.zeros_like(model.policy_linear.bias)))
-        self.assertTrue(torch.allclose(model.value_linear.weight, torch.zeros_like(model.value_linear.weight)))
-        self.assertTrue(torch.allclose(model.value_linear.bias, torch.zeros_like(model.value_linear.bias)))
+        self.assertTrue(
+            torch.allclose(model.policy_head.linear.weight, torch.zeros_like(model.policy_head.linear.weight))
+        )
+        self.assertTrue(torch.allclose(model.policy_head.linear.bias, torch.zeros_like(model.policy_head.linear.bias)))
+        self.assertTrue(torch.allclose(model.value_head.linear.weight, torch.zeros_like(model.value_head.linear.weight)))
+        self.assertTrue(torch.allclose(model.value_head.linear.bias, torch.zeros_like(model.value_head.linear.bias)))
 
         self.assertFalse(torch.allclose(model.input_conv.weight, torch.zeros_like(model.input_conv.weight)))
 
@@ -152,6 +199,14 @@ class ResNetSETests(unittest.TestCase):
             if isinstance(module, nn.BatchNorm2d):
                 self.assertTrue(torch.allclose(module.weight, torch.ones_like(module.weight)))
                 self.assertTrue(torch.allclose(module.bias, torch.zeros_like(module.bias)))
+
+    def test_resnet_selects_value_head_variant_for_each_game(self) -> None:
+        """Protects game-specific value semantics by wiring scalar vs WDL heads correctly."""
+        chess_model = ResNetSE.small(CHESS_CONFIG)
+        go_model = ResNetSE.small(GO_CONFIG)
+
+        self.assertIsInstance(chess_model.value_head, WDLValueHead)
+        self.assertIsInstance(go_model.value_head, ScalarValueHead)
 
     def test_forward_shapes_match_contract_for_chess_and_go(self) -> None:
         """Protects the policy/value output contract consumed by MCTS and training."""
