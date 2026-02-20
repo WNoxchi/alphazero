@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: GREENFIELD — no source code exists. All items below are **missing**.
+**Status**: FOUNDATION BOOTSTRAPPED — scaffolding/build system exists; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -23,13 +23,17 @@
 
 ### TASK-001: Create project directory structure and build system
 - **Spec**: `infrastructure.md` §1, §2
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create the full directory tree per `infrastructure.md` §1. Create top-level `CMakeLists.txt` with C++20, CUDA, LibTorch, pybind11, Google Test dependencies. Create `pyproject.toml` with Python 3.11+, torch, tensorboard, pyyaml, numpy, pytest. Create `configs/chess_default.yaml` and `configs/go_default.yaml` per `pipeline.md` §9.
 - **Priority rationale**: Every other task depends on the build system and directory structure existing.
 - **Acceptance criteria**:
   - `cmake --build build` succeeds (even with empty source files / stubs)
   - `pip install -e ".[dev]"` succeeds
   - Directory tree matches `infrastructure.md` §1
+- **Execution notes**:
+  - Full directory scaffold created (C++/Python/tests/scripts/configs) and wired into CMake.
+  - `cmake -S . -B build`, `cmake --build build`, `ctest --test-dir build`, and syntax checks succeeded.
+  - `pip install -e ".[dev]"` could not complete in this sandbox due no package index access for `torch`; editable packaging was validated with `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
 
 ### TASK-002: Define abstract GameState and GameConfig interfaces (C++)
 - **Spec**: `game-interface.md` §2
