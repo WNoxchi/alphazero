@@ -16,6 +16,9 @@ namespace {
 
 using alphazero::chess::ChessPosition;
 using alphazero::chess::ChessState;
+using alphazero::chess::Move;
+using alphazero::chess::action_index_to_semantic_move;
+using alphazero::chess::kActionSpaceSize;
 using alphazero::chess::kBlack;
 using alphazero::chess::kBlackKingSide;
 using alphazero::chess::kBlackQueenSide;
@@ -273,4 +276,48 @@ TEST(ChessEncodingTest, RepetitionPlanesDifferentiateSingleAndMultipleOccurrence
     expect_plane_constant(encoded, first_occurrence + 13, 0.0F);
     expect_plane_constant(encoded, never_reached + 12, 0.0F);
     expect_plane_constant(encoded, never_reached + 13, 0.0F);
+}
+
+// WHY: Policy logits are keyed by flat action ID, so move<->action mapping must remain stable for encoded positions.
+TEST(ChessEncodingTest, ActionIndexMappingRoundTripsForRepresentativePositions) {
+    const std::vector<std::string> fens = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+        "5n1r/6P1/8/8/8/8/8/4K2k w - - 0 1",
+        "4k3/8/8/8/8/8/1p6/4K3 b - - 0 1",
+    };
+
+    for (const std::string& fen : fens) {
+        const ChessState state = ChessState::from_fen(fen);
+        const std::vector<int> legal_actions = state.legal_actions();
+        ASSERT_FALSE(legal_actions.empty()) << "fen=" << fen;
+
+        for (int action : legal_actions) {
+            ASSERT_GE(action, 0);
+            ASSERT_LT(action, kActionSpaceSize);
+
+            const std::optional<Move> decoded = action_index_to_semantic_move(state.position(), action);
+            ASSERT_TRUE(decoded.has_value()) << "fen=" << fen << " action=" << action;
+
+            const int round_trip =
+                alphazero::chess::semantic_move_to_action_index(decoded.value(), state.position().side_to_move);
+            EXPECT_EQ(round_trip, action) << "fen=" << fen << " action=" << action;
+        }
+    }
+}
+
+// WHY: FEN identity guarantees that encoded test fixtures and logged positions can be reproduced exactly.
+TEST(ChessEncodingTest, FenRoundTripPreservesCanonicalStateText) {
+    const std::vector<std::string> fens = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/8/3k4/8/3Pp3/8/4K3/8 b - d3 12 57",
+        "4k3/8/8/8/8/8/8/4K3 b - - 83 119",
+    };
+
+    for (const std::string& fen : fens) {
+        const ChessState state = ChessState::from_fen(fen);
+        EXPECT_EQ(state.to_fen(), fen);
+    }
 }
