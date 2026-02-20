@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 through TASK-012 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -103,13 +103,20 @@
 
 ### TASK-012: Implement ChessState (GameState for chess)
 - **Spec**: `game-interface.md` §2, §4, §5
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/chess/chess_state.h` and `chess_state.cpp`. Implement `ChessState` inheriting from `GameState`. Implement `apply_action()` (make move, update bitboards, castling rights, en passant, halfmove clock, repetition tracking). Implement `legal_actions()` using movegen. Implement `is_terminal()` checking checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, max game length (512). Implement `outcome()` returning +1/-1/0. Implement `current_player()`. Implement history management using copy-on-write or inline ring buffer (spec recommends inline buffer for chess). Implement `clone()` and `hash()` (Zobrist). Implement `to_string()`. Create `chess_config.cpp` with `ChessGameConfig` (board 8x8, 119 input planes, 4672 actions, WDL value head, no symmetry).
 - **Priority rationale**: Needed by MCTS and self-play to play chess games.
 - **Acceptance criteria**:
   - All terminal conditions detected correctly
   - History tracking supports T=8 positions
   - GameConfig values match spec exactly
+- **Execution notes**:
+  - Replaced chess state scaffolds with a full immutable `ChessState` implementation in `src/games/chess/chess_state.h` and `src/games/chess/chess_state.cpp`, including legal action application via action-index decode, repetition tracking via Zobrist-hash counts, inline T=8 history ring buffering, terminal detection, outcome scoring, cloning, hashing, human-readable rendering, and tensor encoding.
+  - Added `src/games/chess/chess_config.h` and implemented `ChessGameConfig` in `src/games/chess/chess_config.cpp` with spec-accurate chess dimensions (`8x8`, `14*8+7=119` channels), action space (`4672`), value head (`WDL`), Dirichlet alpha (`0.3`), and max game length (`512`).
+  - Added `tests/cpp/test_chess_state.cpp` with rationale-rich tests covering config correctness, immutable transition behavior, checkmate vs stalemate outcomes, draw-rule terminal paths (50-move, repetition, insufficient material, max-length), and T=8 history buffer behavior.
+  - Updated `tests/cpp/CMakeLists.txt` to include `test_chess_state.cpp`.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=ChessStateTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-013: Implement chess input encoding
 - **Spec**: `game-interface.md` §5 (Input Encoding)

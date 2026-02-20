@@ -16,6 +16,7 @@ if(ALPHAZERO_HAS_GTEST)
         test_game_interfaces.cpp
         test_chess_bitboard.cpp
         test_chess_movegen.cpp
+        test_chess_state.cpp
         test_chess_encoding.cpp
         test_go_rules.cpp
         test_go_encoding.cpp
