@@ -1,5 +1,7 @@
+#include "games/go/go_rules.h"
 #include "games/go/go_state.h"
 
+#include <algorithm>
 #include <cstdint>
 
 #include <gtest/gtest.h>
@@ -7,12 +9,17 @@
 namespace {
 
 using alphazero::go::GoPosition;
+using alphazero::go::MoveStatus;
+using alphazero::go::StoneGroup;
 using alphazero::go::kBlack;
 using alphazero::go::kBoardArea;
 using alphazero::go::kBoardSize;
 using alphazero::go::kDefaultKomi;
 using alphazero::go::kEmpty;
+using alphazero::go::kPassAction;
 using alphazero::go::kWhite;
+
+[[nodiscard]] constexpr int I(int row, int col) { return alphazero::go::to_intersection(row, col); }
 
 }  // namespace
 
@@ -117,7 +124,7 @@ TEST(GoStateRepresentationTest, IncrementalStoneHashUpdatesMatchFullBoardHash) {
     EXPECT_EQ(incremental_hash, before_toggle_twice);
 }
 
-// WHY: Position-history membership is the mechanism positional superko checks will depend on in the next task.
+// WHY: Position-history membership is the mechanism positional superko checks depend on.
 TEST(GoStateRepresentationTest, PositionHistoryTracksRepeatedBoardHashes) {
     GoPosition position{};
     const std::uint64_t initial_hash = alphazero::go::zobrist_board_hash(position);
@@ -135,4 +142,138 @@ TEST(GoStateRepresentationTest, PositionHistoryTracksRepeatedBoardHashes) {
     EXPECT_TRUE(position.position_history.contains(advanced_hash));
     EXPECT_TRUE(position.position_history.contains(returned_hash));
     EXPECT_EQ(returned_hash, initial_hash);
+}
+
+// WHY: Union-find group metadata underpins liberty tracking and must report unique liberties for connected chains.
+TEST(GoRulesEngineTest, UnionFindLibertyTrackingReportsConnectedGroupsAndUniqueLiberties) {
+    GoPosition position{};
+    alphazero::go::set_stone(&position, I(3, 3), kBlack);
+    alphazero::go::set_stone(&position, I(3, 4), kBlack);
+    alphazero::go::set_stone(&position, I(2, 3), kWhite);
+
+    const std::vector<StoneGroup> groups = alphazero::go::compute_stone_groups(position);
+    const auto two_stone_group = std::find_if(groups.begin(), groups.end(), [](const StoneGroup& group) {
+        return group.stone_count == 2;
+    });
+
+    ASSERT_NE(two_stone_group, groups.end());
+    EXPECT_EQ(two_stone_group->liberty_count, 5);
+    EXPECT_EQ(alphazero::go::liberties_for_intersection(position, I(3, 3)), 5);
+    EXPECT_EQ(alphazero::go::liberties_for_intersection(position, I(3, 4)), 5);
+}
+
+// WHY: Single-stone capture correctness is the baseline tactical rule required for all gameplay.
+TEST(GoRulesEngineTest, PlayActionCapturesSingleStoneAndUpdatesTurnState) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+    alphazero::go::set_stone(&position, I(10, 10), kWhite);
+    alphazero::go::set_stone(&position, I(9, 10), kBlack);
+    alphazero::go::set_stone(&position, I(10, 9), kBlack);
+    alphazero::go::set_stone(&position, I(10, 11), kBlack);
+
+    const auto result = alphazero::go::play_action(position, I(11, 10));
+    ASSERT_TRUE(result.legal());
+    EXPECT_EQ(result.status, MoveStatus::kLegal);
+    EXPECT_EQ(result.captured_stones, 1);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 10)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 10)), kBlack);
+    EXPECT_EQ(result.position.side_to_move, kWhite);
+    EXPECT_EQ(result.position.move_number, 1);
+    EXPECT_EQ(result.position.consecutive_passes, 0);
+    EXPECT_EQ(result.position.ko_point, -1);
+}
+
+// WHY: Multi-stone capture ensures the engine removes entire groups, not just directly-adjacent stones.
+TEST(GoRulesEngineTest, PlayActionCapturesMultiStoneGroupInOneMove) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+    alphazero::go::set_stone(&position, I(10, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 11), kWhite);
+    alphazero::go::set_stone(&position, I(11, 10), kWhite);
+    alphazero::go::set_stone(&position, I(9, 10), kBlack);
+    alphazero::go::set_stone(&position, I(10, 9), kBlack);
+    alphazero::go::set_stone(&position, I(9, 11), kBlack);
+    alphazero::go::set_stone(&position, I(10, 12), kBlack);
+    alphazero::go::set_stone(&position, I(11, 9), kBlack);
+    alphazero::go::set_stone(&position, I(12, 10), kBlack);
+
+    const auto result = alphazero::go::play_action(position, I(11, 11));
+    ASSERT_TRUE(result.legal());
+    EXPECT_EQ(result.captured_stones, 3);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 10)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 11)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 10)), kEmpty);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(11, 11)), kBlack);
+}
+
+// WHY: Ko tracking must forbid immediate single-stone recapture that would recreate the previous board.
+TEST(GoRulesEngineTest, KoRecaptureIsBlockedAtTrackedKoPoint) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+    alphazero::go::set_stone(&position, I(9, 10), kWhite);
+    alphazero::go::set_stone(&position, I(11, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 9), kWhite);
+    alphazero::go::set_stone(&position, I(10, 11), kWhite);
+    alphazero::go::set_stone(&position, I(9, 11), kBlack);
+    alphazero::go::set_stone(&position, I(11, 11), kBlack);
+    alphazero::go::set_stone(&position, I(10, 12), kBlack);
+
+    const auto capture = alphazero::go::play_action(position, I(10, 10));
+    ASSERT_TRUE(capture.legal());
+    ASSERT_EQ(capture.position.ko_point, I(10, 11));
+    EXPECT_EQ(capture.captured_stones, 1);
+
+    const auto illegal_recapture = alphazero::go::play_action(capture.position, I(10, 11));
+    EXPECT_FALSE(illegal_recapture.legal());
+    EXPECT_EQ(illegal_recapture.status, MoveStatus::kKoViolation);
+    EXPECT_EQ(alphazero::go::stone_at(illegal_recapture.position, I(10, 11)), kEmpty);
+}
+
+// WHY: Positional superko must reject any move that recreates a historical board state, not just immediate ko.
+TEST(GoRulesEngineTest, PositionalSuperkoRejectsMovesThatRecreatePriorBoardHash) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+
+    GoPosition historical = position;
+    alphazero::go::set_stone(&historical, I(6, 6), kBlack);
+    position.position_history.insert(alphazero::go::zobrist_board_hash(historical));
+
+    const auto result = alphazero::go::play_action(position, I(6, 6));
+    EXPECT_FALSE(result.legal());
+    EXPECT_EQ(result.status, MoveStatus::kSuperkoViolation);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(6, 6)), kEmpty);
+}
+
+// WHY: Suicide prevention is a core legality rule and must reject moves that leave own group without liberties.
+TEST(GoRulesEngineTest, SelfCaptureIsRejectedWhenNoOpponentGroupIsCaptured) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+    alphazero::go::set_stone(&position, I(9, 10), kWhite);
+    alphazero::go::set_stone(&position, I(11, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 9), kWhite);
+    alphazero::go::set_stone(&position, I(10, 11), kWhite);
+
+    const auto result = alphazero::go::play_action(position, I(10, 10));
+    EXPECT_FALSE(result.legal());
+    EXPECT_EQ(result.status, MoveStatus::kSelfCapture);
+    EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 10)), kEmpty);
+}
+
+// WHY: Pass handling drives Go game termination; two consecutive passes must be detectable as terminal.
+TEST(GoRulesEngineTest, PassesIncrementCounterAndTwoPassesEndTheGame) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+
+    const auto first_pass = alphazero::go::play_action(position, kPassAction);
+    ASSERT_TRUE(first_pass.legal());
+    EXPECT_EQ(first_pass.position.side_to_move, kWhite);
+    EXPECT_EQ(first_pass.position.consecutive_passes, 1);
+    EXPECT_EQ(first_pass.position.ko_point, -1);
+    EXPECT_FALSE(alphazero::go::passes_end_game(first_pass.position));
+
+    const auto second_pass = alphazero::go::play_action(first_pass.position, kPassAction);
+    ASSERT_TRUE(second_pass.legal());
+    EXPECT_EQ(second_pass.position.side_to_move, kBlack);
+    EXPECT_EQ(second_pass.position.consecutive_passes, 2);
+    EXPECT_TRUE(alphazero::go::passes_end_game(second_pass.position));
 }

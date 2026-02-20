@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-021 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -168,7 +168,7 @@
 
 ### TASK-021: Implement Go rules engine
 - **Spec**: `game-interface.md` §6 (Go Rules Implementation, Liberty Tracking)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/go/go_rules.h` and `go_rules.cpp`. Implement liberty tracking using union-find (disjoint set) with `StoneGroup` struct (representative, liberty count, stone count). Implement stone placement: merge with adjacent same-color groups, subtract liberties from opponent groups, capture groups with zero liberties, verify no self-capture. Implement ko detection (single-stone recapture prohibition). Implement superko detection (positional — no repeated board positions using hash set). Implement pass logic (two consecutive passes end game). Implement self-capture prohibition.
 - **Priority rationale**: Go state depends on correct rules engine.
 - **Acceptance criteria**:
@@ -177,6 +177,14 @@
   - Superko correctly detected
   - Self-capture correctly prohibited
   - Liberty counts accurate after all operations
+- **Execution notes**:
+  - Replaced scaffold Go rules files with a complete rules engine in `src/games/go/go_rules.h` and `src/games/go/go_rules.cpp`.
+  - Added a concrete API for Go move processing (`MoveStatus`, `MoveResult`, `play_action`, `play_pass`, legality helpers) so future `GoState` code can consume validated rule transitions directly.
+  - Implemented union-find-based board analysis (`StoneGroup`) to track connected groups, unique liberties, and stones-per-group; exposed `compute_stone_groups()` and `liberties_for_intersection()` for verification and downstream use.
+  - Implemented full stone-placement semantics: same-color group merging, opponent group capture when liberties reach zero, self-capture rejection, ko-point detection on single-stone ko captures, positional superko checks via board-hash history, and pass handling with consecutive-pass termination signal.
+  - Expanded `tests/cpp/test_go_rules.cpp` with rationale-rich rules tests covering liberty accounting, single/multi-stone captures, ko recapture blocking, positional superko rejection, self-capture rejection, and two-pass game termination while retaining existing Go representation/hash invariants.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=GoStateRepresentationTest.*:GoRulesEngineTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-022: Implement Tromp-Taylor scoring
 - **Spec**: `game-interface.md` §6 (Scoring)
