@@ -29,6 +29,7 @@ if(ALPHAZERO_HAS_GTEST)
         test_arena.cpp
         test_self_play_game.cpp
         test_self_play_manager.cpp
+        test_libtorch_inference.cpp
     )
     target_compile_features(alphazero_cpp_tests PRIVATE cxx_std_20)
     target_link_libraries(alphazero_cpp_tests PRIVATE alphazero_engine GTest::gtest_main)

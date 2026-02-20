@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-052 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-053 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -518,13 +518,21 @@
 
 ### TASK-053: Implement NeuralNetInference (C++ libtorch)
 - **Spec**: `neural-network.md` §2 (C++ Inference Interface)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/nn/nn_inference.h` (abstract interface: `infer()`, `load_weights()`). Create `src/nn/libtorch_inference.h` and `libtorch_inference.cpp`. Implement batch inference using libtorch: load TorchScript model, run forward pass on GPU. Input/output in unified memory (no cudaMemcpy). Support loading new weights on checkpoint update.
 - **Priority rationale**: Self-play eval queue needs C++ NN inference.
 - **Acceptance criteria**:
   - Batch inference produces correct policy logits and value for known inputs
   - Weight loading from checkpoint file works
   - Unified memory — no explicit GPU memory transfers
+- **Execution notes**:
+  - Implemented the abstract C++ inference interface in `src/nn/nn_inference.h` with the required `infer()` and `load_weights()` contracts.
+  - Replaced `src/nn/libtorch_inference.h` and `src/nn/libtorch_inference.cpp` scaffolds with a production `LibTorchInference` implementation: game-shape validation, thread-safe inference/load-weights paths, TorchScript `(policy, value)` output unpacking, scalar/WDL shape handling, and value-head-size derivation from `GameConfig`.
+  - Added explicit no-LibTorch fallback behavior so builds without Torch fail fast with actionable runtime errors, while Torch-enabled builds load/checkpoint-swap models and run batched inference.
+  - Updated CMake wiring in `src/CMakeLists.txt` to export `ALPHAZERO_HAS_TORCH` as a compile definition, forward Torch include dirs/compile flags when available, and keep fallback compilation deterministic when Torch is missing.
+  - Added `tests/cpp/test_libtorch_inference.cpp` and registered it in `tests/cpp/CMakeLists.txt`; coverage includes config/input validation, backend-missing behavior, and (when Torch is available) known-input batch inference correctness for scalar + WDL heads and checkpoint reload behavior.
+  - Validation passed: `cmake -S . -B build`, `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R "LibTorchInferenceTest|cpp_scaffold_smoke"`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-054: Implement pybind11 bindings
 - **Spec**: `infrastructure.md` §1 (bindings/), `overview.md` §4
