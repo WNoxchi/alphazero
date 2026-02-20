@@ -1,4 +1,5 @@
 #include "games/go/go_rules.h"
+#include "games/go/scoring.h"
 #include "games/go/go_state.h"
 
 #include <algorithm>
@@ -276,4 +277,69 @@ TEST(GoRulesEngineTest, PassesIncrementCounterAndTwoPassesEndTheGame) {
     EXPECT_EQ(second_pass.position.side_to_move, kBlack);
     EXPECT_EQ(second_pass.position.consecutive_passes, 2);
     EXPECT_TRUE(alphazero::go::passes_end_game(second_pass.position));
+}
+
+// WHY: Tromp-Taylor scoring must combine occupied points, enclosed territory ownership, and komi exactly.
+TEST(GoScoringTest, CountsOccupiedAndExclusiveTerritoryAndAppliesKomi) {
+    GoPosition position{};
+    position.komi = 3.5F;
+
+    // Black encloses a single-point territory at (3, 3).
+    alphazero::go::set_stone(&position, I(2, 3), kBlack);
+    alphazero::go::set_stone(&position, I(3, 2), kBlack);
+    alphazero::go::set_stone(&position, I(3, 4), kBlack);
+    alphazero::go::set_stone(&position, I(4, 3), kBlack);
+
+    // White encloses a single-point territory at (10, 10).
+    alphazero::go::set_stone(&position, I(9, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 9), kWhite);
+    alphazero::go::set_stone(&position, I(10, 11), kWhite);
+    alphazero::go::set_stone(&position, I(11, 10), kWhite);
+
+    const auto score = alphazero::go::compute_tromp_taylor_score(position);
+
+    EXPECT_EQ(score.black_points, 5);
+    EXPECT_EQ(score.white_points, 5);
+    EXPECT_FLOAT_EQ(score.komi, 3.5F);
+    EXPECT_FLOAT_EQ(score.final_score, -3.5F);
+    EXPECT_EQ(score.winner(), kWhite);
+}
+
+// WHY: Empty regions adjacent to both colors are neutral and must not be awarded to either side.
+TEST(GoScoringTest, SharedEmptyRegionIsNeutral) {
+    GoPosition position{};
+    position.komi = 0.0F;
+
+    // Surround a single empty point with both colors.
+    alphazero::go::set_stone(&position, I(9, 8), kBlack);
+    alphazero::go::set_stone(&position, I(8, 9), kBlack);
+    alphazero::go::set_stone(&position, I(9, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 9), kWhite);
+
+    const auto score = alphazero::go::compute_tromp_taylor_score(position);
+
+    EXPECT_EQ(score.black_points, 2);
+    EXPECT_EQ(score.white_points, 2);
+    EXPECT_FLOAT_EQ(score.final_score, 0.0F);
+    EXPECT_EQ(score.winner(), kEmpty);
+}
+
+// WHY: Known extreme positions protect against off-by-one territory/occupancy bugs in flood-fill scoring.
+TEST(GoScoringTest, EmptyAndFullBoardKnownResults) {
+    GoPosition empty{};
+    const auto empty_score = alphazero::go::compute_tromp_taylor_score(empty);
+    EXPECT_EQ(empty_score.black_points, 0);
+    EXPECT_EQ(empty_score.white_points, 0);
+    EXPECT_FLOAT_EQ(empty_score.final_score, -kDefaultKomi);
+    EXPECT_EQ(empty_score.winner(), kWhite);
+
+    GoPosition full_black{};
+    for (int intersection = 0; intersection < kBoardArea; ++intersection) {
+        alphazero::go::set_stone(&full_black, intersection, kBlack);
+    }
+    const auto full_black_score = alphazero::go::compute_tromp_taylor_score(full_black);
+    EXPECT_EQ(full_black_score.black_points, kBoardArea);
+    EXPECT_EQ(full_black_score.white_points, 0);
+    EXPECT_FLOAT_EQ(full_black_score.final_score, static_cast<float>(kBoardArea) - kDefaultKomi);
+    EXPECT_EQ(full_black_score.winner(), kBlack);
 }

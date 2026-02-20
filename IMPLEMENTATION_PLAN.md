@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-021 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-022 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -188,12 +188,19 @@
 
 ### TASK-022: Implement Tromp-Taylor scoring
 - **Spec**: `game-interface.md` §6 (Scoring)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/go/scoring.h` and `scoring.cpp`. Implement Tromp-Taylor scoring: a point scores for a color if occupied by that color or reachable only by that color via empty intersections. Final score = black_points - white_points - komi. Implement area detection via flood fill from each empty intersection.
 - **Priority rationale**: Required for Go game termination and outcome calculation.
 - **Acceptance criteria**:
   - Scoring matches known game results
   - Handles all edge cases (seki, territory with dead stones, etc.)
+- **Execution notes**:
+  - Replaced scoring scaffolds with a complete Tromp-Taylor implementation in `src/games/go/scoring.h` and `src/games/go/scoring.cpp`.
+  - Added a reusable `TrompTaylorScore` result contract (black points, white points, komi, final score, and winner helper) for downstream Go terminal/outcome integration.
+  - Implemented empty-region flood fill to classify territory ownership by reachable boundary colors, awarding territory only for exclusive reachability and leaving shared/no-color regions neutral.
+  - Expanded `tests/cpp/test_go_rules.cpp` with rationale-rich scoring tests covering occupied+territory accounting with komi, shared neutral-region behavior (seki/dame-style edge case), and known empty/full-board results.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=GoRulesEngineTest.*:GoScoringTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-023: Implement GoState (GameState for Go)
 - **Spec**: `game-interface.md` §2, §4, §6
