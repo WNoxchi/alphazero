@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-082 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-083 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -842,9 +842,14 @@
 
 ### TASK-083: Implement Go encoding tests
 - **Spec**: `game-interface.md` §8, `infrastructure.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `tests/cpp/test_go_encoding.cpp`. Verify input tensor for known positions. Verify all 8 symmetry transforms. Verify policy vector transforms consistent with board transforms.
 - **Acceptance criteria**: All Go encoding and symmetry tests pass
+- **Execution notes**:
+  - Extended `tests/cpp/test_go_encoding.cpp` with rationale-rich known-position tensor checks in `EncodeMatchesKnownPositionsForBlackAndWhiteToMove`, validating `(17, 19, 19)` layout, perspective-relative current/opponent planes, zero-filled pregame history planes, and the black/white color constant plane contract.
+  - Kept and validated existing symmetry coverage in the same suite for all 8 D4 transforms, pass-action invariance, and policy/board transform consistency across channels.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R GoEncodingTest`, `ctest --test-dir build --output-on-failure`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`ruff: not installed`).
 
 ### TASK-084: Implement MCTS tests
 - **Spec**: `infrastructure.md` §4

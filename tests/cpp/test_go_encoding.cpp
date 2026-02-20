@@ -11,18 +11,52 @@
 namespace {
 
 using alphazero::go::GoGameConfig;
+using alphazero::go::GoPosition;
+using alphazero::go::GoState;
 using alphazero::go::kActionSpaceSize;
 using alphazero::go::kBoardArea;
 using alphazero::go::kBoardSize;
+using alphazero::go::kBlack;
 using alphazero::go::kPassAction;
+using alphazero::go::kWhite;
 
 [[nodiscard]] constexpr int tensor_index(int channel, int row, int col, int rows, int cols) {
     return ((channel * rows) + row) * cols + col;
 }
 
+[[nodiscard]] constexpr int intersection(int row, int col) { return alphazero::go::to_intersection(row, col); }
+
 [[nodiscard]] constexpr int row_from_action(int action) { return action / kBoardSize; }
 [[nodiscard]] constexpr int col_from_action(int action) { return action % kBoardSize; }
 [[nodiscard]] constexpr int action_from_row_col(int row, int col) { return (row * kBoardSize) + col; }
+
+[[nodiscard]] constexpr int encoded_index(int plane, int location) { return (plane * kBoardArea) + location; }
+
+[[nodiscard]] float encoded_value(const std::vector<float>& encoded, int plane, int location) {
+    return encoded[static_cast<std::size_t>(encoded_index(plane, location))];
+}
+
+void expect_plane_matches(const std::vector<float>& encoded, int plane, const std::vector<int>& intersections_with_stones) {
+    std::vector<bool> expected(static_cast<std::size_t>(kBoardArea), false);
+    for (int location : intersections_with_stones) {
+        if (location >= 0 && location < kBoardArea) {
+            expected[static_cast<std::size_t>(location)] = true;
+        }
+    }
+
+    for (int location = 0; location < kBoardArea; ++location) {
+        const float expected_value = expected[static_cast<std::size_t>(location)] ? 1.0F : 0.0F;
+        EXPECT_FLOAT_EQ(encoded_value(encoded, plane, location), expected_value)
+            << "plane=" << plane << " intersection=" << location;
+    }
+}
+
+void expect_plane_constant(const std::vector<float>& encoded, int plane, float expected_value) {
+    for (int location = 0; location < kBoardArea; ++location) {
+        EXPECT_FLOAT_EQ(encoded_value(encoded, plane, location), expected_value)
+            << "plane=" << plane << " intersection=" << location;
+    }
+}
 
 [[nodiscard]] constexpr int apply_dihedral_transform(int action, int transform_id) {
     const int row = row_from_action(action);
@@ -77,6 +111,41 @@ using alphazero::go::kPassAction;
 }
 
 }  // namespace
+
+// WHY: Go NN inputs must encode known board states exactly, including perspective swap and color constant plane.
+TEST(GoEncodingTest, EncodeMatchesKnownPositionsForBlackAndWhiteToMove) {
+    GoPosition black_to_move{};
+    black_to_move.side_to_move = kBlack;
+    alphazero::go::set_stone(&black_to_move, intersection(3, 3), kBlack);
+    alphazero::go::set_stone(&black_to_move, intersection(10, 10), kBlack);
+    alphazero::go::set_stone(&black_to_move, intersection(4, 3), kWhite);
+    alphazero::go::set_stone(&black_to_move, intersection(11, 10), kWhite);
+
+    const GoState black_state(black_to_move);
+    std::vector<float> black_encoded(GoState::kTotalInputChannels * kBoardArea, -1.0F);
+    black_state.encode(black_encoded.data());
+
+    ASSERT_EQ(black_encoded.size(), static_cast<std::size_t>(17 * kBoardArea));
+    expect_plane_matches(black_encoded, 0, {intersection(3, 3), intersection(10, 10)});
+    expect_plane_matches(black_encoded, 1, {intersection(4, 3), intersection(11, 10)});
+    for (int history_index = 1; history_index < GoState::kHistorySteps; ++history_index) {
+        const int plane_base = history_index * GoState::kPlanesPerStep;
+        expect_plane_constant(black_encoded, plane_base + 0, 0.0F);
+        expect_plane_constant(black_encoded, plane_base + 1, 0.0F);
+    }
+    expect_plane_constant(black_encoded, GoState::kTotalInputChannels - 1, 1.0F);
+
+    GoPosition white_to_move = black_to_move;
+    white_to_move.side_to_move = kWhite;
+
+    const GoState white_state(white_to_move);
+    std::vector<float> white_encoded(GoState::kTotalInputChannels * kBoardArea, -1.0F);
+    white_state.encode(white_encoded.data());
+
+    expect_plane_matches(white_encoded, 0, {intersection(4, 3), intersection(11, 10)});
+    expect_plane_matches(white_encoded, 1, {intersection(3, 3), intersection(10, 10)});
+    expect_plane_constant(white_encoded, GoState::kTotalInputChannels - 1, 0.0F);
+}
 
 // WHY: Go augmentation relies on exactly the D4 symmetry group; wrong permutations silently corrupt training labels.
 TEST(GoEncodingTest, SymmetriesExposeAllEightDihedralPolicyPermutationsWithInvariantPass) {
