@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 through TASK-071 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 through TASK-072 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -765,12 +765,23 @@
 
 ### TASK-072: Implement benchmark script (benchmark.py)
 - **Spec**: `infrastructure.md` §6 (Performance Benchmarking)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `scripts/benchmark.py`. Benchmark inference throughput (positions/sec at various batch sizes). Benchmark training throughput (steps/sec). Benchmark MCTS throughput (sims/sec with various thread configs). Output results for tuning pipeline parameters.
 - **Priority rationale**: Important for tuning but not blocking initial training.
 - **Acceptance criteria**:
   - Reports inference, training, and MCTS throughput
   - Supports configurable batch sizes and thread counts
+- **Execution notes**:
+  - Replaced scaffold `scripts/benchmark.py` with a full benchmark CLI supporting `--mode {inference,training,mcts,all}`, `--game`, comma-separated grids (`--batch-sizes`, `--games`, `--threads`), and configurable warmup/timed sampling windows.
+  - Implemented inference throughput benchmarking (positions/sec + latency) and training throughput benchmarking (steps/sec + positions/sec + latency) using configurable network shapes, device selection, mixed-precision toggling, and reproducibility seed controls.
+  - Implemented MCTS throughput benchmarking over `games × threads` configurations using `SelfPlayManager`, reporting simulations/sec, moves/sec, and games/hour for tuning `concurrent_games` and `threads_per_game`.
+  - Added rationale-rich tests in `tests/python/test_benchmark_script.py` covering CSV grid parsing, warmup-vs-timed measurement semantics, mode dispatch wiring for configured batch/thread grids, and text report rendering contracts.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_benchmark_script.py`,
+    - `python3 -m mypy --ignore-missing-imports scripts/benchmark.py tests/python/test_benchmark_script.py`,
+    - `python3 -m compileall -q python scripts tests`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check scripts/benchmark.py tests/python/test_benchmark_script.py`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-073: Implement model export script (export_model.py)
 - **Spec**: `infrastructure.md` §1 (scripts/)
