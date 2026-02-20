@@ -686,12 +686,28 @@
 
 ### TASK-064: Implement periodic Elo estimation
 - **Spec**: `pipeline.md` §8 (Elo Estimation)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/pipeline/evaluation.py`. Every 10K training steps, run evaluation match: current network vs milestone checkpoint, 100 sims/move, 50-100 games. Estimate Elo difference. Log as `eval/elo_vs_step_N`. Non-gating (monitoring only).
 - **Priority rationale**: Provides human-readable training progress. Not blocking.
 - **Acceptance criteria**:
   - Evaluation matches run and produce Elo estimates
   - Results logged to TensorBoard
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/pipeline/evaluation.py` with a full periodic Elo module including:
+    - `EvaluationConfig` + YAML/config loading defaults (`10k` steps, `50` games, `100` sims/move),
+    - milestone checkpoint discovery/parsing utilities (`milestone_XXXXXXXX.pt`),
+    - match outcome normalization/validation and logistic Elo estimation,
+    - `PeriodicEloEvaluator` state machine for non-gating periodic evaluation with duplicate-step suppression and scalar emission under `eval/elo_vs_step_N`.
+  - Updated `python/alphazero/pipeline/__init__.py` exports to include periodic evaluation APIs.
+  - Added `TensorBoardMetricsLogger.log_scalar()` in `python/alphazero/utils/logging.py` to support ad-hoc scalar telemetry (including Elo tags) without bypassing logger abstractions.
+  - Added rationale-rich tests in `tests/python/test_evaluation.py` for config loading, milestone selection, Elo math, periodic scheduling, logging behavior, and mismatch/error paths.
+  - Extended `tests/python/test_logging.py` with custom-scalar coverage for evaluation tags.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_evaluation.py tests/python/test_logging.py tests/python/test_orchestrator.py` (`test_orchestrator.py` includes 3 torch-gated skips in this sandbox),
+    - `python3 -m mypy --ignore-missing-imports python/alphazero/pipeline/evaluation.py python/alphazero/pipeline/__init__.py python/alphazero/utils/logging.py tests/python/test_evaluation.py tests/python/test_logging.py`,
+    - `python3 -m compileall -q python tests scripts`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ---
 

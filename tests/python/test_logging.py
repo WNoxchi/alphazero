@@ -235,6 +235,23 @@ class TensorBoardMetricsLoggerTests(unittest.TestCase):
             self.assertTrue(logger.run_dir.exists())
             logger.close()
 
+    def test_log_scalar_records_custom_metric_tags_for_evaluation(self) -> None:
+        """WHY: Periodic Elo telemetry uses custom tags that are outside fixed training/self-play metric sets."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            factory = _WriterFactory()
+            logger = TensorBoardMetricsLogger(
+                "eval_run",
+                log_dir=pathlib.Path(temp_dir) / "logs",
+                writer_factory=factory,
+                console_stream=None,
+            )
+
+            logger.log_scalar("eval/elo_vs_step_50000", 123.4, step=60_000)
+
+            writer = factory.created[0]
+            self.assertIn(("eval/elo_vs_step_50000", 123.4, 60_000), writer.scalars)
+            logger.close()
+
 
 if __name__ == "__main__":
     unittest.main()

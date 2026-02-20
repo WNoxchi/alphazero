@@ -255,6 +255,18 @@ class TensorBoardMetricsLogger:
         for tag, value in metrics.items():
             self._writer.add_scalar(tag, value, step)
 
+    def log_scalar(self, tag: str, value: object, step: int) -> None:
+        """Log a single scalar metric, used for ad-hoc telemetry like Elo estimates."""
+
+        if not isinstance(tag, str):
+            raise TypeError(f"tag must be a string, got {type(tag).__name__}")
+        normalized_tag = tag.strip()
+        if not normalized_tag:
+            raise ValueError("tag must not be empty")
+        normalized_step = _coerce_step(step)
+        normalized_value = _coerce_scalar(normalized_tag, value)
+        self._writer.add_scalar(normalized_tag, normalized_value, normalized_step)
+
     def log_training_metrics(
         self,
         step: int,
