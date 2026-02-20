@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 through TASK-072 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 through TASK-073 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -785,11 +785,22 @@
 
 ### TASK-073: Implement model export script (export_model.py)
 - **Spec**: `infrastructure.md` §1 (scripts/)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `scripts/export_model.py`. Export trained model for deployment (TorchScript, ONNX, or similar).
 - **Priority rationale**: Post-training utility. Lowest priority.
 - **Acceptance criteria**:
   - Exports model in a format usable by inference engine
+- **Execution notes**:
+  - Replaced scaffold `scripts/export_model.py` with a full export CLI that loads a training checkpoint, reconstructs `ResNetSE` architecture from YAML config and/or CLI overrides, and exports deployment artifacts in `torchscript` or `onnx` format.
+  - Implemented explicit export controls for output path resolution, overwrite protection, trace batch size, target device, optional BN folding (`--fold-bn`), ONNX opset selection, and dynamic batch-axis metadata for ONNX exports.
+  - Reused existing project utilities (`load_checkpoint`, `export_folded_model`, `load_yaml_config`, `get_game_config`) to keep export behavior consistent with train/play runtime assumptions.
+  - Added rationale-rich tests in `tests/python/test_export_model_script.py` covering architecture resolution from config, checkpoint load wiring, TorchScript export dispatch with BN folding, ONNX dynamic-axis export behavior, and required game-context validation.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_export_model_script.py`,
+    - `python3 -m mypy --ignore-missing-imports scripts/export_model.py tests/python/test_export_model_script.py`,
+    - `python3 -m compileall -q python scripts tests`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check scripts/export_model.py tests/python/test_export_model_script.py`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ---
 
