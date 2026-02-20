@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-085 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-086 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -874,9 +874,14 @@
 
 ### TASK-086: Implement arena node store tests
 - **Spec**: `infrastructure.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `tests/cpp/test_arena.cpp`. Test allocation, release_subtree, reset, memory tracking.
 - **Acceptance criteria**: All allocation and deallocation tests pass
+- **Execution notes**:
+  - Extended `tests/cpp/test_arena.cpp` with rationale-rich coverage for explicit memory-accounting checks after subtree deallocation/reuse flows and a defensive out-of-range `release_subtree()` rejection path.
+  - Verified the arena suite now covers all required acceptance behavior in one place: allocation ordering/capacity, subtree release semantics, allocator rewind/reset, and deallocation memory tracking.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=ArenaNodeStoreTest.*`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-087: Implement replay buffer tests
 - **Spec**: `infrastructure.md` §4

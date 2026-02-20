@@ -69,6 +69,7 @@ TEST(ArenaNodeStoreTest, ReleaseSubtreeFreesOnlyDescendantsAndReusesIds) {
     store.release_subtree(left);
 
     EXPECT_EQ(store.nodes_allocated(), 2U);
+    EXPECT_EQ(store.memory_used_bytes(), 2U * sizeof(alphazero::mcts::MCTSNode));
     EXPECT_NO_THROW(static_cast<void>(store.get(root)));
     EXPECT_NO_THROW(static_cast<void>(store.get(right)));
     EXPECT_THROW(static_cast<void>(store.get(left)), std::out_of_range);
@@ -81,6 +82,7 @@ TEST(ArenaNodeStoreTest, ReleaseSubtreeFreesOnlyDescendantsAndReusesIds) {
     EXPECT_EQ(recycled_ids.size(), 2U);
     EXPECT_TRUE(recycled_ids.contains(left));
     EXPECT_TRUE(recycled_ids.contains(left_grandchild));
+    EXPECT_EQ(store.memory_used_bytes(), 4U * sizeof(alphazero::mcts::MCTSNode));
 }
 
 // WHY: Tree reuse after move selection must preserve the chosen child subtree and release every sibling branch.
@@ -104,6 +106,7 @@ TEST(ArenaNodeStoreTest, ReuseSubtreeKeepsChosenChildAndReleasesSiblings) {
 
     EXPECT_EQ(new_root, keep);
     EXPECT_EQ(store.nodes_allocated(), 2U);
+    EXPECT_EQ(store.memory_used_bytes(), 2U * sizeof(alphazero::mcts::MCTSNode));
     EXPECT_THROW(static_cast<void>(store.get(root)), std::out_of_range);
     EXPECT_THROW(static_cast<void>(store.get(drop_a)), std::out_of_range);
     EXPECT_THROW(static_cast<void>(store.get(drop_b)), std::out_of_range);
@@ -144,9 +147,18 @@ TEST(ArenaNodeStoreTest, ReleaseSubtreeTreatsNullOrAlreadyReleasedRootsAsNoOps) 
     const alphazero::mcts::NodeId root = store.allocate();
     store.release_subtree(alphazero::mcts::NULL_NODE);
     EXPECT_EQ(store.nodes_allocated(), 1U);
+    EXPECT_EQ(store.memory_used_bytes(), sizeof(alphazero::mcts::MCTSNode));
 
     store.release_subtree(root);
     EXPECT_EQ(store.nodes_allocated(), 0U);
+    EXPECT_EQ(store.memory_used_bytes(), 0U);
 
     EXPECT_NO_THROW(store.release_subtree(root));
+}
+
+// WHY: Defensive release paths should fail fast on impossible IDs to prevent silent corruption during tree cleanup.
+TEST(ArenaNodeStoreTest, ReleaseSubtreeRejectsOutOfRangeRootId) {
+    alphazero::mcts::ArenaNodeStore store(4);
+
+    EXPECT_THROW(store.release_subtree(99U), std::out_of_range);
 }
