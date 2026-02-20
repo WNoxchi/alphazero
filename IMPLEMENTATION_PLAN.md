@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, and TASK-060 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, and TASK-060 through TASK-061 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -598,13 +598,29 @@
 
 ### TASK-061: Implement GPU scheduling / pipeline orchestrator
 - **Spec**: `pipeline.md` §3
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/pipeline/orchestrator.py`. Implement interleaved GPU scheduling: S inference batches (default 50) then T training steps (default 1). Coordinate self-play inference and training on single GPU. Weight updates visible immediately to next inference batch (unified memory). Support configurable S:T ratio.
 - **Priority rationale**: Required for efficient single-GPU utilization.
 - **Acceptance criteria**:
   - Inference and training interleave correctly
   - GPU utilization >80%
   - S:T ratio configurable
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/pipeline/orchestrator.py` with a production interleaved scheduler implementation:
+    - `PipelineConfig` + YAML loading (`inference_batches_per_cycle`, `training_steps_per_cycle`, optional `max_cycles`),
+    - pure `run_interleaved_schedule()` loop enforcing S inference batches then T training steps,
+    - full `run_interleaved_pipeline()` integration for self-play manager + eval queue + trainer primitives (`prepare_replay_batch`, `train_one_step`, checkpoint cadence), keeping updated weights visible to subsequent inference phases by reusing a shared model instance.
+  - Added runtime adapters for the C++ bridge:
+    - `make_eval_queue_batch_evaluator()` converts encoded-state batches into model inference outputs (`policy_logits`, scalar value with WDL→`win-loss` conversion),
+    - `make_selfplay_evaluator_from_eval_queue()` adapts `EvalQueue.submit_and_wait()` results to the per-state self-play callback contract with `policy_is_logits=True`.
+  - Added `python/alphazero/pipeline/__init__.py` exports for orchestrator APIs.
+  - Added rationale-rich tests in `tests/python/test_orchestrator.py` covering config parsing, S:T interleaving order, underfilled-training-cycle behavior, max-cycle early termination signaling, self-play eval-queue adapter correctness, and (when torch is present) model-to-eval-queue adapter output semantics for scalar and WDL heads.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_orchestrator.py`,
+    - `python3 -m mypy --ignore-missing-imports python/alphazero/pipeline/orchestrator.py python/alphazero/pipeline/__init__.py tests/python/test_orchestrator.py`,
+    - `python3 -m compileall -q python tests scripts`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-062: Implement checkpointing
 - **Spec**: `pipeline.md` §7
