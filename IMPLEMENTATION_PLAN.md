@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-051 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-052 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -501,13 +501,20 @@
 
 ### TASK-052: Implement self-play manager
 - **Spec**: `pipeline.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/selfplay/self_play_manager.h` and `self_play_manager.cpp`. Maintain M concurrent game slots (default 32). Spawn K MCTS worker threads per game (default 8). When a game ends, write to replay buffer and start new game in that slot. Collect and report self-play metrics (game length, outcome, resignation, throughput).
 - **Priority rationale**: Orchestrates concurrent self-play games feeding the eval queue.
 - **Acceptance criteria**:
   - M games run concurrently with K threads each
   - Game slots recycle correctly on termination
   - Metrics collected per game completion
+- **Execution notes**:
+  - Replaced the `self_play_manager` scaffolds with a complete `SelfPlayManager` implementation in `src/selfplay/self_play_manager.h` and `src/selfplay/self_play_manager.cpp`, including lifecycle controls (`start`, `stop`), M-slot worker orchestration, per-slot seeded `SelfPlayGame` instances, bounded slot runs for controlled workloads, and graceful worker teardown.
+  - Implemented thread-safe self-play metrics aggregation and reporting (`SelfPlayMetricsSnapshot`): game completion counts, replay writes, moves, simulation throughput, termination breakdown (natural/resignation/max-length), resignation calibration metrics (disabled games + false positives), latest-game summary, and derived throughput (`moves_per_second`, `games_per_hour`, `avg_simulations_per_second`).
+  - Extended `SelfPlayGameResult` in `src/selfplay/self_play_game.h` / `src/selfplay/self_play_game.cpp` with `simulation_batches_executed` and `resignation_candidate_player` so manager-level throughput and resignation false-positive accounting are precise and spec-aligned.
+  - Added `tests/cpp/test_self_play_manager.cpp` (rationale-rich) and registered it in `tests/cpp/CMakeLists.txt`; coverage validates slot concurrency/activation, slot recycling across successive games, resignation termination metrics, disabled-resignation false-positive detection, and throughput counters.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R "SelfPlayManagerTest|SelfPlayGameTest"`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-053: Implement NeuralNetInference (C++ libtorch)
 - **Spec**: `neural-network.md` §2 (C++ Inference Interface)

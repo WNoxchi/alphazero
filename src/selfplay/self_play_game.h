@@ -47,10 +47,12 @@ struct SelfPlayGameResult {
     std::size_t move_count = 0U;
     std::size_t replay_positions_written = 0U;
     std::size_t reused_subtree_count = 0U;
+    std::size_t simulation_batches_executed = 0U;
 
     GameTerminationReason termination_reason = GameTerminationReason::kNatural;
     bool resignation_was_disabled = false;
     bool resignation_would_have_triggered = false;
+    int resignation_candidate_player = -1;
 
     float outcome_player0 = 0.0F;
     float outcome_player1 = 0.0F;

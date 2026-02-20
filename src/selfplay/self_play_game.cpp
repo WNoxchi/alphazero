@@ -110,11 +110,13 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
         }
 
         run_simulation_batch();
+        ++result.simulation_batches_executed;
 
         if (config_.enable_resignation && search_.should_resign()) {
             result.resignation_would_have_triggered = true;
+            result.resignation_candidate_player = search_.root_state().current_player();
             if (!result.resignation_was_disabled) {
-                resigned_player = search_.root_state().current_player();
+                resigned_player = result.resignation_candidate_player;
                 result.termination_reason = GameTerminationReason::kResignation;
                 break;
             }
