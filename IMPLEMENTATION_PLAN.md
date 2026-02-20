@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-086 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, TASK-070 through TASK-073, and TASK-080 through TASK-087 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -885,9 +885,14 @@
 
 ### TASK-087: Implement replay buffer tests
 - **Spec**: `infrastructure.md` §4
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `tests/cpp/test_replay_buffer.cpp`. Concurrent write/read tests. Ring buffer wrapping. No data corruption.
 - **Acceptance criteria**: All concurrency tests pass without data races
+- **Execution notes**:
+  - Verified `tests/cpp/test_replay_buffer.cpp` already provides rationale-rich coverage for all acceptance criteria: concurrent writer/reader safety checks with integrity assertions, ring-buffer wrap/retention behavior, and corruption guards via shape/field consistency validation.
+  - Retained and validated additional replay-buffer invariants in the same suite: approximate single-draw sampling uniformity and with-replacement sampling when `batch_size > size()`.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R ReplayBufferTest`, `python3 -m mypy --ignore-missing-imports python/alphazero/config.py tests/python/test_config.py`, `python3 -m compileall -q python scripts tests`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-088: Implement Python network tests
 - **Spec**: `infrastructure.md` §4
