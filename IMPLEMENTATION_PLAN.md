@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 through TASK-041 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 through TASK-042 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -412,7 +412,7 @@
 
 ### TASK-042: Implement MCTS search (PUCT, FPU, Dirichlet, virtual loss, backup)
 - **Spec**: `mcts.md` §2, §6, §8, §9, §10, §11, §14
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/mcts/mcts_search.h` and `mcts_search.cpp`. Implement the full MCTS simulation loop per `mcts.md` §14 pseudocode:
   - **Select**: PUCT score = Q(s,a) + c_puct * P(s,a) * sqrt(N_total) / (1 + N(s,a)). Apply virtual loss during selection.
   - **Expand**: Create child node, initialize edges with masked/renormalized NN priors.
@@ -435,6 +435,12 @@
   - Temperature selection correct for both regimes
   - Tree reuse preserves statistics
   - All concurrency primitives are correct under contention
+- **Execution notes**:
+  - Replaced `src/mcts/mcts_search.h` and `src/mcts/mcts_search.cpp` scaffolds with a full MCTS implementation including: PUCT selection, Leela-style FPU, masked/renormalized policy expansion, terminal/NN leaf evaluation, alternating-sign backup, virtual-loss apply/revert, root Dirichlet noise, temperature-based policy/selection, resignation checks, and root advancement with arena subtree reuse.
+  - Added a reusable evaluator contract (`EvaluationResult` + callback), configurable search parameters (`SearchConfig`), and root/edge inspection helpers to support deterministic correctness testing and downstream self-play integration.
+  - Replaced scaffold `tests/cpp/test_mcts.cpp` with rationale-rich coverage for all TASK-042 acceptance criteria: PUCT action preference/visit behavior, backup sign alternation, in-flight virtual-loss behavior, FPU formula, root-only Dirichlet noise, temperature policy regimes, subtree reuse, and concurrent simulation contention.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R Mcts`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-043: Implement evaluation queue
 - **Spec**: `mcts.md` §7
