@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-024 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 through TASK-025 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -235,13 +235,20 @@
 
 ### TASK-025: Implement Go symmetry transforms
 - **Spec**: `game-interface.md` §2 (Symmetry Interface), §6 (Symmetry)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Implement `SymmetryTransform` for Go's 8 dihedral group symmetries (4 rotations x 2 reflections). `transform_board()` applies the symmetry to a (channels, 19, 19) tensor in-place. `transform_policy()` permutes the 362-element policy vector (361 intersections + invariant pass). Implement `get_symmetries()` returning all 8 transforms.
 - **Priority rationale**: Required for Go training data augmentation.
 - **Acceptance criteria**:
   - All 8 transforms produce equivalent game positions
   - Policy transforms are consistent with board transforms
   - Pass action (index 361) is invariant under all transforms
+- **Execution notes**:
+  - Added a Go-specific symmetry implementation in `src/games/go/go_config.cpp` and `src/games/go/go_config.h` via `GoGameConfig::get_symmetries()`, returning 8 `SymmetryTransform` instances covering the full D4 group (`4` quarter-turn rotations × reflected/unreflected variants).
+  - Implemented in-place board tensor transforms for square `(channels, rows, cols)` layouts and policy permutation for the `362`-action Go space, with explicit invariant handling for pass action `361`.
+  - Added defensive input validation for null pointers, non-square board tensors, and incorrect policy sizes to avoid undefined behavior when augmentation is wired incorrectly.
+  - Replaced scaffold `tests/cpp/test_go_encoding.cpp` with rationale-rich tests that verify exact D4 policy permutations, board/policy permutation consistency across multiple channels, pass invariance, and invalid-input error paths.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R GoEncodingTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-026: Implement Go SGF serialization
 - **Spec**: `game-interface.md` §6 (Serialization)
