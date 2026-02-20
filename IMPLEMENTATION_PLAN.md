@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, and TASK-050 through TASK-051 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -484,7 +484,7 @@
 
 ### TASK-051: Implement self-play game lifecycle
 - **Spec**: `pipeline.md` §4 (Game Lifecycle)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/selfplay/self_play_game.h` and `self_play_game.cpp`. Implement single game lifecycle: initialize GameState + reset MCTS arena + add Dirichlet noise. Move loop: K threads run simulations until budget (800) reached, compute move policy π(a) ∝ N^(1/τ), select move, store training sample (state, π, _), apply move, reuse subtree, add Dirichlet noise to new root. On terminal: compute outcome z for all stored positions, write (state, π, z) tuples to replay buffer. Handle resignation logic (disable in configurable fraction). Handle max game length adjudication.
 - **Priority rationale**: Implements the core self-play loop for a single game.
 - **Acceptance criteria**:
@@ -492,6 +492,12 @@
   - Training samples correctly include outcome from current player's perspective
   - Tree reuse works across moves
   - Resignation logic correct with disable fraction
+- **Execution notes**:
+  - Replaced the `src/selfplay/self_play_game.cpp` scaffold with a full `SelfPlayGame` implementation: validated constructor wiring, per-move threaded MCTS simulation batches (`mcts_threads` fan-out), policy target extraction, action selection, encoded-state/policy sample capture, subtree-reuse accounting, resignation handling (including disable-fraction calibration), max-length adjudication, and replay-buffer emission with perspective-correct scalar/WDL targets.
+  - Added robust runtime guards for invalid config/evaluator inputs and replay-shape bounds (`encoded_state_size`/`action_space_size` vs `ReplayPosition` limits).
+  - Added rationale-rich lifecycle tests in `tests/cpp/test_self_play_game.cpp` and registered them in `tests/cpp/CMakeLists.txt`; coverage includes natural game completion with perspective-correct target backfill, resignation-on/off behavior, and max-length adjudication behavior.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure -R SelfPlayGameTest`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python tests scripts`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-052: Implement self-play manager
 - **Spec**: `pipeline.md` §4
