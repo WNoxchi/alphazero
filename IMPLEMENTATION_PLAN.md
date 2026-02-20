@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 through TASK-042 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, and TASK-040 through TASK-043 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -444,7 +444,7 @@
 
 ### TASK-043: Implement evaluation queue
 - **Spec**: `mcts.md` §7
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/mcts/eval_queue.h` and `eval_queue.cpp`. Implement `EvalQueue` with `submit_and_wait()` (MCTS threads submit encoded state, block on per-request semaphore) and `process_batch()` (GPU thread collects pending requests, runs batch inference, dispatches results). Implement flush triggers: immediate when pending >= batch_size (default 256), timeout after 100μs for partial batches. Thread-safe MPSC queue (lock-free or mutex-protected deque). Unified memory: input/output buffers directly accessible by CPU and GPU.
 - **Priority rationale**: Decouples MCTS (CPU) from NN inference (GPU). Required for async self-play.
 - **Acceptance criteria**:
@@ -452,6 +452,13 @@
   - All requests processed and results dispatched
   - Flush timeout triggers on partial batches
   - No deadlocks or data races under high contention
+- **Execution notes**:
+  - Replaced `src/mcts/eval_queue.h` and `src/mcts/eval_queue.cpp` scaffolds with a production `EvalQueue` implementation using a thread-safe MPSC deque (`std::mutex` + `std::condition_variable`), per-request semaphores (`std::binary_semaphore`), configurable flush controls (`batch_size`, `flush_timeout`), and a batched evaluator callback.
+  - Implemented `submit_and_wait()` with strict input/stop-state validation and per-request exception propagation; implemented `process_batch()` with both required flush triggers (immediate when queue depth reaches batch size, timeout-based partial batch flush).
+  - Added robust shutdown semantics in `stop()` so blocked producers are released safely if the queue is stopped with pending work.
+  - Replaced scaffold `tests/cpp/test_eval_queue.cpp` with rationale-rich concurrency tests covering: multi-producer result dispatch correctness, timeout-triggered partial flush behavior, high-contention completeness/no-loss guarantees, and stop-path rejection behavior.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=EvalQueueTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `python3 -m mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ---
 
