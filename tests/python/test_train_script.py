@@ -1,0 +1,340 @@
+"""Tests for scripts/train.py runtime bootstrap and shutdown behavior."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import importlib.util
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
+from typing import Any, Mapping
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_PATH = ROOT / "scripts" / "train.py"
+
+_SPEC = importlib.util.spec_from_file_location("alphazero_train_script", SCRIPT_PATH)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - import bootstrap guard.
+    raise RuntimeError(f"Unable to load training script module from {SCRIPT_PATH}")
+train_script = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = train_script
+_SPEC.loader.exec_module(train_script)
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeTrainingConfig:
+    momentum: float = 0.9
+    wait_for_buffer_seconds: float = 1.0
+    use_mixed_precision: bool = True
+    export_folded_checkpoints: bool = True
+    device: str | None = None
+    checkpoint_dir: Path | None = Path("checkpoints")
+    checkpoint_keep_last: int = 10
+
+
+class _FakeLogger:
+    def __init__(self) -> None:
+        self.training_steps: list[int] = []
+        self.snapshots: list[int] = []
+        self.scalars: list[tuple[str, float, int]] = []
+        self.flush_calls = 0
+        self.close_calls = 0
+
+    def make_training_step_logger(self, **_kwargs: Any) -> Any:
+        def _logger(step: int, _metrics: Mapping[str, float]) -> None:
+            self.training_steps.append(int(step))
+
+        return _logger
+
+    def log_selfplay_snapshot(self, step: int, _snapshot: Any) -> None:
+        self.snapshots.append(int(step))
+
+    def log_scalar(self, tag: str, value: float, step: int) -> None:
+        self.scalars.append((tag, float(value), int(step)))
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _FakeReplayBuffer:
+    def __init__(self, *, capacity: int, random_seed: int) -> None:
+        self.capacity = capacity
+        self.random_seed = random_seed
+
+
+class _FakeEvalQueueConfig:
+    def __init__(self) -> None:
+        self.batch_size = 256
+        self.flush_timeout_us = 100
+
+
+class _FakeEvalQueue:
+    def __init__(self, *, evaluator: Any, encoded_state_size: int, config: Any) -> None:
+        self.evaluator = evaluator
+        self.encoded_state_size = encoded_state_size
+        self.config = config
+
+
+class _FakeSelfPlayGameConfig:
+    def __init__(self) -> None:
+        self.simulations_per_move = 800
+        self.mcts_threads = 8
+        self.node_arena_capacity = 1024
+        self.c_puct = 2.5
+        self.c_fpu = 0.25
+        self.enable_dirichlet_noise = True
+        self.dirichlet_epsilon = 0.25
+        self.dirichlet_alpha_override = 0.0
+        self.temperature = 1.0
+        self.temperature_moves = 30
+        self.enable_resignation = True
+        self.resign_threshold = -0.9
+        self.resign_disable_fraction = 0.1
+        self.random_seed = 123
+
+
+class _FakeSelfPlayManagerConfig:
+    def __init__(self) -> None:
+        self.concurrent_games = 32
+        self.max_games_per_slot = 0
+        self.initial_game_id = 1
+        self.random_seed = 123
+        self.game_config = _FakeSelfPlayGameConfig()
+
+
+class _FakeSelfPlayManager:
+    def __init__(
+        self,
+        _game_config: Any,
+        _replay_buffer: Any,
+        _evaluator: Any,
+        _config: Any,
+    ) -> None:
+        self._metrics = SimpleNamespace(games_completed=7)
+
+    def metrics(self) -> Any:
+        return self._metrics
+
+
+class _Harness:
+    def __init__(self) -> None:
+        self.logger = _FakeLogger()
+        self.resume_calls: list[Path] = []
+        self.saved_steps: list[int] = []
+        self.run_mode = "return"
+        self.run_final_step = 0
+        self.resume_step = 0
+        self.resume_schedule: Any = "resumed_lr_schedule"
+        self.created_eval_queue: _FakeEvalQueue | None = None
+
+    def build_dependencies(self) -> Any:
+        cpp = SimpleNamespace(
+            EvalQueueConfig=_FakeEvalQueueConfig,
+            SelfPlayManagerConfig=_FakeSelfPlayManagerConfig,
+            ReplayBuffer=_FakeReplayBuffer,
+            EvalQueue=self._make_eval_queue,
+            SelfPlayManager=_FakeSelfPlayManager,
+            chess_game_config=lambda: "chess_cpp_config",
+            go_game_config=lambda: "go_cpp_config",
+        )
+
+        class _FakeResNet:
+            def __init__(
+                self,
+                _game_config: Any,
+                *,
+                num_blocks: int,
+                num_filters: int,
+                se_reduction: int,
+            ) -> None:
+                self.num_blocks = num_blocks
+                self.num_filters = num_filters
+                self.se_reduction = se_reduction
+
+        return train_script.RuntimeDependencies(
+            cpp=cpp,
+            ResNetSE=_FakeResNet,
+            create_optimizer=lambda *_args, **_kwargs: "optimizer",
+            load_lr_schedule_from_config=lambda _config: "initial_lr_schedule",
+            load_pipeline_config_from_config=lambda _config: "pipeline_config",
+            load_training_checkpoint=self._load_training_checkpoint,
+            load_training_config_from_config=lambda _config: _FakeTrainingConfig(),
+            make_eval_queue_batch_evaluator=lambda *_args, **_kwargs: "batch_evaluator",
+            make_selfplay_evaluator_from_eval_queue=lambda _queue: "selfplay_evaluator",
+            run_interleaved_pipeline=self._run_interleaved_pipeline,
+            save_training_checkpoint=self._save_training_checkpoint,
+            build_run_name=lambda game_name: f"{game_name}_unit_run",
+            create_metrics_logger=lambda **_kwargs: self.logger,
+        )
+
+    def _make_eval_queue(self, **kwargs: Any) -> _FakeEvalQueue:
+        queue = _FakeEvalQueue(**kwargs)
+        self.created_eval_queue = queue
+        return queue
+
+    def _load_training_checkpoint(
+        self,
+        checkpoint_path: Path,
+        _model: Any,
+        _optimizer: Any,
+        *,
+        map_location: str,
+    ) -> tuple[int, Any]:
+        del map_location
+        self.resume_calls.append(Path(checkpoint_path))
+        return self.resume_step, self.resume_schedule
+
+    def _run_interleaved_pipeline(self, *_args: Any, **_kwargs: Any) -> Any:
+        if self.run_mode == "interrupt":
+            raise KeyboardInterrupt
+        return SimpleNamespace(final_step=self.run_final_step)
+
+    def _save_training_checkpoint(self, *_args: Any, **kwargs: Any) -> Any:
+        self.saved_steps.append(int(kwargs["step"]))
+        step = int(kwargs["step"])
+        return SimpleNamespace(checkpoint_path=Path(f"checkpoints/checkpoint_{step:08d}.pt"))
+
+
+def _minimal_config() -> dict[str, object]:
+    return {
+        "game": "chess",
+        "network": {
+            "architecture": "resnet_se",
+            "num_blocks": 10,
+            "num_filters": 128,
+            "se_reduction": 4,
+        },
+        "mcts": {
+            "simulations_per_move": 32,
+            "c_puct": 2.5,
+            "c_fpu": 0.25,
+            "dirichlet_alpha": 0.3,
+            "dirichlet_epsilon": 0.25,
+            "temperature": 1.0,
+            "temperature_moves": 30,
+            "concurrent_games": 2,
+            "threads_per_game": 2,
+            "batch_size": 16,
+            "resign_threshold": -0.9,
+            "resign_disable_fraction": 0.1,
+            "enable_dirichlet_noise": True,
+            "enable_resignation": True,
+        },
+        "training": {
+            "wait_for_buffer_seconds": 0.25,
+            "export_folded_checkpoints": True,
+        },
+        "pipeline": {
+            "inference_batches_per_cycle": 2,
+            "training_steps_per_cycle": 1,
+        },
+        "replay_buffer": {
+            "capacity": 512,
+            "random_seed": 42,
+        },
+        "system": {
+            "precision": "bf16",
+            "run_name": "explicit_run_name",
+        },
+    }
+
+
+class TrainScriptRuntimeTests(unittest.TestCase):
+    def test_build_runtime_uses_cold_start_with_no_resume_checkpoint(self) -> None:
+        """WHY: cold start must not load stale optimizer/model state and should begin from step 0."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+
+        runtime = train_script.build_training_runtime(
+            config_path="configs/chess_default.yaml",
+            resume_path=None,
+            dependencies=dependencies,
+            config_override=_minimal_config(),
+        )
+
+        self.assertEqual(runtime.start_step, 0)
+        self.assertEqual(harness.resume_calls, [])
+        self.assertEqual(runtime.lr_schedule, "initial_lr_schedule")
+        self.assertEqual(runtime.optimizer, "optimizer")
+        self.assertEqual(runtime.logger, harness.logger)
+        self.assertIsNotNone(harness.created_eval_queue)
+        assert harness.created_eval_queue is not None
+        self.assertEqual(harness.created_eval_queue.encoded_state_size, 119 * 8 * 8)
+
+    def test_build_runtime_loads_resume_checkpoint_and_uses_loaded_step(self) -> None:
+        """WHY: warm resume must restore step/LR schedule so training continues from checkpoint state."""
+        harness = _Harness()
+        harness.resume_step = 1234
+        harness.resume_schedule = "loaded_lr_schedule"
+        dependencies = harness.build_dependencies()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resume_path = Path(temp_dir) / "checkpoint_00001234.pt"
+            resume_path.write_text("placeholder", encoding="utf-8")
+
+            runtime = train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=resume_path,
+                dependencies=dependencies,
+                config_override=_minimal_config(),
+            )
+
+        self.assertEqual(harness.resume_calls, [resume_path])
+        self.assertEqual(runtime.start_step, 1234)
+        self.assertEqual(runtime.lr_schedule, "loaded_lr_schedule")
+
+    def test_run_session_interrupt_saves_final_checkpoint_and_flushes_logger(self) -> None:
+        """WHY: graceful shutdown must preserve progress and flush metrics when interrupted by a signal."""
+        harness = _Harness()
+        harness.resume_step = 250
+        harness.run_mode = "interrupt"
+        dependencies = harness.build_dependencies()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resume_path = Path(temp_dir) / "checkpoint_00000250.pt"
+            resume_path.write_text("placeholder", encoding="utf-8")
+            runtime = train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=resume_path,
+                dependencies=dependencies,
+                config_override=_minimal_config(),
+            )
+
+        summary = train_script.run_training_session(runtime, dependencies=dependencies)
+
+        self.assertTrue(summary.interrupted)
+        self.assertEqual(summary.final_step, 250)
+        self.assertEqual(harness.saved_steps, [250])
+        self.assertEqual(summary.final_checkpoint_path, Path("checkpoints/checkpoint_00000250.pt"))
+        self.assertEqual(harness.logger.flush_calls, 1)
+        self.assertEqual(harness.logger.close_calls, 1)
+
+    def test_run_session_uses_pipeline_result_step_for_final_checkpoint(self) -> None:
+        """WHY: non-interrupted exits should save final state at the true terminal training step."""
+        harness = _Harness()
+        harness.run_mode = "return"
+        harness.run_final_step = 777
+        dependencies = harness.build_dependencies()
+
+        runtime = train_script.build_training_runtime(
+            config_path="configs/chess_default.yaml",
+            resume_path=None,
+            dependencies=dependencies,
+            config_override=_minimal_config(),
+        )
+
+        summary = train_script.run_training_session(runtime, dependencies=dependencies)
+
+        self.assertFalse(summary.interrupted)
+        self.assertEqual(summary.final_step, 777)
+        self.assertEqual(harness.saved_steps, [777])
+        self.assertEqual(summary.final_checkpoint_path, Path("checkpoints/checkpoint_00000777.pt"))
+
+
+if __name__ == "__main__":
+    unittest.main()

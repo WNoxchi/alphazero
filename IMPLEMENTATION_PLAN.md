@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, and TASK-060 through TASK-063 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, TASK-030 through TASK-035, TASK-040 through TASK-043, TASK-050 through TASK-054, TASK-060 through TASK-064, and TASK-070 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -715,13 +715,28 @@
 
 ### TASK-070: Implement main training script (train.py)
 - **Spec**: `infrastructure.md` §6 (Running Training)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `scripts/train.py`. Accept `--config` (YAML path) and `--resume` (checkpoint path). Cold start: init random network, empty buffer, start self-play, begin training after min_buffer_size. Warm resume: load checkpoint, restart self-play. Graceful shutdown: signal threads, wait, save final checkpoint, flush metrics.
 - **Priority rationale**: Main entry point for training runs.
 - **Acceptance criteria**:
   - Cold start works for both chess and Go configs
   - Warm resume correctly continues from checkpoint
   - Graceful shutdown saves state
+- **Execution notes**:
+  - Replaced scaffold `scripts/train.py` with a full training entrypoint that:
+    - parses `--config` and optional `--resume`,
+    - loads YAML config + game/network/training/pipeline settings,
+    - initializes the ResNet-SE model, replay buffer, eval queue, and self-play manager bindings,
+    - supports cold start from random weights + empty replay and warm resume via checkpoint load (`model`, `optimizer`, `step`, and LR schedule),
+    - runs the interleaved self-play/training pipeline with TensorBoard + console metric emission,
+    - installs `SIGINT`/`SIGTERM` handling for graceful shutdown and saves a final checkpoint before logger flush/close.
+  - Added rationale-rich unit coverage in `tests/python/test_train_script.py` for cold-start bootstrap, resume path handling, graceful interrupt finalization, and final-step checkpoint saving on normal completion.
+  - Validation passed:
+    - `python3 -m unittest -q tests/python/test_train_script.py tests/python/test_orchestrator.py tests/python/test_logging.py` (`test_orchestrator.py` includes 3 torch-gated skips in this sandbox),
+    - `python3 -m mypy --ignore-missing-imports scripts/train.py tests/python/test_train_script.py`,
+    - `python3 -m compileall -q python scripts tests`,
+    - offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check scripts/train.py tests/python/test_train_script.py`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-071: Implement play script (play.py)
 - **Spec**: `infrastructure.md` §7
