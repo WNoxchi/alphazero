@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 through TASK-012 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 through TASK-013 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -120,13 +120,18 @@
 
 ### TASK-013: Implement chess input encoding
 - **Spec**: `game-interface.md` §5 (Input Encoding)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Implement `ChessState::encode()` producing an 8x8x119 tensor. 14 planes per history step (6 P1 pieces + 6 P2 pieces + 2 repetition) x T=8 steps = 112 planes. 7 constant planes (color, total move count, 4 castling rights, no-progress count). Board orientation flipped for black-to-move. Zero-fill for history steps before game start.
 - **Priority rationale**: Required for neural network inference on chess positions.
 - **Acceptance criteria**:
   - Output tensor shape is (119, 8, 8)
   - Encoding matches spec for initial position and known mid-game positions
   - Board correctly flipped for black-to-move
+- **Execution notes**:
+  - Finalized chess encoding coverage by replacing scaffold `tests/cpp/test_chess_encoding.cpp` with rationale-rich tests that validate the full `(119, 8, 8)` contract, initial-position piece/repetition/constant planes, temporal history ordering and zero-fill behavior, repetition-plane semantics, and black-to-move canonical orientation.
+  - Added tests for perspective-relative constant planes (color, castling rights, normalized total-move count, normalized no-progress count) using a targeted FEN position.
+  - Validation passed: `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=ChessEncodingTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-014: Implement chess FEN/PGN serialization
 - **Spec**: `game-interface.md` §5 (Serialization)
