@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 and TASK-010 through TASK-014 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, and TASK-020 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -151,12 +151,20 @@
 
 ### TASK-020: Implement Go board representation and Zobrist hashing
 - **Spec**: `game-interface.md` §6 (Board Representation, Zobrist Hashing)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/go/go_state.h`. Implement `GoPosition` struct with 19x19 board array, side to move, ko point, komi, move number, consecutive passes, position history (hash set for superko). Implement Zobrist hashing with pre-generated random values for each (intersection, color) pair. Incremental XOR updates on stone placement/capture.
 - **Priority rationale**: Go rules and state depend on board representation.
 - **Acceptance criteria**:
   - Board correctly represents empty, black, white stones
   - Zobrist hashing produces consistent hashes and detects identical positions
+- **Execution notes**:
+  - Implemented `src/games/go/go_state.h` and `src/games/go/go_state.cpp` with a full `GoPosition` representation (`19x19` board, side-to-move, ko point, komi, move number, consecutive passes, and positional superko hash history).
+  - Added board/indexing helpers (`to_intersection`, row/column conversion, stone getters/setters, color/intersection validators) to make Go rules code consume a stable, bounds-safe representation API.
+  - Implemented deterministic Zobrist hashing for Go with pre-generated keys for all `(intersection, color)` pairs, side-to-move keys, and ko-point keys.
+  - Added both board-only hash (`zobrist_board_hash`) for positional superko workflows and full state hash (`zobrist_hash`) including side-to-move and ko point, plus incremental XOR update helpers for stone placement/capture.
+  - Replaced scaffold `tests/cpp/test_go_rules.cpp` with rationale-rich tests covering default board semantics, coordinate/index round-trips, hash determinism/sensitivity, incremental hash parity with full recomputation, and position-history membership for repeated board hashes.
+  - Validation passed: `cmake -S . -B build`, `cmake --build build --parallel`, `./build/tests/cpp/alphazero_cpp_tests --gtest_filter=GoStateRepresentationTest.*`, `ctest --test-dir build --output-on-failure`, `python3 -m compileall -q python scripts tests`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: ruff: command not found`).
 
 ### TASK-021: Implement Go rules engine
 - **Spec**: `game-interface.md` §6 (Go Rules Implementation, Liberty Tracking)
