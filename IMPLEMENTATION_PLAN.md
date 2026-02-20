@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-033 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003, TASK-010 through TASK-014, TASK-020 through TASK-026, and TASK-030 through TASK-034 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -341,12 +341,19 @@
 
 ### TASK-034: Implement learning rate schedule
 - **Spec**: `neural-network.md` §5 (Training Configuration, LR Schedule)
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/training/lr_schedule.py`. Implement step-decay LR schedule: 0.2 for steps 0-200K, 0.02 for 200K-400K, 0.002 for 400K-600K, 0.0002 for 600K+. Support configurable milestones via YAML config.
 - **Priority rationale**: Training loop depends on correct LR scheduling.
 - **Acceptance criteria**:
   - LR values correct at each milestone boundary
   - Schedule configurable via YAML
+- **Execution notes**:
+  - Replaced scaffold `python/alphazero/training/lr_schedule.py` with a production step-decay scheduler utility, including spec-default breakpoints, strict schedule validation, `lr_at_step()` boundary resolution, and YAML/config loading helpers (`load_lr_schedule_from_config`, `load_lr_schedule_from_yaml`).
+  - Updated `python/alphazero/training/__init__.py` exports to include LR-schedule APIs and made loss imports optional when `torch` is unavailable, so non-torch tooling/tests can still import scheduling utilities in offline sandboxes.
+  - Added rationale-rich tests in `tests/python/test_lr_schedule.py` covering default milestone behavior, boundary transitions, configurable training-section overrides, YAML-path loading, fallback-to-default behavior, and malformed-schedule error handling.
+  - Validation passed: `python3 -m unittest -q tests/python/test_lr_schedule.py tests/python/test_config.py`, `python3 -m mypy python/alphazero/training/lr_schedule.py tests/python/test_lr_schedule.py python/alphazero/training/__init__.py --ignore-missing-imports`, `python3 -m compileall -q python tests scripts`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
+  - Environment note: nested-YAML override test is auto-skipped when `PyYAML` is unavailable.
+  - Lint status: attempted `ruff check python tests scripts`, but `ruff` is not installed in this environment (`/bin/bash: line 1: ruff: command not found`).
 
 ### TASK-035: Implement batch norm folding utility
 - **Spec**: `neural-network.md` §6 (Batch Normalization Folding)
