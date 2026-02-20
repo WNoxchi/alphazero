@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION IN PROGRESS — TASK-001 and TASK-002 complete; core implementation tasks remain.
+**Status**: FOUNDATION COMPLETE — TASK-001 through TASK-003 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -52,12 +52,19 @@
 
 ### TASK-003: Define Python-side GameConfig dataclass
 - **Spec**: `game-interface.md` §7
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `python/alphazero/config.py` with the `GameConfig` dataclass and pre-defined `CHESS_CONFIG` and `GO_CONFIG` instances. Include YAML configuration loading per `pipeline.md` §9.
 - **Priority rationale**: Python neural network, training loop, and pipeline depend on game config.
 - **Acceptance criteria**:
   - `CHESS_CONFIG` and `GO_CONFIG` have correct values per spec
   - YAML config loading works for both `chess_default.yaml` and `go_default.yaml`
+- **Execution notes**:
+  - Implemented `GameConfig` as a frozen, slotted dataclass in `python/alphazero/config.py` with validation for dimensions, action-space size, value head type, and symmetry settings.
+  - Added canonical `CHESS_CONFIG` and `GO_CONFIG` constants with spec-accurate values (`8x8x119/4672/WDL` for chess, `19x19x17/362/scalar` for Go).
+  - Added `get_game_config()`, `load_yaml_config()`, and `load_game_config_from_yaml()` helpers to resolve pipeline YAML `game` selection into canonical configs, with explicit validation errors for malformed files.
+  - Added resilient YAML parsing behavior: use `PyYAML` when installed, with a strict fallback parser for sandbox environments missing `yaml`.
+  - Added `tests/python/test_config.py` with rationale-rich tests covering canonical presets, default YAML config resolution, tolerant game-name normalization, and error paths for malformed/unsupported configs.
+  - Validation passed: `python3 -m unittest -q tests/python/test_config.py`, `python3 -m compileall -q python tests scripts`, `mypy python/alphazero/config.py tests/python/test_config.py`, and offline editable packaging check `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`.
 
 ---
 
