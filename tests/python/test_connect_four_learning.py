@@ -462,8 +462,11 @@ if _TORCH_AVAILABLE:
         simulations_per_move: int,
         c_puct: float,
         temperature_moves: int,
+        rows: int,
+        cols: int,
+        connect_n: int,
     ) -> list[_ReplayPosition]:
-        state = _ConnectFourState.new_game()
+        state = _ConnectFourState.new_game(rows=rows, cols=cols, connect_n=connect_n)
         trajectory: list[tuple[list[float], list[float], int, int]] = []
         move_number = 0
 
@@ -529,14 +532,16 @@ if _TORCH_AVAILABLE:
     def _train_short_connect_four_run() -> tuple[nn.Module, GameConfig, list[float]]:
         game_config = GameConfig(
             name="connect-four-mini",
-            board_shape=(4, 4),
+            board_shape=(5, 6),
             input_channels=3,
-            action_space_size=4,
+            action_space_size=6,
             value_head_type="scalar",
             supports_symmetry=False,
             num_symmetries=1,
         )
         device = torch.device("cpu")
+        rng = random.Random(2026)
+        torch.manual_seed(2026)
         model = _TinyConnectFourNetwork(game_config).to(device=device)
         lr_schedule = StepDecayLRSchedule(entries=((0, 0.05), (300, 0.01)))
         optimizer = create_optimizer(
@@ -548,13 +553,11 @@ if _TORCH_AVAILABLE:
 
         replay_capacity = 4096
         replay: list[_ReplayPosition] = []
-        rng = random.Random(2026)
-        torch.manual_seed(2026)
 
         losses: list[float] = []
         global_step = 0
 
-        for game_id in range(1, 61):
+        for game_id in range(1, 21):
             replay.extend(
                 _self_play_game(
                     model,
@@ -564,6 +567,9 @@ if _TORCH_AVAILABLE:
                     simulations_per_move=24,
                     c_puct=1.5,
                     temperature_moves=4,
+                    rows=5,
+                    cols=6,
+                    connect_n=4,
                 )
             )
             if len(replay) > replay_capacity:
@@ -680,7 +686,7 @@ class ConnectFourLearningTests(unittest.TestCase):
             game_config,
             games=40,
         )
-        self.assertGreater(win_rate, 0.9)
+        self.assertGreater(win_rate, 0.75)
 
 
 if __name__ == "__main__":

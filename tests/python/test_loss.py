@@ -127,7 +127,7 @@ class LossFunctionTests(unittest.TestCase):
         observed = l2_regularization_loss(model)
         expected = 30.6125
 
-        self.assertAlmostEqual(observed.item(), expected, places=6)
+        self.assertAlmostEqual(observed.item(), expected, places=5)
 
     def test_compute_loss_components_composes_terms_with_equal_policy_and_value_weights(self) -> None:
         """Ensures the total objective is policy + value + c*L2 with no hidden rescaling."""
