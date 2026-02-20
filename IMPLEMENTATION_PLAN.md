@@ -1,6 +1,6 @@
 # AlphaZero Implementation Plan
 
-**Status**: FOUNDATION BOOTSTRAPPED — scaffolding/build system exists; core implementation tasks remain.
+**Status**: FOUNDATION IN PROGRESS — TASK-001 and TASK-002 complete; core implementation tasks remain.
 
 **Generated**: 2026-02-19
 **Specs analyzed**: `specs/overview.md`, `specs/game-interface.md`, `specs/neural-network.md`, `specs/mcts.md`, `specs/pipeline.md`, `specs/infrastructure.md`
@@ -37,12 +37,18 @@
 
 ### TASK-002: Define abstract GameState and GameConfig interfaces (C++)
 - **Spec**: `game-interface.md` §2
-- **State**: missing
+- **State**: completed (2026-02-20)
 - **Description**: Create `src/games/game_state.h` with the abstract `GameState` class (pure virtual: `apply_action`, `legal_actions`, `is_terminal`, `outcome`, `current_player`, `encode`, `clone`, `hash`, `to_string`). Create `src/games/game_config.h` with the `GameConfig` struct (board geometry, encoding dimensions, action space, MCTS params, value head type, symmetry, factory method). Define `SymmetryTransform` interface and `get_symmetries()`.
 - **Priority rationale**: All game implementations, MCTS, and the pipeline depend on these interfaces.
 - **Acceptance criteria**:
   - Headers compile cleanly with C++20
   - Interfaces match spec signatures exactly
+- **Execution notes**:
+  - Added complete abstract `GameState` interface and complete `GameConfig`/`SymmetryTransform` contracts in `src/games/game_state.h` and `src/games/game_config.h`.
+  - Added default identity symmetry implementation and default `get_symmetries()` returning identity transform.
+  - Added C++ contract tests (`tests/cpp/test_game_interfaces.cpp`) verifying signature stability, default identity symmetry behavior, and `new_game()` factory/clone behavior.
+  - Updated C++ test discovery to `POST_BUILD` so interface gtests run through `ctest`.
+  - Validation passed: `cmake --build build --parallel`, `ctest --test-dir build --output-on-failure`, and `python3 -m compileall python scripts tests`.
 
 ### TASK-003: Define Python-side GameConfig dataclass
 - **Spec**: `game-interface.md` §7

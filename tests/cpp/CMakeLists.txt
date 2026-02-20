@@ -13,6 +13,7 @@ if(ALPHAZERO_HAS_GTEST)
     include(GoogleTest)
 
     add_executable(alphazero_cpp_tests
+        test_game_interfaces.cpp
         test_chess_movegen.cpp
         test_chess_encoding.cpp
         test_go_rules.cpp
@@ -25,5 +26,5 @@ if(ALPHAZERO_HAS_GTEST)
     target_compile_features(alphazero_cpp_tests PRIVATE cxx_std_20)
     target_link_libraries(alphazero_cpp_tests PRIVATE alphazero_engine GTest::gtest_main)
 
-    gtest_discover_tests(alphazero_cpp_tests DISCOVERY_MODE PRE_TEST)
+    gtest_discover_tests(alphazero_cpp_tests DISCOVERY_MODE POST_BUILD)
 endif()
