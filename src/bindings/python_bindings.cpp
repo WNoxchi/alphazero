@@ -760,6 +760,15 @@ PYBIND11_MODULE(alphazero_cpp, module) {
                     throw std::invalid_argument("EvalQueueConfig.flush_timeout_us must be non-negative");
                 }
                 config->flush_timeout = std::chrono::microseconds(timeout_us);
+            })
+        .def_property(
+            "wait_timeout_us",
+            [](const alphazero::mcts::EvalQueueConfig& config) { return config.wait_timeout.count(); },
+            [](alphazero::mcts::EvalQueueConfig* config, const std::int64_t timeout_us) {
+                if (timeout_us < 0) {
+                    throw std::invalid_argument("EvalQueueConfig.wait_timeout_us must be non-negative");
+                }
+                config->wait_timeout = std::chrono::microseconds(timeout_us);
             });
 
     py::class_<PyEvalQueue>(module, "EvalQueue")

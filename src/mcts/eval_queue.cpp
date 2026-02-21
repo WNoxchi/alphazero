@@ -48,7 +48,13 @@ void EvalQueue::process_batch() {
     std::vector<std::shared_ptr<PendingRequest>> batch;
     {
         std::unique_lock lock(pending_mutex_);
-        pending_cv_.wait(lock, [this] { return stop_requested_ || !pending_.empty(); });
+        if (config_.wait_timeout.count() > 0) {
+            pending_cv_.wait_for(lock, config_.wait_timeout, [this] {
+                return stop_requested_ || !pending_.empty();
+            });
+        } else {
+            pending_cv_.wait(lock, [this] { return stop_requested_ || !pending_.empty(); });
+        }
         if (pending_.empty()) {
             return;
         }

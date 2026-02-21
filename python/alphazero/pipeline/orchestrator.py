@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 import time
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -385,6 +386,9 @@ def make_selfplay_evaluator_from_eval_queue(eval_queue: Any) -> Callable[[object
         if not hasattr(state, "encode"):
             raise TypeError("state must provide an encode() method for EvalQueue submission")
         encoded_state = state.encode()  # type: ignore[attr-defined]
+        # encode() may return a multi-dimensional numpy array; flatten for the C++ EvalQueue.
+        if hasattr(encoded_state, "ravel"):
+            encoded_state = encoded_state.ravel().tolist()
         eval_result = eval_queue.submit_and_wait(encoded_state)
         return {
             "policy": list(eval_result.policy_logits),
@@ -454,7 +458,11 @@ def run_interleaved_pipeline(
 
     def inference_batch_fn() -> None:
         model.eval()
-        eval_queue.process_batch()
+        # Run process_batch from a background thread to avoid GIL livelock
+        # between the main thread and C++ self-play worker threads.
+        t = threading.Thread(target=eval_queue.process_batch)
+        t.start()
+        t.join()
 
     def training_step_fn(global_step: int) -> bool:
         current_buffer_size = int(replay_buffer.size())
@@ -557,17 +565,19 @@ def run_interleaved_pipeline(
         pipeline_error = exc
         raise
     finally:
+        # Stop eval_queue first to unblock any workers waiting in submit_and_wait,
+        # then stop self_play_manager to join the (now-unblocked) worker threads.
+        try:
+            eval_queue.stop()
+        except Exception:
+            if pipeline_error is None:
+                raise
         if self_play_started:
             try:
                 self_play_manager.stop()
             except Exception:
                 if pipeline_error is None:
                     raise
-        try:
-            eval_queue.stop()
-        except Exception:
-            if pipeline_error is None:
-                raise
 
     return PipelineRunResult(
         final_step=schedule_result.final_step,

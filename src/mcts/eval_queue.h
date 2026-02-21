@@ -21,6 +21,11 @@ struct EvalResult {
 struct EvalQueueConfig {
     std::size_t batch_size = 256;
     std::chrono::microseconds flush_timeout{100};
+    /// Maximum time process_batch() will block waiting for the first request.
+    /// Default 100ms.  A finite timeout is essential because MCTS simulations
+    /// that reach terminal game states complete without submitting an eval
+    /// request, so the caller must be able to re-enter the loop promptly.
+    std::chrono::microseconds wait_timeout{100'000};
 };
 
 class EvalQueue {

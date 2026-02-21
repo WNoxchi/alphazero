@@ -18,6 +18,8 @@ set(ALPHAZERO_ENGINE_SOURCES
 
 add_library(alphazero_engine STATIC ${ALPHAZERO_ENGINE_SOURCES})
 
+set_target_properties(alphazero_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_compile_features(alphazero_engine PUBLIC cxx_std_20)
 
 target_include_directories(alphazero_engine

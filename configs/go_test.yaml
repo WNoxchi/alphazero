@@ -1,0 +1,51 @@
+game: "go"
+
+network:
+  architecture: "resnet_se"
+  num_blocks: 2
+  num_filters: 32
+  se_reduction: 4
+
+mcts:
+  simulations_per_move: 4
+  c_puct: 2.5
+  c_fpu: 0.25
+  dirichlet_alpha: 0.03
+  dirichlet_epsilon: 0.25
+  temperature_moves: 5
+  concurrent_games: 2
+  threads_per_game: 1
+  batch_size: 2
+  resign_threshold: -0.9
+  resign_disable_fraction: 0.0
+
+training:
+  batch_size: 16
+  max_steps: 3
+  lr_schedule:
+    - [0, 0.01]
+  momentum: 0.9
+  l2_reg: 0.0001
+  checkpoint_interval: 5
+  milestone_interval: 50
+  log_interval: 1
+  min_buffer_size: 16
+  wait_for_buffer_seconds: 0.01
+
+pipeline:
+  inference_batches_per_cycle: 500
+  training_steps_per_cycle: 1
+
+replay_buffer:
+  capacity: 10000
+
+evaluation:
+  interval_steps: 100000
+  num_games: 2
+  simulations_per_move: 4
+
+system:
+  precision: "fp32"
+  num_gpu: 1
+  checkpoint_dir: "./checkpoints_test_go"
+  log_dir: "./logs_test"
