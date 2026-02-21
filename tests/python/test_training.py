@@ -73,6 +73,44 @@ if _TORCH_AVAILABLE:
 
 if _TORCH_AVAILABLE:
 
+    class _PackedReplayBuffer(_ReplayBuffer):
+        def __init__(self, positions: list[_ReplayPosition], *, gate_calls: int = 0) -> None:
+            super().__init__(positions, gate_calls=gate_calls)
+            self.sample_batch_calls = 0
+
+        def sample(self, batch_size: int) -> list[_ReplayPosition]:
+            raise AssertionError("training_loop should use sample_batch when available")
+
+        def sample_batch(
+            self,
+            batch_size: int,
+            encoded_state_size: int,
+            policy_size: int,
+            value_dim: int,
+        ) -> tuple[list[list[float]], list[list[float]], list[list[float]]]:
+            self.sample_batch_calls += 1
+            sampled = [self._rng.choice(self._positions) for _ in range(batch_size)]
+            states: list[list[float]] = []
+            policies: list[list[float]] = []
+            values: list[list[float]] = []
+            for position in sampled:
+                if position.encoded_state_size != encoded_state_size:
+                    raise ValueError("encoded_state_size mismatch")
+                if position.policy_size != policy_size:
+                    raise ValueError("policy_size mismatch")
+                states.append(position.encoded_state[:encoded_state_size])
+                policies.append(position.policy[:policy_size])
+                if value_dim == 1:
+                    values.append([position.value])
+                elif value_dim == 3:
+                    values.append(position.value_wdl[:3])
+                else:
+                    raise ValueError("value_dim must be 1 or 3")
+            return states, policies, values
+
+
+if _TORCH_AVAILABLE:
+
     class _TinyPolicyValueNetwork(nn.Module):
         def __init__(self, game_config: GameConfig) -> None:
             super().__init__()
@@ -159,6 +197,41 @@ class TrainingLoopTests(unittest.TestCase):
                 torch.ones(2, dtype=target_policy.dtype),
             )
         )
+
+    def test_training_loop_prefers_sample_batch_when_replay_buffer_supports_it(self) -> None:
+        """Guards the C++ packed replay path by requiring training_loop to use sample_batch when exposed."""
+        config = self._toy_game_config(supports_symmetry=False)
+        model = _TinyPolicyValueNetwork(config)
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer = create_optimizer(model, lr_schedule=schedule, momentum=0.9)
+        replay_buffer = _PackedReplayBuffer(self._make_replay_positions(config, count=8))
+        training_config = TrainingConfig(
+            batch_size=4,
+            max_steps=3,
+            momentum=0.9,
+            l2_reg=0.0,
+            checkpoint_interval=1000,
+            milestone_interval=50000,
+            log_interval=10,
+            min_buffer_size=4,
+            wait_for_buffer_seconds=0.001,
+            use_mixed_precision=False,
+            device="cpu",
+            checkpoint_dir=None,
+        )
+
+        result = training_loop(
+            model,
+            replay_buffer,
+            config,
+            training_config,
+            lr_schedule=schedule,
+            optimizer=optimizer,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertEqual(result.final_step, training_config.max_steps)
+        self.assertEqual(replay_buffer.sample_batch_calls, training_config.max_steps)
 
     def test_go_symmetry_augmentation_preserves_pass_action_and_policy_consistency(self) -> None:
         """Ensures data augmentation never corrupts pass probability or board-policy alignment."""
