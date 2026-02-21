@@ -115,6 +115,7 @@ class _FakeSelfPlayManager:
         _evaluator: Any,
         _config: Any,
     ) -> None:
+        self.eval_source = _evaluator
         self._metrics = SimpleNamespace(games_completed=7)
 
     def metrics(self) -> Any:
@@ -131,6 +132,7 @@ class _Harness:
         self.resume_step = 0
         self.resume_schedule: Any = "resumed_lr_schedule"
         self.created_eval_queue: _FakeEvalQueue | None = None
+        self.selfplay_adapter_calls = 0
 
     def build_dependencies(self) -> Any:
         cpp = SimpleNamespace(
@@ -165,7 +167,7 @@ class _Harness:
             load_training_checkpoint=self._load_training_checkpoint,
             load_training_config_from_config=lambda _config: _FakeTrainingConfig(),
             make_eval_queue_batch_evaluator=lambda *_args, **_kwargs: "batch_evaluator",
-            make_selfplay_evaluator_from_eval_queue=lambda _queue: "selfplay_evaluator",
+            make_selfplay_evaluator_from_eval_queue=self._make_selfplay_evaluator_from_eval_queue,
             run_parallel_pipeline=self._run_parallel_pipeline,
             save_training_checkpoint=self._save_training_checkpoint,
             build_run_name=lambda game_name: f"{game_name}_unit_run",
@@ -176,6 +178,10 @@ class _Harness:
         queue = _FakeEvalQueue(**kwargs)
         self.created_eval_queue = queue
         return queue
+
+    def _make_selfplay_evaluator_from_eval_queue(self, _queue: Any) -> Any:
+        self.selfplay_adapter_calls += 1
+        return "selfplay_evaluator"
 
     def _load_training_checkpoint(
         self,
@@ -265,6 +271,8 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(harness.created_eval_queue)
         assert harness.created_eval_queue is not None
         self.assertEqual(harness.created_eval_queue.encoded_state_size, 119 * 8 * 8)
+        self.assertIs(runtime.self_play_manager.eval_source, harness.created_eval_queue)
+        self.assertEqual(harness.selfplay_adapter_calls, 0)
 
     def test_build_runtime_loads_resume_checkpoint_and_uses_loaded_step(self) -> None:
         """WHY: warm resume must restore step/LR schedule so training continues from checkpoint state."""

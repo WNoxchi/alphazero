@@ -216,6 +216,7 @@ so pybind11 will dispatch correctly based on argument type.
 ### Task 3: Update `train.py` and `orchestrator.py` to use the C++ eval path
 
 **Priority: P0 (critical path)**
+**Status**: Complete (2026-02-21)
 
 **Goal**: Wire the training pipeline to use the new C++ eval queue evaluator
 instead of the Python wrapper.
@@ -274,6 +275,22 @@ setup, or keep it for tests.
 - Verify buffer fills and training steps execute
 
 **Build & test**: `cmake --build build -j$(nproc) && cd build && ctest --output-on-failure && PYTHONPATH=build/src:$PYTHONPATH python -m pytest tests/`
+
+**Completion notes (2026-02-21)**:
+- Updated `scripts/train.py` runtime wiring to pass `eval_queue` directly into `cpp.SelfPlayManager(...)` and removed the training-path usage of the Python `make_selfplay_evaluator_from_eval_queue(...)` wrapper.
+- Kept `make_selfplay_evaluator_from_eval_queue()` in `python/alphazero/pipeline/orchestrator.py` for backward compatibility, and added an explicit deprecation note in its docstring clarifying that the primary training pipeline now uses the C++ path.
+- Updated `tests/python/test_train_script.py` to verify the runtime now injects `EvalQueue` directly into `SelfPlayManager`, and that the legacy Python self-play adapter dependency is not called during runtime construction.
+- Validation run:
+  - `python3 -m unittest tests/python/test_train_script.py` (pass; 4 tests)
+  - `python3 -m unittest tests/python/test_orchestrator.py` (pass; 9 tests, 3 skipped)
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` (pass)
+  - `cd build && ctest --output-on-failure` (pass; 106/106)
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py tests/python/test_train_script.py tests/python/test_orchestrator.py` (pass; 20 tests)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix` (pass)
+  - `ruff check python scripts tests/python` (tool unavailable in environment: `ruff: command not found`)
+  - `python3 -m compileall python scripts tests/python` (pass)
+  - `python3 -m mypy python` (fails due pre-existing environment/type issues: missing `torch`/`numpy` stubs and existing unrelated typing issues, including `orchestrator.py` protocol/attr checks)
+  - `/home/hakan/miniconda3/envs/alphazero/bin/python scripts/train.py --config configs/chess_test.yaml` (pass; completed at step 3, self-play/training started)
 
 ---
 

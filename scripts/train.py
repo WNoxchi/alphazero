@@ -452,11 +452,10 @@ def build_training_runtime(
         encoded_state_size=encoded_state_size,
         config=eval_queue_config,
     )
-    selfplay_evaluator = active_dependencies.make_selfplay_evaluator_from_eval_queue(eval_queue)
     self_play_manager = cpp.SelfPlayManager(
         _build_cpp_game_config(cpp, game_config.name),
         replay_buffer,
-        selfplay_evaluator,
+        eval_queue,
         selfplay_manager_config,
     )
 

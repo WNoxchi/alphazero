@@ -378,7 +378,12 @@ def make_eval_queue_batch_evaluator(
 
 
 def make_selfplay_evaluator_from_eval_queue(eval_queue: Any) -> Callable[[object], dict[str, object]]:
-    """Wrap an EvalQueue into the per-state evaluator API expected by self-play."""
+    """Deprecated bridge from EvalQueue to the legacy per-state Python evaluator API.
+
+    The training pipeline now passes ``EvalQueue`` directly to ``SelfPlayManager`` so
+    MCTS leaf evaluation stays in C++. Keep this adapter for standalone APIs and tests
+    that still require a Python callable evaluator.
+    """
 
     def evaluator(state: object) -> dict[str, object]:
         if not hasattr(state, "encode"):
