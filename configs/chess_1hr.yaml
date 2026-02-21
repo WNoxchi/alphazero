@@ -1,0 +1,52 @@
+game: "chess"
+
+network:
+  architecture: "resnet_se"
+  num_blocks: 20
+  num_filters: 256
+  se_reduction: 4
+
+mcts:
+  simulations_per_move: 800
+  c_puct: 2.5
+  c_fpu: 0.25
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+  temperature_moves: 30
+  concurrent_games: 64        # 2x default — more games keeps eval queue full
+  threads_per_game: 4         # 256 total threads; mostly block on eval, fine for 20 cores
+  batch_size: 256             # matches concurrent_games * threads_per_game
+  resign_threshold: -0.9
+  resign_disable_fraction: 0.1
+
+training:
+  batch_size: 2048            # 2x default — larger batches utilize GPU better
+  max_steps: 10000
+  lr_schedule:
+    - [0, 0.2]
+    - [7000, 0.02]
+    - [9000, 0.002]
+  momentum: 0.9
+  l2_reg: 0.0001
+  checkpoint_interval: 1000
+  milestone_interval: 5000
+  log_interval: 50
+  min_buffer_size: 4096
+
+pipeline:
+  inference_batches_per_cycle: 50
+  training_steps_per_cycle: 1
+
+replay_buffer:
+  capacity: 500000
+
+evaluation:
+  interval_steps: 5000
+  num_games: 20
+  simulations_per_move: 100
+
+system:
+  precision: "bf16"
+  num_gpu: 1
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"

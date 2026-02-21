@@ -315,8 +315,10 @@ def make_eval_queue_batch_evaluator(
         if len(encoded_states) == 0:
             return []
 
+        import numpy as np
+
         flat_states = torch.as_tensor(
-            encoded_states,
+            np.array(encoded_states),
             dtype=torch.float32,
             device=resolved_device,
         )

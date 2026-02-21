@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SRC = ROOT / "python"
 if str(PYTHON_SRC) not in sys.path:
     sys.path.insert(0, str(PYTHON_SRC))
+BUILD_SRC = ROOT / "build" / "src"
+if str(BUILD_SRC) not in sys.path:
+    sys.path.insert(0, str(BUILD_SRC))
 
 from alphazero.config import GameConfig, get_game_config, load_yaml_config
 
