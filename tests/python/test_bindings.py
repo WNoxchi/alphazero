@@ -233,6 +233,74 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertGreaterEqual(metrics.games_completed, 1)
         self.assertGreaterEqual(replay_buffer.size(), 1)
 
+    def test_self_play_manager_accepts_eval_queue_constructor(self) -> None:
+        """Guards the new binding overload so self-play can bypass per-leaf Python evaluator callbacks."""
+        bindings = _require_bindings()
+        go_config = bindings.go_game_config()
+        replay_buffer = bindings.ReplayBuffer(capacity=64, random_seed=99)
+
+        eval_config = bindings.EvalQueueConfig()
+        eval_config.batch_size = 8
+        eval_config.flush_timeout_us = 1_000
+        encoded_state_size = go_config.total_input_channels * go_config.board_rows * go_config.board_cols
+
+        def evaluator(batch: object) -> tuple[object, object]:
+            import numpy as np
+
+            batch_array = np.asarray(batch, dtype=np.float32)
+            batch_size = int(batch_array.shape[0])
+            policy_logits = np.full(
+                (batch_size, go_config.action_space_size),
+                -100.0,
+                dtype=np.float32,
+            )
+            policy_logits[:, -1] = 100.0
+            values = np.zeros((batch_size,), dtype=np.float32)
+            return policy_logits, values
+
+        queue = bindings.EvalQueue(
+            evaluator=evaluator,
+            encoded_state_size=encoded_state_size,
+            config=eval_config,
+        )
+        stop_event = threading.Event()
+
+        def consumer() -> None:
+            while not stop_event.is_set():
+                queue.process_batch()
+
+        thread = threading.Thread(target=consumer)
+        thread.start()
+        try:
+            manager_config = bindings.SelfPlayManagerConfig()
+            manager_config.concurrent_games = 1
+            manager_config.max_games_per_slot = 1
+            manager_config.game_config.simulations_per_move = 1
+            manager_config.game_config.mcts_threads = 1
+            manager_config.game_config.enable_dirichlet_noise = False
+            manager_config.game_config.temperature = 0.0
+            manager_config.game_config.temperature_moves = 0
+            manager_config.game_config.enable_resignation = False
+            manager_config.game_config.resign_disable_fraction = 0.0
+
+            manager = bindings.SelfPlayManager(go_config, replay_buffer, queue, manager_config)
+            manager.start()
+
+            timeout_seconds = 10.0
+            deadline = time.monotonic() + timeout_seconds
+            while manager.is_running() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            manager.stop()
+            metrics = manager.metrics()
+            self.assertGreaterEqual(metrics.games_completed, 1)
+            self.assertGreaterEqual(replay_buffer.size(), 1)
+        finally:
+            stop_event.set()
+            queue.stop()
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()

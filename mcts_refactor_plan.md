@@ -120,6 +120,7 @@ differ in the actual code.
 ### Task 2: Expose `make_eval_queue_evaluator()` in Python bindings
 
 **Priority: P0 (critical path)**
+**Status**: Complete (2026-02-21)
 
 **Goal**: Allow Python to construct a SelfPlayManager that uses the C++ eval queue
 adapter instead of a Python evaluator callback.
@@ -189,6 +190,26 @@ so pybind11 will dispatch correctly based on argument type.
 - Compare behavior to the old Python-evaluator path
 
 **Build & test**: `cmake --build build -j$(nproc) && cd build && ctest --output-on-failure`
+
+**Completion notes (2026-02-21)**:
+- Added `PyEvalQueue::raw_queue()` in `src/bindings/python_bindings.cpp` so bindings-side constructors can pass the underlying `EvalQueue&` into `make_eval_queue_evaluator()`.
+- Added a second `SelfPlayManager` pybind constructor overload in `src/bindings/python_bindings.cpp` that accepts `EvalQueue` directly and internally builds the C++ evaluator with:
+  - `eval_queue.raw_queue()`
+  - computed encoded-state size from `GameConfig` dimensions (`total_input_channels * board_rows * board_cols`)
+  - `game_config.action_space_size`
+- Preserved backward compatibility by keeping the existing `py::function` evaluator constructor unchanged.
+- Added Python binding coverage in `tests/python/test_bindings.py`:
+  - `test_self_play_manager_accepts_eval_queue_constructor`
+  - Verifies `SelfPlayManager(..., eval_queue, ...)` completes at least one game while a batch-consumer thread runs `queue.process_batch()`.
+- Validation run:
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` (pass)
+  - `cd build && ctest --output-on-failure` (pass; 106/106)
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` (pass; 7 tests)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix` (pass)
+  - `ruff check python scripts tests/python` (not available in sandbox: `ruff: command not found`)
+  - `/home/hakan/miniconda3/envs/alphazero/bin/python -m compileall python scripts tests/python` (pass)
+  - `/home/hakan/miniconda3/envs/alphazero/bin/python -m mypy python` (tool unavailable in env: `No module named mypy`)
+  - `python3 -m mypy python` (fails due missing `torch`/`numpy` stubs plus pre-existing unrelated typing issues)
 
 ---
 

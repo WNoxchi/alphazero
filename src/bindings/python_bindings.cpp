@@ -141,6 +141,27 @@ template <typename StateType>
         "encode() requires a known concrete GameState type (ChessState or GoState) for shape inference");
 }
 
+[[nodiscard]] std::size_t encoded_state_size(const GameConfig& config) {
+    if (config.total_input_channels <= 0 || config.board_rows <= 0 || config.board_cols <= 0) {
+        throw std::invalid_argument(
+            "GameConfig must define positive total_input_channels, board_rows, and board_cols");
+    }
+
+    const std::size_t channels = static_cast<std::size_t>(config.total_input_channels);
+    const std::size_t rows = static_cast<std::size_t>(config.board_rows);
+    const std::size_t cols = static_cast<std::size_t>(config.board_cols);
+
+    if (channels > (std::numeric_limits<std::size_t>::max() / rows)) {
+        throw std::overflow_error("GameConfig encoded_state_size overflows size_t");
+    }
+    const std::size_t channels_by_rows = channels * rows;
+    if (channels_by_rows > (std::numeric_limits<std::size_t>::max() / cols)) {
+        throw std::overflow_error("GameConfig encoded_state_size overflows size_t");
+    }
+
+    return channels_by_rows * cols;
+}
+
 [[nodiscard]] std::vector<float> encode_state_flat(const GameState& state) {
     const std::size_t value_count = encoded_state_size(state);
     std::vector<float> encoded(value_count, 0.0F);
@@ -512,6 +533,8 @@ public:
     void stop() { queue_.stop(); }
 
     [[nodiscard]] std::size_t encoded_state_size() const noexcept { return encoded_state_size_; }
+    [[nodiscard]] alphazero::mcts::EvalQueue& raw_queue() noexcept { return queue_; }
+    [[nodiscard]] const alphazero::mcts::EvalQueue& raw_queue() const noexcept { return queue_; }
 
 private:
     std::size_t encoded_state_size_ = 0U;
@@ -1022,6 +1045,32 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("game_config"),
             py::arg("replay_buffer"),
             py::arg("evaluator"),
+            py::arg("config") = alphazero::selfplay::SelfPlayManagerConfig{},
+            py::arg("completion_callback") = py::none(),
+            py::keep_alive<1, 2>(),
+            py::keep_alive<1, 3>(),
+            py::keep_alive<1, 4>(),
+            py::keep_alive<1, 6>())
+        .def(
+            py::init(
+                [](const GameConfig& game_config,
+                   alphazero::selfplay::ReplayBuffer& replay_buffer,
+                   PyEvalQueue& eval_queue,
+                   alphazero::selfplay::SelfPlayManagerConfig config,
+                   py::object completion_callback) {
+                    return std::make_unique<SelfPlayManager>(
+                        game_config,
+                        replay_buffer,
+                        alphazero::mcts::make_eval_queue_evaluator(
+                            eval_queue.raw_queue(),
+                            encoded_state_size(game_config),
+                            game_config.action_space_size),
+                        config,
+                        make_completion_callback(completion_callback));
+                }),
+            py::arg("game_config"),
+            py::arg("replay_buffer"),
+            py::arg("eval_queue"),
             py::arg("config") = alphazero::selfplay::SelfPlayManagerConfig{},
             py::arg("completion_callback") = py::none(),
             py::keep_alive<1, 2>(),
