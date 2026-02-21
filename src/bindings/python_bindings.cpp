@@ -1123,7 +1123,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::keep_alive<1, 3>(),
             py::keep_alive<1, 4>(),
             py::keep_alive<1, 6>())
-        .def("start", &SelfPlayManager::start, py::call_guard<py::gil_scoped_release>())
+        .def("start", &SelfPlayManager::start)
         .def("stop", &SelfPlayManager::stop, py::call_guard<py::gil_scoped_release>())
         .def("is_running", &SelfPlayManager::is_running)
         .def("metrics", &SelfPlayManager::metrics);

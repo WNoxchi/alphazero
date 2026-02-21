@@ -35,11 +35,11 @@ constexpr float kOutcomeEpsilon = 1.0e-6F;
 SelfPlayGame::SelfPlayGame(
     const GameConfig& game_config,
     ReplayBuffer& replay_buffer,
-    EvaluateFn evaluator,
+    const EvaluateFn& evaluator,
     SelfPlayGameConfig config)
     : game_config_(game_config),
       replay_buffer_(replay_buffer),
-      evaluator_(std::move(evaluator)),
+      evaluator_(evaluator),
       config_(config),
       search_config_(make_search_config(config_)),
       search_(game_config_, search_config_, config_.node_arena_capacity),

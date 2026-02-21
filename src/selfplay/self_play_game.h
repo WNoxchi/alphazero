@@ -66,7 +66,7 @@ public:
     SelfPlayGame(
         const GameConfig& game_config,
         ReplayBuffer& replay_buffer,
-        EvaluateFn evaluator,
+        const EvaluateFn& evaluator,
         SelfPlayGameConfig config = {});
 
     [[nodiscard]] SelfPlayGameResult play(std::uint32_t game_id);
@@ -86,7 +86,7 @@ private:
 
     const GameConfig& game_config_;
     ReplayBuffer& replay_buffer_;
-    EvaluateFn evaluator_;
+    const EvaluateFn& evaluator_;
     SelfPlayGameConfig config_;
     mcts::SearchConfig search_config_{};
     mcts::RuntimeMctsSearch search_;
