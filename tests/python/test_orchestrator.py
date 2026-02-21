@@ -227,21 +227,23 @@ class EvalQueueModelAdapterTests(unittest.TestCase):
             device="cpu",
             use_mixed_precision=False,
         )
-        encoded_size = GO_CONFIG.input_channels * GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]
-        outputs = evaluator(
-            [
-                [0.0] * encoded_size,
-                [1.0] * encoded_size,
-            ]
-        )
-        policy_logits_0 = cast(Sequence[float], outputs[0]["policy_logits"])
-        value_0 = cast(float, outputs[0]["value"])
-        value_1 = cast(float, outputs[1]["value"])
+        import numpy as np
 
-        self.assertEqual(len(outputs), 2)
-        self.assertEqual(len(policy_logits_0), GO_CONFIG.action_space_size)
-        self.assertAlmostEqual(float(value_0), -0.5, places=6)
-        self.assertAlmostEqual(float(value_1), 0.5, places=6)
+        encoded_size = GO_CONFIG.input_channels * GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]
+        policy_logits, value_scalars = evaluator(
+            np.asarray(
+                [
+                    [0.0] * encoded_size,
+                    [1.0] * encoded_size,
+                ],
+                dtype=np.float32,
+            )
+        )
+
+        self.assertEqual(tuple(policy_logits.shape), (2, GO_CONFIG.action_space_size))
+        self.assertEqual(tuple(value_scalars.shape), (2,))
+        self.assertAlmostEqual(float(value_scalars[0]), -0.5, places=6)
+        self.assertAlmostEqual(float(value_scalars[1]), 0.5, places=6)
 
     def test_wdl_value_head_adapter_maps_wdl_to_scalar_win_minus_loss(self) -> None:
         """Protects chess value conversion contract used by MCTS backup."""
@@ -268,21 +270,23 @@ class EvalQueueModelAdapterTests(unittest.TestCase):
             device="cpu",
             use_mixed_precision=False,
         )
-        encoded_size = CHESS_CONFIG.input_channels * CHESS_CONFIG.board_shape[0] * CHESS_CONFIG.board_shape[1]
-        outputs = evaluator(
-            [
-                [0.0] * encoded_size,
-                [0.1] * encoded_size,
-            ]
-        )
-        policy_logits_0 = cast(Sequence[float], outputs[0]["policy_logits"])
-        value_0 = cast(float, outputs[0]["value"])
-        value_1 = cast(float, outputs[1]["value"])
+        import numpy as np
 
-        self.assertEqual(len(outputs), 2)
-        self.assertEqual(len(policy_logits_0), CHESS_CONFIG.action_space_size)
-        self.assertAlmostEqual(float(value_0), 0.6, places=6)
-        self.assertAlmostEqual(float(value_1), -0.3, places=6)
+        encoded_size = CHESS_CONFIG.input_channels * CHESS_CONFIG.board_shape[0] * CHESS_CONFIG.board_shape[1]
+        policy_logits, value_scalars = evaluator(
+            np.asarray(
+                [
+                    [0.0] * encoded_size,
+                    [0.1] * encoded_size,
+                ],
+                dtype=np.float32,
+            )
+        )
+
+        self.assertEqual(tuple(policy_logits.shape), (2, CHESS_CONFIG.action_space_size))
+        self.assertEqual(tuple(value_scalars.shape), (2,))
+        self.assertAlmostEqual(float(value_scalars[0]), 0.6, places=6)
+        self.assertAlmostEqual(float(value_scalars[1]), -0.3, places=6)
 
 
 if __name__ == "__main__":

@@ -301,8 +301,8 @@ def make_eval_queue_batch_evaluator(
     *,
     device: str | Any | None = None,
     use_mixed_precision: bool = True,
-) -> Callable[[Sequence[Sequence[float]]], list[dict[str, object]]]:
-    """Build a batched evaluator callback compatible with ``alphazero_cpp.EvalQueue``."""
+) -> Callable[[Any], tuple[Any, Any]]:
+    """Build a contiguous-batch evaluator callback compatible with ``alphazero_cpp.EvalQueue``."""
 
     import torch
 
@@ -311,30 +311,34 @@ def make_eval_queue_batch_evaluator(
     resolved_device = _resolve_torch_device(device)
     model = model.to(device=resolved_device)
 
-    def evaluator(encoded_states: Sequence[Sequence[float]]) -> list[dict[str, object]]:
-        if len(encoded_states) == 0:
-            return []
-
+    def evaluator(encoded_states: Any) -> tuple[Any, Any]:
         import numpy as np
 
-        flat_states = torch.as_tensor(
-            np.array(encoded_states),
-            dtype=torch.float32,
-            device=resolved_device,
-        )
-        if flat_states.ndim != 2:
+        encoded_states_array = np.asarray(encoded_states, dtype=np.float32)
+        if encoded_states_array.ndim != 2:
             raise ValueError(
                 "EvalQueue evaluator expects rank-2 state input "
-                f"(batch, encoded_state_size), got shape {tuple(flat_states.shape)}"
+                f"(batch, encoded_state_size), got shape {tuple(encoded_states_array.shape)}"
             )
-        if int(flat_states.shape[1]) != encoded_state_size:
+        if int(encoded_states_array.shape[1]) != encoded_state_size:
             raise ValueError(
                 "EvalQueue evaluator received incorrect encoded-state size: "
-                f"expected {encoded_state_size}, got {int(flat_states.shape[1])}"
+                f"expected {encoded_state_size}, got {int(encoded_states_array.shape[1])}"
+            )
+        if not encoded_states_array.flags.c_contiguous:
+            encoded_states_array = np.ascontiguousarray(encoded_states_array)
+
+        batch_size = int(encoded_states_array.shape[0])
+        if batch_size == 0:
+            return (
+                np.empty((0, game_config.action_space_size), dtype=np.float32),
+                np.empty((0,), dtype=np.float32),
             )
 
+        flat_states = torch.from_numpy(encoded_states_array)
+        if resolved_device.type != "cpu":
+            flat_states = flat_states.to(device=resolved_device)
         model.eval()
-        batch_size = int(flat_states.shape[0])
         model_inputs = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
 
         with torch.no_grad():
@@ -365,18 +369,9 @@ def make_eval_queue_batch_evaluator(
                 f"Unsupported value_head_type {game_config.value_head_type!r}"
             )
 
-        policy_cpu = policy_logits.detach().to(device="cpu", dtype=torch.float32)
-        value_cpu = value_scalars.detach().to(device="cpu", dtype=torch.float32)
-
-        outputs: list[dict[str, object]] = []
-        for sample_index in range(batch_size):
-            outputs.append(
-                {
-                    "policy_logits": policy_cpu[sample_index].tolist(),
-                    "value": float(value_cpu[sample_index].item()),
-                }
-            )
-        return outputs
+        policy_cpu = policy_logits.detach().to(device="cpu", dtype=torch.float32).contiguous()
+        value_cpu = value_scalars.detach().to(device="cpu", dtype=torch.float32).contiguous()
+        return policy_cpu.numpy(), value_cpu.numpy()
 
     return evaluator
 

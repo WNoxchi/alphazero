@@ -162,18 +162,17 @@ class PythonBindingsTests(unittest.TestCase):
         eval_config.batch_size = 4
         eval_config.flush_timeout_us = 10_000
 
-        def evaluator(batch: list[object]) -> list[dict[str, object]]:
-            outputs: list[dict[str, object]] = []
-            for state in batch:
-                state_values = state
-                first_value = float(state_values[0])  # type: ignore[index]
-                outputs.append(
-                    {
-                        "policy_logits": [first_value, first_value + 1.0],
-                        "value": first_value * 2.0,
-                    }
-                )
-            return outputs
+        def evaluator(batch: object) -> tuple[object, object]:
+            import numpy as np
+
+            batch_array = np.asarray(batch, dtype=np.float32)
+            first_values = batch_array[:, 0]
+            policy_logits = np.stack(
+                (first_values, first_values + 1.0),
+                axis=1,
+            ).astype(np.float32, copy=False)
+            values = (first_values * 2.0).astype(np.float32, copy=False)
+            return policy_logits, values
 
         queue = bindings.EvalQueue(evaluator=evaluator, encoded_state_size=1, config=eval_config)
         stop_event = threading.Event()

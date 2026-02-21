@@ -334,6 +334,92 @@ template <typename StateType>
         "EvalQueue evaluator must return EvalResult, dict {'policy_logits','value'}, or tuple (policy_logits, value)");
 }
 
+constexpr int kContiguousFloatArrayFlags = py::array::c_style | py::array::forcecast;
+
+[[nodiscard]] std::vector<EvalResult> parse_eval_queue_batch_arrays(
+    const py::array_t<float, kContiguousFloatArrayFlags>& policy_logits_array,
+    const py::array_t<float, kContiguousFloatArrayFlags>& value_array,
+    const std::size_t expected_batch_size) {
+    if (policy_logits_array.ndim() != 2) {
+        throw std::invalid_argument(
+            "EvalQueue evaluator policy logits must have shape (batch, action_space_size)");
+    }
+    if (policy_logits_array.shape(0) != static_cast<py::ssize_t>(expected_batch_size)) {
+        throw std::invalid_argument(
+            "EvalQueue evaluator policy batch size does not match request batch size");
+    }
+    if (policy_logits_array.shape(1) <= 0) {
+        throw std::invalid_argument("EvalQueue evaluator policy logits must have non-zero action-space size");
+    }
+
+    if (value_array.ndim() != 1 && value_array.ndim() != 2) {
+        throw std::invalid_argument(
+            "EvalQueue evaluator values must have shape (batch,) or (batch, 1)");
+    }
+    if (value_array.shape(0) != static_cast<py::ssize_t>(expected_batch_size)) {
+        throw std::invalid_argument(
+            "EvalQueue evaluator value batch size does not match request batch size");
+    }
+    if (value_array.ndim() == 2 && value_array.shape(1) != 1) {
+        throw std::invalid_argument(
+            "EvalQueue evaluator values must have shape (batch,) or (batch, 1)");
+    }
+
+    const py::ssize_t policy_size = policy_logits_array.shape(1);
+    const py::ssize_t value_stride = value_array.ndim() == 1 ? 1 : value_array.shape(1);
+    const float* policy_logits_ptr = policy_logits_array.data();
+    const float* values_ptr = value_array.data();
+
+    std::vector<EvalResult> parsed_outputs(expected_batch_size);
+    for (std::size_t sample_index = 0; sample_index < expected_batch_size; ++sample_index) {
+        const py::ssize_t row_index = static_cast<py::ssize_t>(sample_index);
+        const float value = values_ptr[row_index * value_stride];
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument("EvalQueue evaluator returned a non-finite value");
+        }
+
+        EvalResult& parsed = parsed_outputs[sample_index];
+        const float* policy_row_begin = policy_logits_ptr + (row_index * policy_size);
+        parsed.policy_logits.assign(policy_row_begin, policy_row_begin + policy_size);
+        parsed.value = value;
+    }
+
+    return parsed_outputs;
+}
+
+[[nodiscard]] std::vector<EvalResult> parse_eval_queue_batch_result(
+    const py::handle& handle,
+    const std::size_t expected_batch_size) {
+    if ((py::isinstance<py::tuple>(handle) || py::isinstance<py::list>(handle)) && py::len(handle) == 2) {
+        const py::sequence sequence = py::reinterpret_borrow<py::sequence>(handle);
+        py::array_t<float, kContiguousFloatArrayFlags> policy_logits_array =
+            py::array_t<float, kContiguousFloatArrayFlags>::ensure(sequence[0]);
+        py::array_t<float, kContiguousFloatArrayFlags> value_array =
+            py::array_t<float, kContiguousFloatArrayFlags>::ensure(sequence[1]);
+        if (policy_logits_array && value_array) {
+            return parse_eval_queue_batch_arrays(policy_logits_array, value_array, expected_batch_size);
+        }
+    }
+
+    if (py::isinstance<py::str>(handle) || py::isinstance<py::bytes>(handle) || !py::isinstance<py::sequence>(handle)) {
+        throw std::invalid_argument(
+            "EvalQueue evaluator must return either (policy_logits_batch, value_batch) "
+            "or a sequence of per-request results");
+    }
+
+    const py::sequence outputs = py::reinterpret_borrow<py::sequence>(handle);
+    if (outputs.size() != static_cast<py::ssize_t>(expected_batch_size)) {
+        throw std::invalid_argument("EvalQueue evaluator output size does not match request batch size");
+    }
+
+    std::vector<EvalResult> parsed_outputs;
+    parsed_outputs.reserve(static_cast<std::size_t>(outputs.size()));
+    for (const py::handle output : outputs) {
+        parsed_outputs.push_back(parse_eval_queue_result(output));
+    }
+    return parsed_outputs;
+}
+
 [[nodiscard]] EvaluationResult parse_search_evaluation_result(
     const py::handle& handle,
     const int action_space_size) {
@@ -387,34 +473,20 @@ public:
                   const std::vector<const float*>& inputs) -> std::vector<EvalResult> {
                   py::gil_scoped_acquire acquire_gil;
 
-                  py::list py_inputs;
+                  py::array_t<float> batch_array(
+                      {static_cast<py::ssize_t>(inputs.size()), static_cast<py::ssize_t>(encoded_state_size)});
+                  float* batch_ptr = batch_array.mutable_data();
                   for (const float* input : inputs) {
                       if (input == nullptr) {
                           throw std::invalid_argument("EvalQueue received a null encoded-state pointer");
                       }
 
-                      py::array_t<float> encoded(static_cast<py::ssize_t>(encoded_state_size));
-                      std::copy_n(input, encoded_state_size, encoded.mutable_data());
-                      py_inputs.append(std::move(encoded));
+                      std::copy_n(input, encoded_state_size, batch_ptr);
+                      batch_ptr += static_cast<py::ssize_t>(encoded_state_size);
                   }
 
-                  const py::object py_outputs = evaluator(py_inputs);
-                  if (py::isinstance<py::str>(py_outputs) || py::isinstance<py::bytes>(py_outputs) ||
-                      !py::isinstance<py::sequence>(py_outputs)) {
-                      throw std::invalid_argument("EvalQueue evaluator must return a sequence of per-request results");
-                  }
-
-                  const py::sequence outputs = py::reinterpret_borrow<py::sequence>(py_outputs);
-                  if (outputs.size() != static_cast<py::ssize_t>(inputs.size())) {
-                      throw std::invalid_argument("EvalQueue evaluator output size does not match request batch size");
-                  }
-
-                  std::vector<EvalResult> parsed_outputs;
-                  parsed_outputs.reserve(static_cast<std::size_t>(outputs.size()));
-                  for (const py::handle output : outputs) {
-                      parsed_outputs.push_back(parse_eval_queue_result(output));
-                  }
-                  return parsed_outputs;
+                  const py::object py_outputs = evaluator(batch_array);
+                  return parse_eval_queue_batch_result(py_outputs, inputs.size());
               },
               config) {
         if (encoded_state_size_ == 0U) {

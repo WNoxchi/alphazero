@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
+import math
 from pathlib import Path
 import random
 import sys
 import tempfile
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 import unittest
 
 
@@ -20,6 +21,7 @@ if str(PYTHON_SRC) not in sys.path:
 
 _TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
 if _TORCH_AVAILABLE:
+    import numpy as np
     import torch
     from torch import nn
 
@@ -90,7 +92,7 @@ if _TORCH_AVAILABLE:
         def __init__(
             self,
             *,
-            evaluator: Callable[[Sequence[Sequence[float]]], list[dict[str, object]]],
+            evaluator: Callable[[Any], tuple[Any, Any]],
             replay_buffer: _InMemoryReplayBuffer,
             game_config: GameConfig,
             positions_per_batch: int,
@@ -106,43 +108,50 @@ if _TORCH_AVAILABLE:
             self.processed_batches = 0
 
         def process_batch(self) -> None:
-            encoded_states: list[list[float]] = []
+            encoded_states = np.zeros(
+                (self._positions_per_batch, self._encoded_state_size),
+                dtype=np.float32,
+            )
             for local_index in range(self._positions_per_batch):
-                state = [0.0] * self._encoded_state_size
                 hot_index = (self._cursor + local_index) % self._encoded_state_size
-                state[hot_index] = 1.0
-                state[(hot_index + 1) % self._encoded_state_size] = 0.5
-                encoded_states.append(state)
+                encoded_states[local_index, hot_index] = 1.0
+                encoded_states[local_index, (hot_index + 1) % self._encoded_state_size] = 0.5
 
-            evaluations = self._evaluator(encoded_states)
-            if len(evaluations) != len(encoded_states):
-                raise RuntimeError("Evaluator output count does not match input batch size")
+            policy_logits, values = self._evaluator(encoded_states)
+            policy_logits_array = np.asarray(policy_logits, dtype=np.float32)
+            values_array = np.asarray(values, dtype=np.float32).reshape(-1)
+            batch_size = int(encoded_states.shape[0])
+            if policy_logits_array.shape != (batch_size, self._action_space_size):
+                raise ValueError(
+                    "policy_logits batch has wrong shape: "
+                    f"expected {(batch_size, self._action_space_size)}, got {policy_logits_array.shape}"
+                )
+            if values_array.shape != (batch_size,):
+                raise ValueError(
+                    "value batch has wrong shape: "
+                    f"expected {(batch_size,)}, got {values_array.shape}"
+                )
 
-            for state, evaluation in zip(encoded_states, evaluations):
-                raw_logits = evaluation.get("policy_logits")
-                if not isinstance(raw_logits, Sequence):
-                    raise TypeError("policy_logits must be a sequence")
-                logits = [float(value) for value in raw_logits]
-                if len(logits) != self._action_space_size:
-                    raise ValueError(
-                        "policy_logits size does not match action space: "
-                        f"expected {self._action_space_size}, got {len(logits)}"
-                    )
+            for state, logits_row, value in zip(
+                encoded_states,
+                policy_logits_array,
+                values_array,
+                strict=True,
+            ):
+                logits = [float(logit) for logit in logits_row]
 
                 best_action = max(range(self._action_space_size), key=logits.__getitem__)
                 policy = [0.0] * self._action_space_size
                 policy[best_action] = 1.0
 
-                raw_value = evaluation.get("value")
-                if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
-                    raise TypeError("value must be numeric")
-                value = float(raw_value)
+                if not math.isfinite(float(value)):
+                    raise ValueError("value must be finite")
 
                 self._replay_buffer.append_generated_position(
                     _ReplayPosition(
-                        encoded_state=state,
+                        encoded_state=[float(encoded) for encoded in state],
                         policy=policy,
-                        value=value,
+                        value=float(value),
                         value_wdl=[0.0, 1.0, 0.0],
                         game_id=(self._cursor // self._positions_per_batch) + 1,
                         move_number=(self._cursor % 200) + 1,
