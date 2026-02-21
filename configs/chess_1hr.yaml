@@ -32,6 +32,7 @@ training:
   milestone_interval: 5000
   log_interval: 50
   min_buffer_size: 4096
+  wait_for_buffer_seconds: 0.01
 
 pipeline:
   inference_batches_per_cycle: 50
