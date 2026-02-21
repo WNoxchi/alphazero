@@ -7,20 +7,20 @@ network:
   se_reduction: 4
 
 mcts:
-  simulations_per_move: 800
+  simulations_per_move: 400   # halved from 800 — faster games; fine for early training
   c_puct: 2.5
   c_fpu: 0.25
   dirichlet_alpha: 0.3
   dirichlet_epsilon: 0.25
   temperature_moves: 30
-  concurrent_games: 64        # 2x default — more games keeps eval queue full
-  threads_per_game: 4         # 256 total threads; mostly block on eval, fine for 20 cores
-  batch_size: 256             # matches concurrent_games * threads_per_game
+  concurrent_games: 256       # 4x previous — keeps eval queue full, workers mostly block on eval
+  threads_per_game: 1         # 1 thread/game — eval latency dominates; saves CPU for more games
+  batch_size: 256             # eval queue batch; code changes needed for larger effective batches
   resign_threshold: -0.9
   resign_disable_fraction: 0.1
 
 training:
-  batch_size: 2048            # 2x default — larger batches utilize GPU better
+  batch_size: 4096            # 4x default — better GPU utilization per training step
   max_steps: 10000
   lr_schedule:
     - [0, 0.2]
@@ -31,11 +31,11 @@ training:
   checkpoint_interval: 1000
   milestone_interval: 5000
   log_interval: 50
-  min_buffer_size: 4096
+  min_buffer_size: 8192       # 2x training batch — ensures diverse samples
   wait_for_buffer_seconds: 0.01
 
 pipeline:
-  inference_batches_per_cycle: 50
+  inference_batches_per_cycle: 100  # 2x previous — more inference per cycle feeds training
   training_steps_per_cycle: 1
 
 replay_buffer:
