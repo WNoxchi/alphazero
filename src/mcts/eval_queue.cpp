@@ -22,6 +22,37 @@ EvalQueue::EvalQueue(BatchEvaluator evaluator, EvalQueueConfig config)
 
 EvalQueue::~EvalQueue() { stop(); }
 
+EvaluateFn make_eval_queue_evaluator(
+    EvalQueue& queue,
+    std::size_t encoded_state_size,
+    int action_space_size) {
+    if (encoded_state_size == 0U) {
+        throw std::invalid_argument("make_eval_queue_evaluator encoded_state_size must be greater than zero");
+    }
+    if (action_space_size <= 0) {
+        throw std::invalid_argument("make_eval_queue_evaluator action_space_size must be positive");
+    }
+
+    return [&queue, encoded_state_size, action_space_size](const GameState& state) -> EvaluationResult {
+        thread_local std::vector<float> encoded_state_buffer;
+        if (encoded_state_buffer.size() != encoded_state_size) {
+            encoded_state_buffer.resize(encoded_state_size);
+        }
+
+        state.encode(encoded_state_buffer.data());
+        EvalResult queue_result = queue.submit_and_wait(encoded_state_buffer.data());
+        if (queue_result.policy_logits.size() != static_cast<std::size_t>(action_space_size)) {
+            throw std::runtime_error("make_eval_queue_evaluator received policy with unexpected size");
+        }
+
+        EvaluationResult result;
+        result.policy = std::move(queue_result.policy_logits);
+        result.value = queue_result.value;
+        result.policy_is_logits = true;
+        return result;
+    };
+}
+
 EvalResult EvalQueue::submit_and_wait(const float* encoded_state) {
     if (encoded_state == nullptr) {
         throw std::invalid_argument("EvalQueue encoded_state must be non-null");

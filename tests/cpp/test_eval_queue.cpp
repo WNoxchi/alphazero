@@ -3,8 +3,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -15,6 +18,7 @@ namespace {
 using alphazero::mcts::EvalQueue;
 using alphazero::mcts::EvalQueueConfig;
 using alphazero::mcts::EvalResult;
+using alphazero::mcts::make_eval_queue_evaluator;
 
 class EvalQueueConsumer {
 public:
@@ -45,6 +49,48 @@ private:
     EvalQueue& queue_;
     std::atomic<bool> stop_requested_{false};
     std::thread thread_;
+};
+
+class EncodedValueState final : public alphazero::GameState {
+public:
+    EncodedValueState(float base_value, std::size_t encoded_state_size)
+        : base_value_(base_value),
+          encoded_state_size_(encoded_state_size) {}
+
+    [[nodiscard]] std::unique_ptr<alphazero::GameState> apply_action(int /*action*/) const override {
+        return std::make_unique<EncodedValueState>(*this);
+    }
+
+    [[nodiscard]] std::vector<int> legal_actions() const override { return {0}; }
+
+    [[nodiscard]] bool is_terminal() const override { return false; }
+
+    [[nodiscard]] float outcome(int /*player*/) const override { return 0.0F; }
+
+    [[nodiscard]] int current_player() const override { return 0; }
+
+    void encode(float* buffer) const override {
+        if (buffer == nullptr) {
+            throw std::invalid_argument("EncodedValueState requires a non-null encode buffer");
+        }
+        for (std::size_t i = 0; i < encoded_state_size_; ++i) {
+            buffer[i] = base_value_ + static_cast<float>(i);
+        }
+    }
+
+    [[nodiscard]] std::unique_ptr<alphazero::GameState> clone() const override {
+        return std::make_unique<EncodedValueState>(*this);
+    }
+
+    [[nodiscard]] std::uint64_t hash() const override {
+        return static_cast<std::uint64_t>(encoded_state_size_);
+    }
+
+    [[nodiscard]] std::string to_string() const override { return "EncodedValueState"; }
+
+private:
+    float base_value_ = 0.0F;
+    std::size_t encoded_state_size_ = 0U;
 };
 
 }  // namespace
@@ -208,6 +254,134 @@ TEST(EvalQueueTest, ProcessesAllRequestsUnderHighContention) {
     for (int id = 0; id < kTotalRequests; ++id) {
         EXPECT_FLOAT_EQ(observed_values[static_cast<std::size_t>(id)], static_cast<float>(id) + 1.0F);
     }
+}
+
+// WHY: The self-play refactor depends on this adapter to keep MCTS evaluation in pure C++; this test verifies the
+// adapter performs encode->queue submission and maps queue outputs into EvaluationResult correctly.
+TEST(EvalQueueTest, MakeEvalQueueEvaluatorMapsEvalQueueOutputs) {
+    constexpr std::size_t kEncodedStateSize = 4U;
+    constexpr int kActionSpaceSize = 3;
+
+    EvalQueueConfig config{};
+    config.batch_size = 4;
+    config.flush_timeout = std::chrono::milliseconds(5);
+
+    EvalQueue queue(
+        [](const std::vector<const float*>& inputs) -> std::vector<EvalResult> {
+            std::vector<EvalResult> outputs;
+            outputs.reserve(inputs.size());
+            for (const float* input : inputs) {
+                outputs.push_back(EvalResult{
+                    .policy_logits = {input[0], input[1], input[2]},
+                    .value = input[0] + input[1] + input[2] + input[3],
+                });
+            }
+            return outputs;
+        },
+        config);
+    EvalQueueConsumer consumer(queue);
+
+    const auto evaluator = make_eval_queue_evaluator(queue, kEncodedStateSize, kActionSpaceSize);
+    const EncodedValueState state(5.0F, kEncodedStateSize);
+    const auto result = evaluator(state);
+
+    consumer.stop();
+
+    ASSERT_EQ(result.policy.size(), static_cast<std::size_t>(kActionSpaceSize));
+    EXPECT_FLOAT_EQ(result.policy[0], 5.0F);
+    EXPECT_FLOAT_EQ(result.policy[1], 6.0F);
+    EXPECT_FLOAT_EQ(result.policy[2], 7.0F);
+    EXPECT_FLOAT_EQ(result.value, 26.0F);
+    EXPECT_TRUE(result.policy_is_logits);
+}
+
+// WHY: MCTS tree-parallel workers invoke the adapter concurrently; this test guards against races in thread-local
+// buffer handling and verifies every caller receives its own result.
+TEST(EvalQueueTest, MakeEvalQueueEvaluatorSupportsConcurrentCallers) {
+    constexpr std::size_t kEncodedStateSize = 4U;
+    constexpr int kActionSpaceSize = 3;
+    constexpr int kThreadCount = 10;
+    constexpr int kRequestsPerThread = 20;
+    constexpr int kTotalRequests = kThreadCount * kRequestsPerThread;
+
+    EvalQueueConfig config{};
+    config.batch_size = 16;
+    config.flush_timeout = std::chrono::milliseconds(5);
+
+    std::atomic<int> processed_requests{0};
+    EvalQueue queue(
+        [&processed_requests](const std::vector<const float*>& inputs) -> std::vector<EvalResult> {
+            processed_requests.fetch_add(static_cast<int>(inputs.size()), std::memory_order_relaxed);
+            std::vector<EvalResult> outputs;
+            outputs.reserve(inputs.size());
+            for (const float* input : inputs) {
+                outputs.push_back(EvalResult{
+                    .policy_logits = {input[0], input[0] + 1.0F, input[0] + 2.0F},
+                    .value = input[0] * 2.0F + 3.0F,
+                });
+            }
+            return outputs;
+        },
+        config);
+    EvalQueueConsumer consumer(queue);
+
+    const auto evaluator = make_eval_queue_evaluator(queue, kEncodedStateSize, kActionSpaceSize);
+
+    std::vector<float> observed_values(static_cast<std::size_t>(kTotalRequests), -1.0F);
+    std::vector<float> observed_policy0(static_cast<std::size_t>(kTotalRequests), -1.0F);
+    std::atomic<int> next_id{0};
+    std::vector<std::thread> producers;
+    producers.reserve(kThreadCount);
+
+    for (int thread_index = 0; thread_index < kThreadCount; ++thread_index) {
+        producers.emplace_back([&evaluator, &observed_values, &observed_policy0, &next_id] {
+            for (int request = 0; request < kRequestsPerThread; ++request) {
+                const int id = next_id.fetch_add(1, std::memory_order_relaxed);
+                const EncodedValueState state(static_cast<float>(id), kEncodedStateSize);
+                const auto result = evaluator(state);
+                observed_values[static_cast<std::size_t>(id)] = result.value;
+                observed_policy0[static_cast<std::size_t>(id)] = result.policy.front();
+            }
+        });
+    }
+
+    for (auto& producer : producers) {
+        producer.join();
+    }
+
+    consumer.stop();
+
+    EXPECT_EQ(next_id.load(std::memory_order_relaxed), kTotalRequests);
+    EXPECT_EQ(processed_requests.load(std::memory_order_relaxed), kTotalRequests);
+    for (int id = 0; id < kTotalRequests; ++id) {
+        EXPECT_FLOAT_EQ(observed_policy0[static_cast<std::size_t>(id)], static_cast<float>(id));
+        EXPECT_FLOAT_EQ(observed_values[static_cast<std::size_t>(id)], static_cast<float>(id) * 2.0F + 3.0F);
+    }
+}
+
+// WHY: A policy shape mismatch between evaluator output and action space should fail fast so MCTS never consumes
+// malformed policy vectors.
+TEST(EvalQueueTest, MakeEvalQueueEvaluatorRejectsUnexpectedPolicySize) {
+    constexpr std::size_t kEncodedStateSize = 3U;
+    constexpr int kActionSpaceSize = 4;
+
+    EvalQueue queue(
+        [](const std::vector<const float*>& inputs) -> std::vector<EvalResult> {
+            return std::vector<EvalResult>(
+                inputs.size(),
+                EvalResult{
+                    .policy_logits = {0.1F, 0.2F},
+                    .value = 0.0F,
+                });
+        });
+    EvalQueueConsumer consumer(queue);
+
+    const auto evaluator = make_eval_queue_evaluator(queue, kEncodedStateSize, kActionSpaceSize);
+    const EncodedValueState state(1.0F, kEncodedStateSize);
+
+    EXPECT_THROW(static_cast<void>(evaluator(state)), std::runtime_error);
+
+    consumer.stop();
 }
 
 // WHY: Shutdown paths are exercised during process teardown and must fail fast instead of blocking producer threads.

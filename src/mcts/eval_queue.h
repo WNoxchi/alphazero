@@ -11,6 +11,8 @@
 #include <semaphore>
 #include <vector>
 
+#include "mcts/mcts_search.h"
+
 namespace alphazero::mcts {
 
 struct EvalResult {
@@ -62,5 +64,12 @@ private:
     std::deque<std::shared_ptr<PendingRequest>> pending_;
     bool stop_requested_ = false;
 };
+
+/// Build an MCTS evaluator that encodes game states and submits them through EvalQueue.
+/// Safe for concurrent calls from many MCTS worker threads.
+[[nodiscard]] EvaluateFn make_eval_queue_evaluator(
+    EvalQueue& queue,
+    std::size_t encoded_state_size,
+    int action_space_size);
 
 }  // namespace alphazero::mcts
