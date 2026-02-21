@@ -102,7 +102,12 @@ Items are ordered by ROI (impact ÷ effort). Dependencies between items are note
 ---
 
 ### P3: Decouple Inference and Training (Pipeline Parallelism)
-- [ ] **Not started**
+- [x] **Completed (2026-02-21)** — Added `run_parallel_pipeline()` with persistent
+  `eval-queue-inference-worker` and `pipeline-training-worker` threads that run
+  inference and training concurrently, retained `run_interleaved_pipeline()` as a
+  compatibility wrapper, and switched `scripts/train.py` to invoke
+  `run_parallel_pipeline`. Added integration smoke coverage for normal completion and
+  max-cycle early termination in the parallel runtime.
 
 **Priority**: High — the single largest architectural improvement. Allows GPU to do inference and training simultaneously.
 

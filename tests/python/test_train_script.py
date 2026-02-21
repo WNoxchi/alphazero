@@ -166,7 +166,7 @@ class _Harness:
             load_training_config_from_config=lambda _config: _FakeTrainingConfig(),
             make_eval_queue_batch_evaluator=lambda *_args, **_kwargs: "batch_evaluator",
             make_selfplay_evaluator_from_eval_queue=lambda _queue: "selfplay_evaluator",
-            run_interleaved_pipeline=self._run_interleaved_pipeline,
+            run_parallel_pipeline=self._run_parallel_pipeline,
             save_training_checkpoint=self._save_training_checkpoint,
             build_run_name=lambda game_name: f"{game_name}_unit_run",
             create_metrics_logger=lambda **_kwargs: self.logger,
@@ -189,7 +189,7 @@ class _Harness:
         self.resume_calls.append(Path(checkpoint_path))
         return self.resume_step, self.resume_schedule
 
-    def _run_interleaved_pipeline(self, *_args: Any, **_kwargs: Any) -> Any:
+    def _run_parallel_pipeline(self, *_args: Any, **_kwargs: Any) -> Any:
         if self.run_mode == "interrupt":
             raise KeyboardInterrupt
         return SimpleNamespace(final_step=self.run_final_step)

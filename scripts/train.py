@@ -80,7 +80,7 @@ class RuntimeDependencies:
     load_training_config_from_config: Callable[[Mapping[str, Any]], Any]
     make_eval_queue_batch_evaluator: Callable[..., Any]
     make_selfplay_evaluator_from_eval_queue: Callable[..., Any]
-    run_interleaved_pipeline: Callable[..., Any]
+    run_parallel_pipeline: Callable[..., Any]
     save_training_checkpoint: Callable[..., Any]
     build_run_name: Callable[[str], str]
     create_metrics_logger: Callable[..., Any]
@@ -151,7 +151,7 @@ def load_runtime_dependencies() -> RuntimeDependencies:
         load_pipeline_config_from_config,
         make_eval_queue_batch_evaluator,
         make_selfplay_evaluator_from_eval_queue,
-        run_interleaved_pipeline,
+        run_parallel_pipeline,
     )
     from alphazero.training.lr_schedule import load_lr_schedule_from_config
     from alphazero.training.trainer import (
@@ -172,7 +172,7 @@ def load_runtime_dependencies() -> RuntimeDependencies:
         load_training_config_from_config=load_training_config_from_config,
         make_eval_queue_batch_evaluator=make_eval_queue_batch_evaluator,
         make_selfplay_evaluator_from_eval_queue=make_selfplay_evaluator_from_eval_queue,
-        run_interleaved_pipeline=run_interleaved_pipeline,
+        run_parallel_pipeline=run_parallel_pipeline,
         save_training_checkpoint=save_training_checkpoint,
         build_run_name=build_run_name,
         create_metrics_logger=create_metrics_logger,
@@ -564,7 +564,7 @@ def run_training_session(
 
     try:
         with _raise_keyboard_interrupt_on_signal():
-            pipeline_result = active_dependencies.run_interleaved_pipeline(
+            pipeline_result = active_dependencies.run_parallel_pipeline(
                 runtime.model,
                 runtime.replay_buffer,
                 runtime.game_config,

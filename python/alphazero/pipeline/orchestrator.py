@@ -338,7 +338,8 @@ def make_eval_queue_batch_evaluator(
         flat_states = torch.from_numpy(encoded_states_array)
         if resolved_device.type != "cpu":
             flat_states = flat_states.to(device=resolved_device)
-        model.eval()
+        # Keep forward pass mode-agnostic so shared-model parallel workers avoid
+        # train/eval mode thrashing while still using no-grad inference.
         model_inputs = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
 
         with torch.no_grad():
@@ -396,7 +397,7 @@ def make_selfplay_evaluator_from_eval_queue(eval_queue: Any) -> Callable[[object
     return evaluator
 
 
-def run_interleaved_pipeline(
+def run_parallel_pipeline(
     model: Any,
     replay_buffer: ReplayBufferLike,
     game_config: GameConfig,
@@ -412,7 +413,7 @@ def run_interleaved_pipeline(
     start_step: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> PipelineRunResult:
-    """Run the full interleaved self-play/training pipeline on a single GPU."""
+    """Run the full self-play/training pipeline with concurrent inference and training workers."""
 
     from alphazero.training.lr_schedule import StepDecayLRSchedule
     from alphazero.training.trainer import (
@@ -429,7 +430,8 @@ def run_interleaved_pipeline(
         "training_config.wait_for_buffer_seconds",
         training_config.wait_for_buffer_seconds,
     )
-    if start_step > training_config.max_steps:
+    max_steps = int(training_config.max_steps)
+    if start_step > max_steps:
         raise ValueError(
             f"start_step ({start_step}) cannot exceed max_steps ({training_config.max_steps})"
         )
@@ -451,129 +453,198 @@ def run_interleaved_pipeline(
         enabled=bool(training_config.use_mixed_precision),
     )
 
+    if start_step == max_steps:
+        return PipelineRunResult(
+            final_step=start_step,
+            cycles_completed=0,
+            inference_batches_processed=0,
+            training_steps_completed=0,
+            checkpoints=tuple(),
+            terminated_early=False,
+        )
+
     emitted_checkpoints: list[Any] = []
 
-    inference_stop_event = threading.Event()
-    inference_batch_requests = threading.Semaphore(0)
-    inference_batches_completed = threading.Semaphore(0)
+    pipeline_stop_event = threading.Event()
+    progress_condition = threading.Condition()
+
+    current_step = start_step
+    cycles_completed = 0
+    inference_batches_processed = 0
+    training_steps_completed = 0
+    cumulative_inference_seconds = 0.0
+    cumulative_training_seconds = 0.0
+    terminated_early = False
+
     inference_worker_error: BaseException | None = None
+    training_worker_error: BaseException | None = None
 
     def inference_worker() -> None:
         nonlocal inference_worker_error
-        while True:
-            inference_batch_requests.acquire()
-            if inference_stop_event.is_set():
-                return
+        nonlocal inference_batches_processed
+        nonlocal cumulative_inference_seconds
+        while not pipeline_stop_event.is_set():
+            batch_start = time.perf_counter()
             try:
-                model.eval()
                 eval_queue.process_batch()
-            except BaseException as exc:  # pragma: no cover - surfaced via inference_batch_fn.
-                inference_worker_error = exc
-                inference_stop_event.set()
-            finally:
-                inference_batches_completed.release()
+            except BaseException as exc:  # pragma: no cover - surfaced in pipeline loop.
+                if pipeline_stop_event.is_set():
+                    return
+                with progress_condition:
+                    inference_worker_error = exc
+                    pipeline_stop_event.set()
+                    progress_condition.notify_all()
+                return
+            batch_seconds = max(time.perf_counter() - batch_start, 0.0)
+            with progress_condition:
+                inference_batches_processed += 1
+                cumulative_inference_seconds += batch_seconds
+                progress_condition.notify_all()
+
+    def training_worker() -> None:
+        nonlocal current_step
+        nonlocal training_steps_completed
+        nonlocal cumulative_training_seconds
+        nonlocal training_worker_error
+        while not pipeline_stop_event.is_set():
+            with progress_condition:
+                if current_step >= max_steps:
+                    progress_condition.notify_all()
+                    return
+                step_to_train = current_step
+
+            current_buffer_size = int(replay_buffer.size())
+            if current_buffer_size < training_config.min_buffer_size:
+                sleep_fn(float(training_config.wait_for_buffer_seconds))
+                continue
+
+            try:
+                sampled_positions = replay_buffer.sample(training_config.batch_size)
+                states, target_policy, target_value = prepare_replay_batch(
+                    sampled_positions,
+                    game_config,
+                    device=device,
+                )
+                if game_config.supports_symmetry:
+                    states, target_policy = apply_random_go_symmetry(states, target_policy)
+
+                model.train()
+                step_start = time.perf_counter()
+                step_metrics = train_one_step(
+                    model,
+                    active_optimizer,
+                    states=states,
+                    target_policy=target_policy,
+                    target_value=target_value,
+                    game_config=game_config,
+                    lr_schedule=active_schedule,
+                    global_step=step_to_train,
+                    l2_reg=float(training_config.l2_reg),
+                    scaler=scaler,
+                    use_mixed_precision=bool(training_config.use_mixed_precision),
+                )
+                training_step_seconds = max(time.perf_counter() - step_start, 0.0)
+
+                next_step = step_to_train + 1
+                updated_metrics = TrainingStepMetrics(
+                    step=next_step,
+                    loss_total=step_metrics.loss_total,
+                    loss_policy=step_metrics.loss_policy,
+                    loss_value=step_metrics.loss_value,
+                    loss_l2=step_metrics.loss_l2,
+                    lr=step_metrics.lr,
+                    grad_global_norm=step_metrics.grad_global_norm,
+                    grad_nonzero_param_count=step_metrics.grad_nonzero_param_count,
+                    buffer_size=current_buffer_size,
+                    train_steps_per_second=step_metrics.train_steps_per_second,
+                )
+                if step_logger is not None and next_step % training_config.log_interval == 0:
+                    step_logger(next_step, updated_metrics.as_dict())
+
+                checkpoint_dir = training_config.checkpoint_dir
+                if checkpoint_dir is not None and next_step % training_config.checkpoint_interval == 0:
+                    emitted_checkpoints.append(
+                        save_training_checkpoint(
+                            model,
+                            active_optimizer,
+                            active_schedule,
+                            step=next_step,
+                            checkpoint_dir=Path(checkpoint_dir),
+                            replay_buffer=replay_buffer,
+                            keep_last=int(training_config.checkpoint_keep_last),
+                            is_milestone=False,
+                            export_folded_weights=bool(training_config.export_folded_checkpoints),
+                        )
+                    )
+                    if next_step % training_config.milestone_interval == 0:
+                        emitted_checkpoints.append(
+                            save_training_checkpoint(
+                                model,
+                                active_optimizer,
+                                active_schedule,
+                                step=next_step,
+                                checkpoint_dir=Path(checkpoint_dir),
+                                replay_buffer=replay_buffer,
+                                keep_last=int(training_config.checkpoint_keep_last),
+                                is_milestone=True,
+                                export_folded_weights=bool(training_config.export_folded_checkpoints),
+                            )
+                        )
+
+                with progress_condition:
+                    current_step = next_step
+                    training_steps_completed += 1
+                    cumulative_training_seconds += training_step_seconds
+                    progress_condition.notify_all()
+            except BaseException as exc:  # pragma: no cover - surfaced in pipeline loop.
+                with progress_condition:
+                    training_worker_error = exc
+                    pipeline_stop_event.set()
+                    progress_condition.notify_all()
+                return
 
     inference_thread = threading.Thread(
         target=inference_worker,
         name="eval-queue-inference-worker",
         daemon=True,
     )
-    inference_thread.start()
+    training_thread = threading.Thread(
+        target=training_worker,
+        name="pipeline-training-worker",
+        daemon=True,
+    )
 
-    def raise_if_inference_worker_failed(context: str) -> None:
+    def raise_if_worker_failed(context: str) -> None:
         if inference_worker_error is not None:
             raise RuntimeError(
                 f"Inference worker failed while {context}"
             ) from inference_worker_error
+        if training_worker_error is not None:
+            raise RuntimeError(
+                f"Training worker failed while {context}"
+            ) from training_worker_error
 
-    def inference_batch_fn() -> None:
-        raise_if_inference_worker_failed("processing eval queue batches")
-        inference_batch_requests.release()
-        inference_batches_completed.acquire()
-        raise_if_inference_worker_failed("processing eval queue batches")
-
-    def training_step_fn(global_step: int) -> bool:
-        current_buffer_size = int(replay_buffer.size())
-        if current_buffer_size < training_config.min_buffer_size:
-            sleep_fn(float(training_config.wait_for_buffer_seconds))
-            return False
-
-        sampled_positions = replay_buffer.sample(training_config.batch_size)
-        states, target_policy, target_value = prepare_replay_batch(
-            sampled_positions,
-            game_config,
-            device=device,
-        )
-        if game_config.supports_symmetry:
-            states, target_policy = apply_random_go_symmetry(states, target_policy)
-
-        model.train()
-        step_metrics = train_one_step(
-            model,
-            active_optimizer,
-            states=states,
-            target_policy=target_policy,
-            target_value=target_value,
-            game_config=game_config,
-            lr_schedule=active_schedule,
-            global_step=global_step,
-            l2_reg=float(training_config.l2_reg),
-            scaler=scaler,
-            use_mixed_precision=bool(training_config.use_mixed_precision),
-        )
-
-        next_step = global_step + 1
-        print(f"  step {next_step}", flush=True)  # TEMPORARY
-        updated_metrics = TrainingStepMetrics(
-            step=next_step,
-            loss_total=step_metrics.loss_total,
-            loss_policy=step_metrics.loss_policy,
-            loss_value=step_metrics.loss_value,
-            loss_l2=step_metrics.loss_l2,
-            lr=step_metrics.lr,
-            grad_global_norm=step_metrics.grad_global_norm,
-            grad_nonzero_param_count=step_metrics.grad_nonzero_param_count,
-            buffer_size=current_buffer_size,
-            train_steps_per_second=step_metrics.train_steps_per_second,
-        )
-        if step_logger is not None and next_step % training_config.log_interval == 0:
-            step_logger(next_step, updated_metrics.as_dict())
-
-        checkpoint_dir = training_config.checkpoint_dir
-        if checkpoint_dir is not None and next_step % training_config.checkpoint_interval == 0:
-            emitted_checkpoints.append(
-                save_training_checkpoint(
-                    model,
-                    active_optimizer,
-                    active_schedule,
-                    step=next_step,
-                    checkpoint_dir=Path(checkpoint_dir),
-                    replay_buffer=replay_buffer,
-                    keep_last=int(training_config.checkpoint_keep_last),
-                    is_milestone=False,
-                    export_folded_weights=bool(training_config.export_folded_checkpoints),
-                )
-            )
-            if next_step % training_config.milestone_interval == 0:
-                emitted_checkpoints.append(
-                    save_training_checkpoint(
-                        model,
-                        active_optimizer,
-                        active_schedule,
-                        step=next_step,
-                        checkpoint_dir=Path(checkpoint_dir),
-                        replay_buffer=replay_buffer,
-                        keep_last=int(training_config.checkpoint_keep_last),
-                        is_milestone=True,
-                        export_folded_weights=bool(training_config.export_folded_checkpoints),
-                    )
-                )
-        return True
-
-    def internal_cycle_logger(cycle: int, metrics: Mapping[str, float]) -> None:
+    def emit_cycle_metrics(
+        *,
+        cycle: int,
+        global_step: int,
+        inference_batches: int,
+        training_steps: int,
+        inference_seconds: float,
+        training_seconds: float,
+        cycle_seconds: float,
+    ) -> None:
         if cycle_logger is None:
             return
-        enriched_metrics = dict(metrics)
+        enriched_metrics = InterleavedCycleMetrics(
+            cycle=cycle,
+            global_step=global_step,
+            inference_batches=inference_batches,
+            training_steps=training_steps,
+            inference_seconds=inference_seconds,
+            training_seconds=training_seconds,
+            cycle_seconds=cycle_seconds,
+        ).as_dict()
         enriched_metrics["buffer/size"] = float(replay_buffer.size())
         cycle_logger(cycle, enriched_metrics)
 
@@ -582,21 +653,85 @@ def run_interleaved_pipeline(
     try:
         self_play_manager.start()
         self_play_started = True
-        schedule_result = run_interleaved_schedule(
-            inference_batch_fn=inference_batch_fn,
-            training_step_fn=training_step_fn,
-            max_steps=int(training_config.max_steps),
-            pipeline_config=pipeline_config,
-            start_step=start_step,
-            cycle_logger=internal_cycle_logger,
-        )
+        inference_thread.start()
+        training_thread.start()
+
+        cycle_start_wall = time.perf_counter()
+        last_cycle_inference_batches = 0
+        last_cycle_training_steps = 0
+        last_cycle_inference_seconds = 0.0
+        last_cycle_training_seconds = 0.0
+
+        while True:
+            with progress_condition:
+                target_inference_batches = (
+                    inference_batches_processed + pipeline_config.inference_batches_per_cycle
+                )
+                target_training_steps = (
+                    training_steps_completed + pipeline_config.training_steps_per_cycle
+                )
+                while (
+                    not pipeline_stop_event.is_set()
+                    and inference_worker_error is None
+                    and training_worker_error is None
+                    and current_step < max_steps
+                    and inference_batches_processed < target_inference_batches
+                    and training_steps_completed < target_training_steps
+                ):
+                    progress_condition.wait(timeout=0.05)
+
+                snapshot_step = current_step
+                snapshot_inference_batches = inference_batches_processed
+                snapshot_training_steps = training_steps_completed
+                snapshot_inference_seconds = cumulative_inference_seconds
+                snapshot_training_seconds = cumulative_training_seconds
+
+            raise_if_worker_failed("running the parallel pipeline")
+
+            progress_made = (
+                snapshot_inference_batches > last_cycle_inference_batches
+                or snapshot_training_steps > last_cycle_training_steps
+            )
+            if progress_made:
+                cycles_completed += 1
+                emit_cycle_metrics(
+                    cycle=cycles_completed,
+                    global_step=snapshot_step,
+                    inference_batches=(
+                        snapshot_inference_batches - last_cycle_inference_batches
+                    ),
+                    training_steps=(
+                        snapshot_training_steps - last_cycle_training_steps
+                    ),
+                    inference_seconds=(
+                        snapshot_inference_seconds - last_cycle_inference_seconds
+                    ),
+                    training_seconds=(
+                        snapshot_training_seconds - last_cycle_training_seconds
+                    ),
+                    cycle_seconds=max(time.perf_counter() - cycle_start_wall, 0.0),
+                )
+                cycle_start_wall = time.perf_counter()
+                last_cycle_inference_batches = snapshot_inference_batches
+                last_cycle_training_steps = snapshot_training_steps
+                last_cycle_inference_seconds = snapshot_inference_seconds
+                last_cycle_training_seconds = snapshot_training_seconds
+
+            if snapshot_step >= max_steps:
+                break
+
+            if (
+                pipeline_config.max_cycles is not None
+                and cycles_completed >= pipeline_config.max_cycles
+            ):
+                terminated_early = snapshot_step < max_steps
+                pipeline_stop_event.set()
+                break
     except BaseException as exc:  # pragma: no cover - exercised under failure conditions.
         pipeline_error = exc
         raise
     finally:
-        inference_stop_event.set()
-        # Wake the inference worker if it is blocked waiting for work.
-        inference_batch_requests.release()
+        pipeline_stop_event.set()
 
         # Stop eval_queue first to unblock any workers waiting in submit_and_wait,
         # then stop self_play_manager to join the (now-unblocked) worker threads.
@@ -611,6 +746,10 @@ def run_interleaved_pipeline(
         if inference_thread.is_alive() and pipeline_error is None and shutdown_error is None:
             shutdown_error = RuntimeError("Inference worker thread did not stop cleanly")
 
+        training_thread.join(timeout=5.0)
+        if training_thread.is_alive() and pipeline_error is None and shutdown_error is None:
+            shutdown_error = RuntimeError("Training worker thread did not stop cleanly")
+
         if self_play_started:
             try:
                 self_play_manager.stop()
@@ -621,13 +760,60 @@ def run_interleaved_pipeline(
         if shutdown_error is not None:
             raise shutdown_error
 
+    with progress_condition:
+        final_step = current_step
+        final_inference_batches_processed = inference_batches_processed
+        final_training_steps_completed = training_steps_completed
+
+    if (
+        pipeline_config.max_cycles is not None
+        and cycles_completed >= pipeline_config.max_cycles
+        and final_step < max_steps
+    ):
+        terminated_early = True
+
     return PipelineRunResult(
-        final_step=schedule_result.final_step,
-        cycles_completed=schedule_result.cycles_completed,
-        inference_batches_processed=schedule_result.inference_batches_processed,
-        training_steps_completed=schedule_result.training_steps_completed,
+        final_step=final_step,
+        cycles_completed=cycles_completed,
+        inference_batches_processed=final_inference_batches_processed,
+        training_steps_completed=final_training_steps_completed,
         checkpoints=tuple(emitted_checkpoints),
-        terminated_early=schedule_result.terminated_early,
+        terminated_early=terminated_early,
+    )
+
+
+def run_interleaved_pipeline(
+    model: Any,
+    replay_buffer: ReplayBufferLike,
+    game_config: GameConfig,
+    eval_queue: EvalQueueLike,
+    self_play_manager: SelfPlayManagerLike,
+    training_config: TrainingConfigLike,
+    pipeline_config: PipelineConfig,
+    *,
+    lr_schedule: Any = None,
+    optimizer: Any = None,
+    step_logger: StepLogger | None = None,
+    cycle_logger: CycleLogger | None = None,
+    start_step: int = 0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> PipelineRunResult:
+    """Backward-compatible wrapper for the parallel pipeline runtime."""
+
+    return run_parallel_pipeline(
+        model,
+        replay_buffer,
+        game_config,
+        eval_queue,
+        self_play_manager,
+        training_config,
+        pipeline_config,
+        lr_schedule=lr_schedule,
+        optimizer=optimizer,
+        step_logger=step_logger,
+        cycle_logger=cycle_logger,
+        start_step=start_step,
+        sleep_fn=sleep_fn,
     )
 
 
@@ -641,6 +827,7 @@ __all__ = [
     "load_pipeline_config_from_config",
     "load_pipeline_config_from_yaml",
     "run_interleaved_schedule",
+    "run_parallel_pipeline",
     "run_interleaved_pipeline",
     "make_eval_queue_batch_evaluator",
     "make_selfplay_evaluator_from_eval_queue",

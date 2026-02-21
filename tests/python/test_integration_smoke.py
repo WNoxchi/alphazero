@@ -1,4 +1,4 @@
-"""Integration smoke tests for the interleaved self-play/training pipeline."""
+"""Integration smoke tests for the parallel self-play/training pipeline."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ if _TORCH_AVAILABLE:
     from alphazero.pipeline.orchestrator import (
         PipelineConfig,
         make_eval_queue_batch_evaluator,
-        run_interleaved_pipeline,
+        run_parallel_pipeline,
     )
     from alphazero.training.lr_schedule import StepDecayLRSchedule
     from alphazero.training.trainer import TrainingConfig, create_optimizer
@@ -175,7 +175,7 @@ if _TORCH_AVAILABLE:
 if _TORCH_AVAILABLE:
 
     class _SyntheticSelfPlayManager:
-        """Minimal manager surface required by run_interleaved_pipeline."""
+        """Minimal manager surface required by run_parallel_pipeline."""
 
         def __init__(self, replay_buffer: _InMemoryReplayBuffer) -> None:
             self._replay_buffer = replay_buffer
@@ -217,7 +217,7 @@ if _TORCH_AVAILABLE:
 @unittest.skipUnless(_TORCH_AVAILABLE, "torch is required for pipeline integration smoke tests")
 class PipelineIntegrationSmokeTests(unittest.TestCase):
     def test_pipeline_smoke_runs_100_steps_and_emits_artifacts(self) -> None:
-        """WHY: Guards TASK-092 by proving the full interleaved pipeline can run 100 steps without crashing."""
+        """WHY: Guards P3 by proving the concurrent inference/training pipeline can run 100 steps end-to-end."""
         torch.manual_seed(7)
 
         game_config = GameConfig(
@@ -288,7 +288,7 @@ class PipelineIntegrationSmokeTests(unittest.TestCase):
                 momentum=training_config.momentum,
             )
 
-            result = run_interleaved_pipeline(
+            result = run_parallel_pipeline(
                 model,
                 replay_buffer,
                 game_config,
@@ -341,6 +341,84 @@ class PipelineIntegrationSmokeTests(unittest.TestCase):
             self.assertEqual(milestone_steps, [100])
             for checkpoint in result.checkpoints:
                 self.assertTrue(checkpoint.checkpoint_path.exists())
+
+    def test_parallel_pipeline_honors_max_cycles_termination(self) -> None:
+        """WHY: Guards max-cycle safety stop so runaway training loops terminate when explicitly capped."""
+        torch.manual_seed(11)
+
+        game_config = GameConfig(
+            name="toy-max-cycles",
+            board_shape=(3, 3),
+            input_channels=2,
+            action_space_size=10,
+            value_head_type="scalar",
+            supports_symmetry=False,
+            num_symmetries=1,
+        )
+        model = _TinyPolicyValueNetwork(game_config)
+        replay_buffer = _InMemoryReplayBuffer(capacity=64, random_seed=55)
+        evaluator = make_eval_queue_batch_evaluator(
+            model,
+            game_config,
+            device="cpu",
+            use_mixed_precision=False,
+        )
+        eval_queue = _SyntheticEvalQueue(
+            evaluator=evaluator,
+            replay_buffer=replay_buffer,
+            game_config=game_config,
+            positions_per_batch=4,
+        )
+        self_play_manager = _SyntheticSelfPlayManager(replay_buffer)
+
+        pipeline_config = PipelineConfig(
+            inference_batches_per_cycle=1,
+            training_steps_per_cycle=1,
+            max_cycles=3,
+        )
+        lr_schedule = StepDecayLRSchedule(entries=((0, 0.05),))
+        training_config = TrainingConfig(
+            batch_size=8,
+            max_steps=100,
+            momentum=0.9,
+            l2_reg=1e-4,
+            checkpoint_interval=50,
+            checkpoint_keep_last=2,
+            milestone_interval=100,
+            log_interval=10,
+            min_buffer_size=10_000,
+            wait_for_buffer_seconds=0.0001,
+            use_mixed_precision=False,
+            device="cpu",
+            checkpoint_dir=None,
+            export_folded_checkpoints=False,
+        )
+        optimizer = create_optimizer(
+            model,
+            lr_schedule=lr_schedule,
+            momentum=training_config.momentum,
+        )
+
+        result = run_parallel_pipeline(
+            model,
+            replay_buffer,
+            game_config,
+            eval_queue,
+            self_play_manager,
+            training_config,
+            pipeline_config,
+            lr_schedule=lr_schedule,
+            optimizer=optimizer,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertEqual(result.cycles_completed, 3)
+        self.assertTrue(result.terminated_early)
+        self.assertEqual(result.training_steps_completed, 0)
+        self.assertEqual(result.inference_batches_processed, eval_queue.processed_batches)
+        self.assertTrue(self_play_manager.started)
+        self.assertTrue(self_play_manager.stopped)
+        self.assertTrue(eval_queue.stop_called)
 
 
 if __name__ == "__main__":
