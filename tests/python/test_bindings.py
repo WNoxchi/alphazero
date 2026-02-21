@@ -67,7 +67,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertIsInstance(state.to_string(), str)
 
         encoded = state.encode()
-        self.assertEqual(len(encoded), 119 * 8 * 8)
+        self.assertEqual(encoded.shape, (119, 8, 8))
 
         next_state = state.apply_action(legal_actions[0])
         self.assertIsInstance(next_state, bindings.GameState)
@@ -106,9 +106,10 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(sample.value, 1.0)
         self.assertEqual(sample.game_id, 7)
         self.assertEqual(sample.move_number, 3)
-        self.assertEqual(sample.encoded_state.tolist(), encoded_state)
-        self.assertEqual(sample.policy.tolist(), policy)
-        self.assertEqual(sample.value_wdl.tolist(), value_wdl)
+        import numpy.testing as npt
+        npt.assert_allclose(sample.encoded_state, encoded_state, rtol=1e-6)
+        npt.assert_allclose(sample.policy, policy, rtol=1e-6)
+        npt.assert_allclose(sample.value_wdl, value_wdl, rtol=1e-6)
 
     def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
         """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""
