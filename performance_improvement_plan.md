@@ -58,7 +58,12 @@ Items are ordered by ROI (impact ÷ effort). Dependencies between items are note
 ---
 
 ### P2: Persistent Inference Thread
-- [ ] **Not started**
+- [x] **Completed (2026-02-21)** — `run_interleaved_pipeline()` now uses a single
+  persistent `eval-queue-inference-worker` thread with semaphore-based request/completion
+  signaling (one `process_batch()` per scheduled inference batch), propagates worker
+  failures back to the scheduler, and performs explicit worker shutdown/join before
+  pipeline teardown. Integration smoke coverage now asserts all eval batches run on the
+  single persistent worker thread.
 
 **Priority**: High — eliminates thread creation overhead (50-100 thread spawns per cycle) and enables continuous inference.
 

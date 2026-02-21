@@ -453,13 +453,44 @@ def run_interleaved_pipeline(
 
     emitted_checkpoints: list[Any] = []
 
+    inference_stop_event = threading.Event()
+    inference_batch_requests = threading.Semaphore(0)
+    inference_batches_completed = threading.Semaphore(0)
+    inference_worker_error: BaseException | None = None
+
+    def inference_worker() -> None:
+        nonlocal inference_worker_error
+        while True:
+            inference_batch_requests.acquire()
+            if inference_stop_event.is_set():
+                return
+            try:
+                model.eval()
+                eval_queue.process_batch()
+            except BaseException as exc:  # pragma: no cover - surfaced via inference_batch_fn.
+                inference_worker_error = exc
+                inference_stop_event.set()
+            finally:
+                inference_batches_completed.release()
+
+    inference_thread = threading.Thread(
+        target=inference_worker,
+        name="eval-queue-inference-worker",
+        daemon=True,
+    )
+    inference_thread.start()
+
+    def raise_if_inference_worker_failed(context: str) -> None:
+        if inference_worker_error is not None:
+            raise RuntimeError(
+                f"Inference worker failed while {context}"
+            ) from inference_worker_error
+
     def inference_batch_fn() -> None:
-        model.eval()
-        # Run process_batch from a background thread to avoid GIL livelock
-        # between the main thread and C++ self-play worker threads.
-        t = threading.Thread(target=eval_queue.process_batch)
-        t.start()
-        t.join()
+        raise_if_inference_worker_failed("processing eval queue batches")
+        inference_batch_requests.release()
+        inference_batches_completed.acquire()
+        raise_if_inference_worker_failed("processing eval queue batches")
 
     def training_step_fn(global_step: int) -> bool:
         current_buffer_size = int(replay_buffer.size())
@@ -492,6 +523,7 @@ def run_interleaved_pipeline(
         )
 
         next_step = global_step + 1
+        print(f"  step {next_step}", flush=True)  # TEMPORARY
         updated_metrics = TrainingStepMetrics(
             step=next_step,
             loss_total=step_metrics.loss_total,
@@ -562,19 +594,32 @@ def run_interleaved_pipeline(
         pipeline_error = exc
         raise
     finally:
+        inference_stop_event.set()
+        # Wake the inference worker if it is blocked waiting for work.
+        inference_batch_requests.release()
+
         # Stop eval_queue first to unblock any workers waiting in submit_and_wait,
         # then stop self_play_manager to join the (now-unblocked) worker threads.
+        shutdown_error: BaseException | None = None
         try:
             eval_queue.stop()
-        except Exception:
+        except Exception as exc:
             if pipeline_error is None:
-                raise
+                shutdown_error = exc
+
+        inference_thread.join(timeout=5.0)
+        if inference_thread.is_alive() and pipeline_error is None and shutdown_error is None:
+            shutdown_error = RuntimeError("Inference worker thread did not stop cleanly")
+
         if self_play_started:
             try:
                 self_play_manager.stop()
-            except Exception:
-                if pipeline_error is None:
-                    raise
+            except Exception as exc:
+                if pipeline_error is None and shutdown_error is None:
+                    shutdown_error = exc
+
+        if shutdown_error is not None:
+            raise shutdown_error
 
     return PipelineRunResult(
         final_step=schedule_result.final_step,

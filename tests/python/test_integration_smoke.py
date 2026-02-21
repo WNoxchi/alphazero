@@ -9,6 +9,7 @@ from pathlib import Path
 import random
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 import unittest
@@ -106,8 +107,10 @@ if _TORCH_AVAILABLE:
             self._cursor = 0
             self.stop_called = False
             self.processed_batches = 0
+            self.process_batch_thread_names: list[str] = []
 
         def process_batch(self) -> None:
+            self.process_batch_thread_names.append(threading.current_thread().name)
             encoded_states = np.zeros(
                 (self._positions_per_batch, self._encoded_state_size),
                 dtype=np.float32,
@@ -309,6 +312,10 @@ class PipelineIntegrationSmokeTests(unittest.TestCase):
             self.assertTrue(self_play_manager.stopped)
             self.assertTrue(eval_queue.stop_called)
             self.assertEqual(eval_queue.processed_batches, result.inference_batches_processed)
+            self.assertEqual(
+                set(eval_queue.process_batch_thread_names),
+                {"eval-queue-inference-worker"},
+            )
 
             self.assertGreaterEqual(replay_buffer.size(), training_config.min_buffer_size)
             self.assertGreater(replay_buffer.games_total, 0)
