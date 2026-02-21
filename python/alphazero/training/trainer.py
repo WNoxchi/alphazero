@@ -204,7 +204,15 @@ def _normalize_policy_targets(policy: torch.Tensor) -> torch.Tensor:
     return policy / row_sums
 
 
-def prepare_replay_batch(
+def _value_dim_for_game_config(game_config: GameConfig) -> int:
+    if game_config.value_head_type == "scalar":
+        return 1
+    if game_config.value_head_type == "wdl":
+        return 3
+    raise ValueError(f"Unsupported value_head_type {game_config.value_head_type!r}")
+
+
+def _prepare_replay_batch_from_positions(
     sampled_positions: Sequence[object],
     game_config: GameConfig,
     *,
@@ -231,10 +239,11 @@ def prepare_replay_batch(
         device=device,
     )
 
-    if game_config.value_head_type == "scalar":
+    value_dim = _value_dim_for_game_config(game_config)
+    if value_dim == 1:
         target_value = torch.empty((batch_size,), dtype=torch.float32, device=device)
     else:
-        target_value = torch.empty((batch_size, 3), dtype=torch.float32, device=device)
+        target_value = torch.empty((batch_size, value_dim), dtype=torch.float32, device=device)
 
     for sample_index, position in enumerate(sampled_positions):
         raw_state = _extract_position_field(position, "encoded_state")
@@ -287,7 +296,7 @@ def prepare_replay_batch(
         )
         target_policy[sample_index] = policy_tensor[:action_space_size]
 
-        if game_config.value_head_type == "scalar":
+        if value_dim == 1:
             target_value[sample_index] = _coerce_replay_float(
                 "value",
                 _extract_position_field(position, "value"),
@@ -295,11 +304,144 @@ def prepare_replay_batch(
         else:
             raw_wdl = _extract_position_field(position, "value_wdl")
             wdl_tensor = _as_float_tensor(raw_wdl, device=device).flatten()
-            if wdl_tensor.numel() < 3:
+            if wdl_tensor.numel() < value_dim:
                 raise ValueError("Replay sample value_wdl must contain at least three values")
-            target_value[sample_index] = wdl_tensor[:3]
+            target_value[sample_index] = wdl_tensor[:value_dim]
 
     return states, _normalize_policy_targets(target_policy), target_value
+
+
+def _extract_packed_batch_fields(packed_batch: object) -> tuple[object, object, object]:
+    if isinstance(packed_batch, Mapping):
+        required = ("states", "policies", "values")
+        missing = [field for field in required if field not in packed_batch]
+        if missing:
+            raise KeyError(f"Replay packed batch is missing required fields: {', '.join(missing)}")
+        return packed_batch["states"], packed_batch["policies"], packed_batch["values"]
+
+    if isinstance(packed_batch, Sequence) and not isinstance(packed_batch, (str, bytes)):
+        if len(packed_batch) != 3:
+            raise ValueError(
+                "Replay packed batch sequence must contain exactly three entries: "
+                "(states, policies, values)"
+            )
+        return packed_batch[0], packed_batch[1], packed_batch[2]
+
+    raise TypeError(
+        "Replay packed batch must be either a mapping with keys "
+        "{'states', 'policies', 'values'} or a 3-tuple/list"
+    )
+
+
+def _prepare_replay_batch_from_packed_arrays(
+    packed_batch: object,
+    game_config: GameConfig,
+    *,
+    batch_size: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    rows, cols = game_config.board_shape
+    encoded_state_size = game_config.input_channels * rows * cols
+    action_space_size = game_config.action_space_size
+    value_dim = _value_dim_for_game_config(game_config)
+
+    raw_states, raw_policies, raw_values = _extract_packed_batch_fields(packed_batch)
+    flat_states = _as_float_tensor(raw_states, device=device)
+    flat_policy = _as_float_tensor(raw_policies, device=device)
+    flat_values = _as_float_tensor(raw_values, device=device)
+
+    expected_state_shape = (batch_size, encoded_state_size)
+    if tuple(flat_states.shape) != expected_state_shape:
+        raise ValueError(
+            "Replay packed batch states has incorrect shape: "
+            f"expected {expected_state_shape}, got {tuple(flat_states.shape)}"
+        )
+
+    expected_policy_shape = (batch_size, action_space_size)
+    if tuple(flat_policy.shape) != expected_policy_shape:
+        raise ValueError(
+            "Replay packed batch policies has incorrect shape: "
+            f"expected {expected_policy_shape}, got {tuple(flat_policy.shape)}"
+        )
+
+    if value_dim == 1:
+        if flat_values.ndim == 1:
+            if tuple(flat_values.shape) != (batch_size,):
+                raise ValueError(
+                    "Replay packed batch scalar values has incorrect shape: "
+                    f"expected {(batch_size,)}, got {tuple(flat_values.shape)}"
+                )
+            target_value = flat_values
+        elif flat_values.ndim == 2:
+            if tuple(flat_values.shape) != (batch_size, 1):
+                raise ValueError(
+                    "Replay packed batch scalar values has incorrect shape: "
+                    f"expected {(batch_size, 1)}, got {tuple(flat_values.shape)}"
+                )
+            target_value = flat_values.reshape(batch_size)
+        else:
+            raise ValueError(
+                "Replay packed batch scalar values must be rank 1 or 2, "
+                f"got rank {flat_values.ndim}"
+            )
+        if not bool(torch.isfinite(target_value).all()):
+            raise ValueError("Replay packed batch scalar values must be finite")
+    else:
+        expected_value_shape = (batch_size, value_dim)
+        if tuple(flat_values.shape) != expected_value_shape:
+            raise ValueError(
+                "Replay packed batch WDL values has incorrect shape: "
+                f"expected {expected_value_shape}, got {tuple(flat_values.shape)}"
+            )
+        target_value = flat_values
+
+    states = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
+    target_policy = _normalize_policy_targets(flat_policy)
+    return states, target_policy, target_value
+
+
+def prepare_replay_batch(
+    sampled_positions: Sequence[object],
+    game_config: GameConfig,
+    *,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Convert replay samples into dense training tensors."""
+
+    return _prepare_replay_batch_from_positions(sampled_positions, game_config, device=device)
+
+
+def sample_replay_batch_tensors(
+    replay_buffer: ReplayBufferLike,
+    game_config: GameConfig,
+    *,
+    batch_size: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sample one mini-batch from replay and convert it into dense training tensors."""
+
+    rows, cols = game_config.board_shape
+    encoded_state_size = game_config.input_channels * rows * cols
+    action_space_size = game_config.action_space_size
+    value_dim = _value_dim_for_game_config(game_config)
+
+    sample_batch_fn = getattr(replay_buffer, "sample_batch", None)
+    if callable(sample_batch_fn):
+        packed_batch = sample_batch_fn(
+            batch_size,
+            encoded_state_size,
+            action_space_size,
+            value_dim,
+        )
+        return _prepare_replay_batch_from_packed_arrays(
+            packed_batch,
+            game_config,
+            batch_size=batch_size,
+            device=device,
+        )
+
+    sampled_positions = replay_buffer.sample(batch_size)
+    return _prepare_replay_batch_from_positions(sampled_positions, game_config, device=device)
 
 
 def _apply_dihedral_transform(tensor: torch.Tensor, symmetry_index: int) -> torch.Tensor:
@@ -638,10 +780,10 @@ def training_loop(
             sleep_fn(training_config.wait_for_buffer_seconds)
             continue
 
-        sampled_positions = replay_buffer.sample(training_config.batch_size)
-        states, target_policy, target_value = prepare_replay_batch(
-            sampled_positions,
+        states, target_policy, target_value = sample_replay_batch_tensors(
+            replay_buffer,
             game_config,
+            batch_size=training_config.batch_size,
             device=device,
         )
 
@@ -748,6 +890,7 @@ __all__ = [
     "load_training_config_from_config",
     "load_training_config_from_yaml",
     "prepare_replay_batch",
+    "sample_replay_batch_tensors",
     "save_training_checkpoint",
     "train_one_step",
     "training_loop",

@@ -111,6 +111,81 @@ class PythonBindingsTests(unittest.TestCase):
         npt.assert_allclose(sample.policy, policy, rtol=1e-6)
         npt.assert_allclose(sample.value_wdl, value_wdl, rtol=1e-6)
 
+    def test_replay_buffer_sample_batch_returns_packed_numpy_arrays(self) -> None:
+        """Ensures packed replay sampling exposes contiguous numpy tensors with aligned state/policy/value rows."""
+        bindings = _require_bindings()
+        replay_buffer = bindings.ReplayBuffer(capacity=16, random_seed=777)
+
+        def scalar_for(game_id: int, move_number: int) -> float:
+            bucket = (game_id + move_number) % 3
+            if bucket == 0:
+                return 1.0
+            if bucket == 1:
+                return 0.0
+            return -1.0
+
+        def wdl_for(value: float) -> list[float]:
+            if value > 0.0:
+                return [1.0, 0.0, 0.0]
+            if value < 0.0:
+                return [0.0, 0.0, 1.0]
+            return [0.0, 1.0, 0.0]
+
+        positions = []
+        for game_id, move_number in ((11, 1), (12, 2), (13, 3)):
+            signature = float(game_id * 1000 + move_number)
+            scalar_value = scalar_for(game_id, move_number)
+            positions.append(
+                bindings.ReplayPosition.make(
+                    encoded_state=[signature, float(move_number), signature + 2.0, signature + 3.0],
+                    policy=[signature + 0.5, float(game_id), float(move_number)],
+                    value=scalar_value,
+                    value_wdl=wdl_for(scalar_value),
+                    game_id=game_id,
+                    move_number=move_number,
+                )
+            )
+        replay_buffer.add_game(positions)
+
+        import numpy as np
+        import numpy.testing as npt
+
+        states, policies, scalar_values = replay_buffer.sample_batch(
+            batch_size=8,
+            encoded_state_size=4,
+            policy_size=3,
+            value_dim=1,
+        )
+        self.assertEqual(states.shape, (8, 4))
+        self.assertEqual(policies.shape, (8, 3))
+        self.assertEqual(scalar_values.shape, (8, 1))
+        self.assertEqual(states.dtype, np.float32)
+        self.assertEqual(policies.dtype, np.float32)
+        self.assertEqual(scalar_values.dtype, np.float32)
+
+        for row in range(8):
+            game_id = int(round(float(policies[row, 1])))
+            move_number = int(round(float(policies[row, 2])))
+            expected_signature = float(game_id * 1000 + move_number)
+            self.assertAlmostEqual(float(states[row, 0]), expected_signature)
+            self.assertAlmostEqual(float(states[row, 1]), float(move_number))
+            self.assertAlmostEqual(float(policies[row, 0]), expected_signature + 0.5)
+            self.assertAlmostEqual(float(scalar_values[row, 0]), scalar_for(game_id, move_number))
+
+        _, wdl_policies, wdl_values = replay_buffer.sample_batch(
+            batch_size=8,
+            encoded_state_size=4,
+            policy_size=3,
+            value_dim=3,
+        )
+        self.assertEqual(wdl_policies.shape, (8, 3))
+        self.assertEqual(wdl_values.shape, (8, 3))
+        for row in range(8):
+            game_id = int(round(float(wdl_policies[row, 1])))
+            move_number = int(round(float(wdl_policies[row, 2])))
+            expected = wdl_for(scalar_for(game_id, move_number))
+            npt.assert_allclose(wdl_values[row], expected, rtol=1e-6)
+
     def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
         """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""
         bindings = _require_bindings()

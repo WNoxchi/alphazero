@@ -4,10 +4,28 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <stdexcept>
 #include <unordered_set>
 
 namespace alphazero::selfplay {
+
+namespace {
+
+[[nodiscard]] std::size_t checked_flat_size(
+    const std::size_t batch_size,
+    const std::size_t row_width,
+    const char* field_name) {
+    if (batch_size == 0U || row_width == 0U) {
+        return 0U;
+    }
+    if (batch_size > (std::numeric_limits<std::size_t>::max() / row_width)) {
+        throw std::overflow_error(std::string("ReplayBuffer sample_batch overflowed while sizing ") + field_name);
+    }
+    return batch_size * row_width;
+}
+
+}  // namespace
 
 ReplayPosition ReplayPosition::make(
     const std::span<const float> encoded_state_values,
@@ -97,6 +115,68 @@ std::vector<ReplayPosition> ReplayBuffer::sample(const std::size_t batch_size) c
         batch.push_back(buffer_[physical_index]);
     }
     return batch;
+}
+
+SampledBatch ReplayBuffer::sample_batch(
+    const std::size_t batch_size,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size,
+    const std::size_t value_dim) const {
+    if (batch_size == 0U) {
+        return {};
+    }
+    if (encoded_state_size == 0U || encoded_state_size > ReplayPosition::kMaxEncodedStateSize) {
+        throw std::invalid_argument("ReplayBuffer sample_batch encoded_state_size is out of range");
+    }
+    if (policy_size == 0U || policy_size > ReplayPosition::kMaxPolicySize) {
+        throw std::invalid_argument("ReplayBuffer sample_batch policy_size is out of range");
+    }
+    if (value_dim != 1U && value_dim != ReplayPosition::kWdlSize) {
+        throw std::invalid_argument("ReplayBuffer sample_batch value_dim must be 1 (scalar) or 3 (wdl)");
+    }
+
+    std::shared_lock lock(mutex_);
+    const std::size_t current_count = count_.load(std::memory_order_relaxed);
+    if (current_count == 0U) {
+        throw std::runtime_error("ReplayBuffer sample_batch requested from an empty buffer");
+    }
+    const std::size_t current_head = write_head_.load(std::memory_order_relaxed);
+
+    const std::vector<std::size_t> logical_indices = sample_logical_indices(current_count, batch_size);
+    SampledBatch packed{};
+    packed.batch_size = logical_indices.size();
+    packed.states.resize(checked_flat_size(packed.batch_size, encoded_state_size, "states"));
+    packed.policies.resize(checked_flat_size(packed.batch_size, policy_size, "policies"));
+    packed.values.resize(checked_flat_size(packed.batch_size, value_dim, "values"));
+
+    for (std::size_t sample_index = 0U; sample_index < logical_indices.size(); ++sample_index) {
+        const std::size_t logical_index = logical_indices[sample_index];
+        const std::size_t physical_index = to_physical_index(logical_index, current_count, current_head);
+        const ReplayPosition& position = buffer_[physical_index];
+
+        if (position.encoded_state_size != encoded_state_size) {
+            throw std::invalid_argument(
+                "ReplayBuffer sample_batch encoded_state_size does not match requested shape");
+        }
+        if (position.policy_size != policy_size) {
+            throw std::invalid_argument("ReplayBuffer sample_batch policy_size does not match requested shape");
+        }
+
+        float* state_row = packed.states.data() + (sample_index * encoded_state_size);
+        std::copy_n(position.encoded_state.begin(), encoded_state_size, state_row);
+
+        float* policy_row = packed.policies.data() + (sample_index * policy_size);
+        std::copy_n(position.policy.begin(), policy_size, policy_row);
+
+        float* value_row = packed.values.data() + (sample_index * value_dim);
+        if (value_dim == 1U) {
+            value_row[0] = position.value;
+        } else {
+            std::copy_n(position.value_wdl.begin(), ReplayPosition::kWdlSize, value_row);
+        }
+    }
+
+    return packed;
 }
 
 std::size_t ReplayBuffer::size() const noexcept { return count_.load(std::memory_order_acquire); }
