@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alphazero"
+version = "0.1.0"
+description = "Single-machine AlphaZero for Chess and Go"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.2",
+    "tensorboard",
+    "pyyaml",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-benchmark",
+]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
