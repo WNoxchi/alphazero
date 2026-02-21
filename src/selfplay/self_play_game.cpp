@@ -42,8 +42,7 @@ SelfPlayGame::SelfPlayGame(
       evaluator_(std::move(evaluator)),
       config_(config),
       search_config_(make_search_config(config_)),
-      node_store_(config_.node_arena_capacity),
-      search_(node_store_, game_config_, search_config_),
+      search_(game_config_, search_config_, config_.node_arena_capacity),
       rng_(config_.random_seed) {
     if (!evaluator_) {
         throw std::invalid_argument("SelfPlayGame requires a non-null evaluator callback");

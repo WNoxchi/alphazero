@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include "games/chess/chess_config.h"
+#include "games/go/go_config.h"
 #include "mcts/arena_node_store.h"
 #include "mcts/mcts_node.h"
 
@@ -30,6 +32,7 @@ using alphazero::mcts::EvaluationResult;
 using alphazero::mcts::MCTSNode;
 using alphazero::mcts::MctsSearch;
 using alphazero::mcts::NodeId;
+using alphazero::mcts::RuntimeMctsSearch;
 using alphazero::mcts::SearchConfig;
 
 struct ToyStateSpec {
@@ -212,6 +215,18 @@ TEST(MctsNodeStructureTest, ExposesExpectedCompileTimeCapacitiesAndNodeIdContrac
     EXPECT_EQ(alphazero::mcts::ChessMCTSNode::kMaxActions, alphazero::mcts::kChessMaxActions);
     EXPECT_EQ(alphazero::mcts::GoMCTSNode::kMaxActions, alphazero::mcts::kGoMaxActions);
     EXPECT_EQ(alphazero::mcts::MCTSNode::kMaxActions, alphazero::mcts::kGoMaxActions);
+}
+
+// WHY: Runtime dispatch must choose chess-sized nodes for chess configs and go-sized nodes for go configs.
+TEST(MctsNodeStructureTest, RuntimeSearchDispatchesToGameSpecificNodeCapacity) {
+    const alphazero::chess::ChessGameConfig chess_config{};
+    const alphazero::go::GoGameConfig go_config{};
+
+    const RuntimeMctsSearch chess_search(chess_config, SearchConfig{}, /*node_arena_capacity=*/64U);
+    const RuntimeMctsSearch go_search(go_config, SearchConfig{}, /*node_arena_capacity=*/64U);
+
+    EXPECT_EQ(chess_search.node_capacity_actions(), alphazero::mcts::kChessMaxActions);
+    EXPECT_EQ(go_search.node_capacity_actions(), alphazero::mcts::kGoMaxActions);
 }
 
 // WHY: Freshly allocated nodes must start from a deterministic zeroed state with explicit null-child sentinels.

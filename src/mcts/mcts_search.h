@@ -10,10 +10,12 @@
 #include <random>
 #include <shared_mutex>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include "games/game_config.h"
 #include "games/game_state.h"
+#include "mcts/arena_node_store.h"
 #include "mcts/mcts_node.h"
 #include "mcts/node_store.h"
 
@@ -59,11 +61,13 @@ struct EdgeStats {
 
 using EvaluateFn = std::function<EvaluationResult(const GameState&)>;
 
-[[nodiscard]] float compute_fpu_value(const MCTSNode& node, float c_fpu);
+template <typename NodeType>
+[[nodiscard]] float compute_fpu_value(const NodeType& node, float c_fpu);
 
-class MctsSearch {
+template <typename NodeType>
+class MctsSearchT {
 public:
-    MctsSearch(NodeStore& node_store, const GameConfig& game_config, SearchConfig config = {});
+    MctsSearchT(NodeStoreT<NodeType>& node_store, const GameConfig& game_config, SearchConfig config = {});
 
     void set_root_state(std::unique_ptr<GameState> root_state);
 
@@ -111,25 +115,25 @@ private:
         const std::vector<int>& legal_actions) const;
 
     void initialize_node(
-        MCTSNode* node,
+        NodeType* node,
         const GameState& state,
         const EvaluationResult& eval_result,
         NodeId parent,
         int parent_action) const;
 
-    [[nodiscard]] int select_action_slot(const MCTSNode& node) const;
-    [[nodiscard]] static int find_action_slot(const MCTSNode& node, int action);
+    [[nodiscard]] int select_action_slot(const NodeType& node) const;
+    [[nodiscard]] static int find_action_slot(const NodeType& node, int action);
 
-    static void apply_virtual_loss(MCTSNode* node, int action_slot);
-    static void revert_virtual_loss(MCTSNode* node, int action_slot);
-    static void apply_backup(MCTSNode* node, int action_slot, float value);
+    static void apply_virtual_loss(NodeType* node, int action_slot);
+    static void revert_virtual_loss(NodeType* node, int action_slot);
+    static void apply_backup(NodeType* node, int action_slot, float value);
 
     [[nodiscard]] float dirichlet_alpha() const;
     [[nodiscard]] std::vector<float> sample_dirichlet(int size, float alpha);
-    [[nodiscard]] int argmax_visit_slot(const MCTSNode& node) const;
+    [[nodiscard]] int argmax_visit_slot(const NodeType& node) const;
     [[nodiscard]] float temperature_for_move(int move_number) const;
 
-    NodeStore& node_store_;
+    NodeStoreT<NodeType>& node_store_;
     const GameConfig& game_config_;
     SearchConfig config_;
 
@@ -148,6 +152,83 @@ private:
     std::mutex root_noise_mutex_;
     std::atomic<bool> root_expanded_{false};
     std::atomic<bool> root_noise_applied_{false};
+};
+
+using MctsSearch = MctsSearchT<MCTSNode>;
+using ChessMctsSearch = MctsSearchT<ChessMCTSNode>;
+using GoMctsSearch = MctsSearchT<GoMCTSNode>;
+
+class RuntimeMctsSearch {
+public:
+    RuntimeMctsSearch(
+        const GameConfig& game_config,
+        SearchConfig config = {},
+        std::size_t node_arena_capacity = ArenaNodeStore::kDefaultCapacity);
+
+    void set_root_state(std::unique_ptr<GameState> root_state);
+
+    [[nodiscard]] bool has_root() const;
+    [[nodiscard]] NodeId root_id() const;
+    [[nodiscard]] const GameState& root_state() const;
+
+    void run_simulations(std::size_t simulation_count, const EvaluateFn& evaluator);
+    void run_simulations(const EvaluateFn& evaluator);
+    void run_simulation(const EvaluateFn& evaluator);
+
+    [[nodiscard]] std::vector<float> root_policy_target(int move_number) const;
+    [[nodiscard]] int select_action(int move_number);
+
+    void advance_root(int action);
+    [[nodiscard]] bool should_resign() const;
+
+    void apply_dirichlet_noise_to_root();
+    [[nodiscard]] std::optional<EdgeStats> root_edge_stats(int action) const;
+
+    [[nodiscard]] int node_capacity_actions() const noexcept;
+
+private:
+    enum class NodeLayout {
+        kChess,
+        kGo,
+    };
+
+    struct ChessContext {
+        ChessContext(const GameConfig& game_config, SearchConfig config, std::size_t node_arena_capacity);
+
+        ChessArenaNodeStore node_store;
+        ChessMctsSearch search;
+    };
+
+    struct GoContext {
+        GoContext(const GameConfig& game_config, SearchConfig config, std::size_t node_arena_capacity);
+
+        GoArenaNodeStore node_store;
+        GoMctsSearch search;
+    };
+
+    using SearchVariant = std::variant<ChessContext, GoContext>;
+
+    template <typename Fn>
+    decltype(auto) with_search(Fn&& fn) {
+        return std::visit(
+            [&fn](auto& context) -> decltype(auto) {
+                return fn(context.search);
+            },
+            search_variant_);
+    }
+
+    template <typename Fn>
+    decltype(auto) with_search(Fn&& fn) const {
+        return std::visit(
+            [&fn](const auto& context) -> decltype(auto) {
+                return fn(context.search);
+            },
+            search_variant_);
+    }
+
+    [[nodiscard]] static NodeLayout choose_node_layout(const GameConfig& game_config);
+
+    SearchVariant search_variant_;
 };
 
 }  // namespace alphazero::mcts

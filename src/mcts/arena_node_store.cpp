@@ -8,22 +8,24 @@
 
 namespace alphazero::mcts {
 
-ArenaNodeStore::ArenaNodeStore(std::size_t capacity)
+template <typename NodeType>
+ArenaNodeStoreT<NodeType>::ArenaNodeStoreT(std::size_t capacity)
     : arena_(capacity),
       node_epoch_(capacity, 0U) {
     if (capacity == 0U) {
-        throw std::invalid_argument("ArenaNodeStore capacity must be positive");
+        throw std::invalid_argument("ArenaNodeStoreT capacity must be positive");
     }
 }
 
-NodeId ArenaNodeStore::allocate() {
+template <typename NodeType>
+NodeId ArenaNodeStoreT<NodeType>::allocate() {
     NodeId id = NULL_NODE;
     if (!free_list_.empty()) {
         id = free_list_.back();
         free_list_.pop_back();
     } else {
         if (next_free_ >= arena_.size()) {
-            throw std::runtime_error("ArenaNodeStore capacity exceeded");
+            throw std::runtime_error("ArenaNodeStoreT capacity exceeded");
         }
         id = next_free_++;
     }
@@ -34,22 +36,25 @@ NodeId ArenaNodeStore::allocate() {
     return id;
 }
 
-MCTSNode& ArenaNodeStore::get(NodeId id) {
+template <typename NodeType>
+NodeType& ArenaNodeStoreT<NodeType>::get(NodeId id) {
     validate_live_node(id);
     return arena_[static_cast<std::size_t>(id)];
 }
 
-const MCTSNode& ArenaNodeStore::get(NodeId id) const {
+template <typename NodeType>
+const NodeType& ArenaNodeStoreT<NodeType>::get(NodeId id) const {
     validate_live_node(id);
     return arena_[static_cast<std::size_t>(id)];
 }
 
-void ArenaNodeStore::release_subtree(NodeId root) {
+template <typename NodeType>
+void ArenaNodeStoreT<NodeType>::release_subtree(NodeId root) {
     if (root == NULL_NODE) {
         return;
     }
     if (!is_within_capacity(root)) {
-        throw std::out_of_range("ArenaNodeStore release_subtree root is out of range");
+        throw std::out_of_range("ArenaNodeStoreT release_subtree root is out of range");
     }
     if (!is_live(root)) {
         return;
@@ -66,13 +71,13 @@ void ArenaNodeStore::release_subtree(NodeId root) {
             continue;
         }
 
-        const MCTSNode& node = arena_[static_cast<std::size_t>(node_id)];
+        const NodeType& node = arena_[static_cast<std::size_t>(node_id)];
         for (const NodeId child : node.children) {
             if (!is_live(child)) {
                 continue;
             }
 
-            // ArenaNodeStore currently assumes a tree topology.
+            // ArenaNodeStoreT currently assumes a tree topology.
             if (arena_[static_cast<std::size_t>(child)].parent != node_id) {
                 continue;
             }
@@ -83,7 +88,8 @@ void ArenaNodeStore::release_subtree(NodeId root) {
     }
 }
 
-void ArenaNodeStore::reset() {
+template <typename NodeType>
+void ArenaNodeStoreT<NodeType>::reset() {
     next_free_ = 0;
     free_list_.clear();
     live_nodes_ = 0;
@@ -96,11 +102,18 @@ void ArenaNodeStore::reset() {
     }
 }
 
-std::size_t ArenaNodeStore::nodes_allocated() const { return live_nodes_; }
+template <typename NodeType>
+std::size_t ArenaNodeStoreT<NodeType>::nodes_allocated() const {
+    return live_nodes_;
+}
 
-std::size_t ArenaNodeStore::memory_used_bytes() const { return live_nodes_ * sizeof(MCTSNode); }
+template <typename NodeType>
+std::size_t ArenaNodeStoreT<NodeType>::memory_used_bytes() const {
+    return live_nodes_ * sizeof(NodeType);
+}
 
-NodeId ArenaNodeStore::reuse_subtree(NodeId old_root, NodeId preserved_child) {
+template <typename NodeType>
+NodeId ArenaNodeStoreT<NodeType>::reuse_subtree(NodeId old_root, NodeId preserved_child) {
     validate_live_node(old_root);
 
     if (preserved_child == NULL_NODE) {
@@ -108,10 +121,10 @@ NodeId ArenaNodeStore::reuse_subtree(NodeId old_root, NodeId preserved_child) {
         return NULL_NODE;
     }
     if (!is_live(preserved_child)) {
-        throw std::invalid_argument("ArenaNodeStore preserved child must be an allocated node");
+        throw std::invalid_argument("ArenaNodeStoreT preserved child must be an allocated node");
     }
     if (arena_[static_cast<std::size_t>(preserved_child)].parent != old_root) {
-        throw std::invalid_argument("ArenaNodeStore preserved child must be a direct child of old_root");
+        throw std::invalid_argument("ArenaNodeStoreT preserved child must be a direct child of old_root");
     }
 
     const auto children = arena_[static_cast<std::size_t>(old_root)].children;
@@ -124,32 +137,39 @@ NodeId ArenaNodeStore::reuse_subtree(NodeId old_root, NodeId preserved_child) {
 
     release_single_node(old_root);
 
-    MCTSNode& new_root = get(preserved_child);
+    NodeType& new_root = get(preserved_child);
     new_root.parent = NULL_NODE;
     new_root.parent_action = -1;
     return preserved_child;
 }
 
-std::size_t ArenaNodeStore::capacity() const noexcept { return arena_.size(); }
+template <typename NodeType>
+std::size_t ArenaNodeStoreT<NodeType>::capacity() const noexcept {
+    return arena_.size();
+}
 
-bool ArenaNodeStore::is_within_capacity(NodeId id) const noexcept {
+template <typename NodeType>
+bool ArenaNodeStoreT<NodeType>::is_within_capacity(NodeId id) const noexcept {
     return id != NULL_NODE && static_cast<std::size_t>(id) < arena_.size();
 }
 
-bool ArenaNodeStore::is_live(NodeId id) const noexcept {
+template <typename NodeType>
+bool ArenaNodeStoreT<NodeType>::is_live(NodeId id) const noexcept {
     if (!is_within_capacity(id)) {
         return false;
     }
     return node_epoch_[static_cast<std::size_t>(id)] == epoch_;
 }
 
-void ArenaNodeStore::validate_live_node(NodeId id) const {
+template <typename NodeType>
+void ArenaNodeStoreT<NodeType>::validate_live_node(NodeId id) const {
     if (!is_live(id)) {
-        throw std::out_of_range("ArenaNodeStore node id is not allocated: " + std::to_string(id));
+        throw std::out_of_range("ArenaNodeStoreT node id is not allocated: " + std::to_string(id));
     }
 }
 
-void ArenaNodeStore::release_single_node(NodeId id) {
+template <typename NodeType>
+void ArenaNodeStoreT<NodeType>::release_single_node(NodeId id) {
     if (!is_live(id)) {
         return;
     }
@@ -159,5 +179,8 @@ void ArenaNodeStore::release_single_node(NodeId id) {
     free_list_.push_back(id);
     --live_nodes_;
 }
+
+template class ArenaNodeStoreT<ChessMCTSNode>;
+template class ArenaNodeStoreT<GoMCTSNode>;
 
 }  // namespace alphazero::mcts

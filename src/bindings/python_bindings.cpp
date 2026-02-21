@@ -560,8 +560,7 @@ public:
         const alphazero::mcts::SearchConfig config,
         const std::size_t node_arena_capacity)
         : game_config_(game_config),
-          node_store_(node_arena_capacity),
-          search_(node_store_, game_config_, config),
+          search_(game_config_, config, node_arena_capacity),
           action_space_size_(game_config_.action_space_size) {
         if (node_arena_capacity == 0U) {
             throw std::invalid_argument("MctsSearch node_arena_capacity must be greater than zero");
@@ -618,8 +617,7 @@ public:
 
 private:
     const GameConfig& game_config_;
-    alphazero::mcts::ArenaNodeStore node_store_;
-    alphazero::mcts::MctsSearch search_;
+    alphazero::mcts::RuntimeMctsSearch search_;
     int action_space_size_ = 0;
 };
 

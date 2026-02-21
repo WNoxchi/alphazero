@@ -8,7 +8,6 @@
 #include <vector>
 
 #include "games/game_config.h"
-#include "mcts/arena_node_store.h"
 #include "mcts/mcts_search.h"
 #include "selfplay/replay_buffer.h"
 
@@ -90,8 +89,7 @@ private:
     EvaluateFn evaluator_;
     SelfPlayGameConfig config_;
     mcts::SearchConfig search_config_{};
-    mcts::ArenaNodeStore node_store_;
-    mcts::MctsSearch search_;
+    mcts::RuntimeMctsSearch search_;
     std::mt19937_64 rng_;
     std::mutex rng_mutex_;
 };

@@ -155,6 +155,38 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertIn(selected_action, legal_actions)
         self.assertFalse(search.should_resign())
 
+    def test_mcts_search_binding_runs_for_chess_configs(self) -> None:
+        """Guards runtime node dispatch so chess search remains functional through the shared Python API."""
+        bindings = _require_bindings()
+        game_config = bindings.chess_game_config()
+        search_config = bindings.SearchConfig()
+        search_config.simulations_per_move = 4
+        search_config.enable_dirichlet_noise = False
+        search_config.temperature = 0.0
+        search_config.temperature_moves = 0
+        search_config.enable_resignation = False
+
+        search = bindings.MctsSearch(game_config, search_config, node_arena_capacity=2048)
+        state = bindings.ChessState()
+        legal_actions = state.legal_actions()
+        preferred_action = legal_actions[0]
+
+        def evaluator(_state: object) -> dict[str, object]:
+            policy = [-1000.0] * game_config.action_space_size
+            policy[preferred_action] = 1000.0
+            return {
+                "policy": policy,
+                "value": 0.0,
+                "policy_is_logits": True,
+            }
+
+        search.set_root_state(state)
+        search.run_simulations(evaluator, simulation_count=4)
+        selected_action = search.select_action(1)
+
+        self.assertIn(selected_action, legal_actions)
+        self.assertFalse(search.should_resign())
+
     def test_eval_queue_processes_requests_with_python_batch_callback(self) -> None:
         """Protects the CPU↔Python batching bridge so each submitter gets the correct per-request result."""
         bindings = _require_bindings()
