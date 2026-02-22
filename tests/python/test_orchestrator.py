@@ -323,7 +323,9 @@ class EvalQueueModelAdapterTests(unittest.TestCase):
 
         stream_ctor.assert_not_called()
         stream_ctx.assert_not_called()
-        self.assertFalse(model.training)
+        # The model stays in train() mode throughout the pipeline to avoid
+        # torch.compile guard invalidation from eval()/train() toggling.
+        self.assertTrue(model.training)
 
     def test_cuda_evaluator_uses_non_blocking_transfers_and_stream_sync(self) -> None:
         """WHY: Prevents GIL-holding GPU sync regressions by requiring non-blocking copies and explicit stream sync."""
@@ -435,7 +437,9 @@ class EvalQueueModelAdapterTests(unittest.TestCase):
         stream_ctor.assert_called_once_with(device=fake_device)
         self.assertEqual(stream_context_calls, [fake_stream])
         self.assertEqual(fake_stream.synchronize_calls, 1)
-        self.assertEqual(fake_model.eval_calls, 1)
+        # The evaluator no longer toggles eval()/train() to avoid
+        # torch.compile guard invalidation; the model stays in train mode.
+        self.assertEqual(fake_model.eval_calls, 0)
         self.assertEqual(tuple(policy_logits.shape), (2, GO_CONFIG.action_space_size))
         self.assertEqual(tuple(value_scalars.shape), (2,))
         self.assertAlmostEqual(float(value_scalars[0]), -0.3, places=6)
