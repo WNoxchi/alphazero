@@ -46,6 +46,25 @@ header h1 {
   letter-spacing: -0.02em;
 }
 
+nav {
+  display: flex;
+  gap: 0.75rem;
+}
+
+nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+nav a:hover,
+nav a.active {
+  color: var(--text);
+  background: var(--bg-card);
+}
+
 #status-bar {
   display: flex;
   align-items: center;
