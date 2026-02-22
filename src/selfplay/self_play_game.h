@@ -8,7 +8,6 @@
 #include <vector>
 
 #include "games/game_config.h"
-#include "mcts/arena_node_store.h"
 #include "mcts/mcts_search.h"
 #include "selfplay/replay_buffer.h"
 
@@ -67,7 +66,7 @@ public:
     SelfPlayGame(
         const GameConfig& game_config,
         ReplayBuffer& replay_buffer,
-        EvaluateFn evaluator,
+        const EvaluateFn& evaluator,
         SelfPlayGameConfig config = {});
 
     [[nodiscard]] SelfPlayGameResult play(std::uint32_t game_id);
@@ -87,11 +86,10 @@ private:
 
     const GameConfig& game_config_;
     ReplayBuffer& replay_buffer_;
-    EvaluateFn evaluator_;
+    const EvaluateFn& evaluator_;
     SelfPlayGameConfig config_;
     mcts::SearchConfig search_config_{};
-    mcts::ArenaNodeStore node_store_;
-    mcts::MctsSearch search_;
+    mcts::RuntimeMctsSearch search_;
     std::mt19937_64 rng_;
     std::mutex rng_mutex_;
 };

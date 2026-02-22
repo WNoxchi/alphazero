@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlphaZero Chess</title>
+
+  <!-- Chessground CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/chessground@9.2.1/assets/chessground.base.css">
+  <link rel="stylesheet" href="https://unpkg.com/chessground@9.2.1/assets/chessground.brown.css">
+  <link rel="stylesheet" href="https://unpkg.com/chessground@9.2.1/assets/chessground.cburnett.css">
+
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>AlphaZero Chess</h1>
+      <div id="status-bar">
+        <span id="status-text">Connecting...</span>
+      </div>
+    </header>
+
+    <main>
+      <div id="board-panel">
+        <div id="player-top" class="player-info">
+          <span class="player-name">AlphaZero</span>
+          <span class="player-captured" id="captured-top"></span>
+        </div>
+        <div id="board-container">
+          <div id="board"></div>
+        </div>
+        <div id="player-bottom" class="player-info">
+          <span class="player-name">You</span>
+          <span class="player-captured" id="captured-bottom"></span>
+        </div>
+      </div>
+
+      <div id="side-panel">
+        <div id="eval-bar-container">
+          <div id="eval-bar">
+            <div id="eval-fill"></div>
+          </div>
+          <span id="eval-text">0.0</span>
+        </div>
+
+        <div id="move-history">
+          <div id="move-list"></div>
+        </div>
+
+        <div id="controls">
+          <button id="btn-new-game" title="New game as White">New Game</button>
+          <button id="btn-flip" title="Play as Black">Flip / Black</button>
+          <button id="btn-undo" title="Undo last move">Undo</button>
+          <button id="btn-resign" title="Resign">Resign</button>
+          <button id="btn-pgn" title="Copy PGN">PGN</button>
+        </div>
+
+        <div id="game-result" class="hidden">
+          <span id="result-text"></span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- chess.js for client-side move parsing (SAN display) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <!-- Chessground -->
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

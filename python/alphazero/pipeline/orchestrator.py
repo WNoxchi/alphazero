@@ -425,7 +425,7 @@ def run_parallel_pipeline(
         TrainingStepMetrics,
         apply_random_go_symmetry,
         create_optimizer,
-        prepare_replay_batch,
+        sample_replay_batch_tensors,
         save_training_checkpoint,
         train_one_step,
     )
@@ -524,10 +524,10 @@ def run_parallel_pipeline(
                 continue
 
             try:
-                sampled_positions = replay_buffer.sample(training_config.batch_size)
-                states, target_policy, target_value = prepare_replay_batch(
-                    sampled_positions,
+                states, target_policy, target_value = sample_replay_batch_tensors(
+                    replay_buffer,
                     game_config,
+                    batch_size=training_config.batch_size,
                     device=device,
                 )
                 if game_config.supports_symmetry:

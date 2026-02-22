@@ -8,15 +8,16 @@
 
 namespace alphazero::mcts {
 
-class ArenaNodeStore final : public NodeStore {
+template <typename NodeType>
+class ArenaNodeStoreT final : public NodeStoreT<NodeType> {
 public:
     static constexpr std::size_t kDefaultCapacity = 8192;
 
-    explicit ArenaNodeStore(std::size_t capacity = kDefaultCapacity);
+    explicit ArenaNodeStoreT(std::size_t capacity = kDefaultCapacity);
 
     [[nodiscard]] NodeId allocate() override;
-    [[nodiscard]] MCTSNode& get(NodeId id) override;
-    [[nodiscard]] const MCTSNode& get(NodeId id) const override;
+    [[nodiscard]] NodeType& get(NodeId id) override;
+    [[nodiscard]] const NodeType& get(NodeId id) const override;
 
     void release_subtree(NodeId root) override;
     void reset() override;
@@ -35,7 +36,7 @@ private:
     void validate_live_node(NodeId id) const;
     void release_single_node(NodeId id);
 
-    std::vector<MCTSNode> arena_;
+    std::vector<NodeType> arena_;
     std::vector<std::uint32_t> node_epoch_;
     std::vector<NodeId> free_list_;
 
@@ -43,5 +44,9 @@ private:
     std::size_t live_nodes_ = 0;
     std::uint32_t epoch_ = 1;
 };
+
+using ArenaNodeStore = ArenaNodeStoreT<MCTSNode>;
+using ChessArenaNodeStore = ArenaNodeStoreT<ChessMCTSNode>;
+using GoArenaNodeStore = ArenaNodeStoreT<GoMCTSNode>;
 
 }  // namespace alphazero::mcts

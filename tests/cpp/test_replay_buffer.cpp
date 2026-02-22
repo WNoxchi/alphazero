@@ -268,3 +268,67 @@ TEST(ReplayBufferTest, SamplesWithReplacementWhenBatchExceedsCurrentSize) {
         EXPECT_TRUE(position.game_id >= 21U && position.game_id <= 23U);
     }
 }
+
+// WHY: The packed sampler is the C++ hot path consumed by Python training; rows must stay internally consistent and
+// preserve scalar/WDL targets while avoiding per-position Python unpacking.
+TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
+    ReplayBuffer buffer(8U, 0xC0FFEEULL);
+    buffer.add_game(make_game(31U, 2U));
+    buffer.add_game(make_game(32U, 2U));
+    buffer.add_game(make_game(33U, 2U));
+
+    const alphazero::selfplay::SampledBatch scalar_batch = buffer.sample_batch(12U, kStateSize, kPolicySize, 1U);
+    ASSERT_EQ(scalar_batch.batch_size, 12U);
+    ASSERT_EQ(scalar_batch.states.size(), 12U * kStateSize);
+    ASSERT_EQ(scalar_batch.policies.size(), 12U * kPolicySize);
+    ASSERT_EQ(scalar_batch.values.size(), 12U);
+
+    for (std::size_t sample_index = 0U; sample_index < scalar_batch.batch_size; ++sample_index) {
+        const float signature = scalar_batch.states[sample_index * kStateSize];
+        const float state_move = scalar_batch.states[(sample_index * kStateSize) + 1U];
+        const float policy_game = scalar_batch.policies[(sample_index * kPolicySize) + 1U];
+        const float policy_move = scalar_batch.policies[(sample_index * kPolicySize) + 2U];
+        const auto game_id = static_cast<std::uint32_t>(std::lround(policy_game));
+        const auto move_number = static_cast<std::uint16_t>(std::lround(policy_move));
+        const float expected_signature = static_cast<float>(game_id * 1000U + move_number);
+
+        EXPECT_FLOAT_EQ(signature, expected_signature);
+        EXPECT_FLOAT_EQ(state_move, static_cast<float>(move_number));
+        EXPECT_FLOAT_EQ(scalar_batch.policies[sample_index * kPolicySize], expected_signature + 0.5F);
+        EXPECT_FLOAT_EQ(scalar_batch.values[sample_index], scalar_value_for(game_id, move_number));
+    }
+
+    const alphazero::selfplay::SampledBatch wdl_batch =
+        buffer.sample_batch(12U, kStateSize, kPolicySize, ReplayPosition::kWdlSize);
+    ASSERT_EQ(wdl_batch.batch_size, 12U);
+    ASSERT_EQ(wdl_batch.values.size(), 12U * ReplayPosition::kWdlSize);
+
+    for (std::size_t sample_index = 0U; sample_index < wdl_batch.batch_size; ++sample_index) {
+        const float policy_game = wdl_batch.policies[(sample_index * kPolicySize) + 1U];
+        const float policy_move = wdl_batch.policies[(sample_index * kPolicySize) + 2U];
+        const auto game_id = static_cast<std::uint32_t>(std::lround(policy_game));
+        const auto move_number = static_cast<std::uint16_t>(std::lround(policy_move));
+        const auto expected_wdl = wdl_for(scalar_value_for(game_id, move_number));
+        const std::size_t value_offset = sample_index * ReplayPosition::kWdlSize;
+
+        EXPECT_FLOAT_EQ(wdl_batch.values[value_offset], expected_wdl[0]);
+        EXPECT_FLOAT_EQ(wdl_batch.values[value_offset + 1U], expected_wdl[1]);
+        EXPECT_FLOAT_EQ(wdl_batch.values[value_offset + 2U], expected_wdl[2]);
+    }
+}
+
+// WHY: Packed sampling must fail fast for invalid target shapes/dimensions so training does not silently consume
+// malformed tensors.
+TEST(ReplayBufferTest, SampleBatchValidatesRequestedShapesAndDimensions) {
+    ReplayBuffer buffer(4U, 0x1234ULL);
+    buffer.add_game(make_game(9U, 1U));
+
+    EXPECT_THROW(static_cast<void>(buffer.sample_batch(1U, 0U, kPolicySize, 1U)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(buffer.sample_batch(1U, kStateSize, 0U, 1U)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(buffer.sample_batch(1U, kStateSize, kPolicySize, 2U)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(buffer.sample_batch(1U, kStateSize + 1U, kPolicySize, 1U)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(buffer.sample_batch(1U, kStateSize, kPolicySize + 1U, 1U)), std::invalid_argument);
+
+    ReplayBuffer empty_buffer(4U, 0x5678ULL);
+    EXPECT_THROW(static_cast<void>(empty_buffer.sample_batch(1U, kStateSize, kPolicySize, 1U)), std::runtime_error);
+}

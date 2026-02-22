@@ -37,6 +37,13 @@ struct ReplayPosition {
         std::uint16_t move_number);
 };
 
+struct SampledBatch {
+    std::vector<float> states;
+    std::vector<float> policies;
+    std::vector<float> values;
+    std::size_t batch_size = 0U;
+};
+
 class ReplayBuffer {
 public:
     static constexpr std::size_t kDefaultCapacity = 1'000'000U;
@@ -50,6 +57,11 @@ public:
 
     // Thread-safe uniform random sampling used by training.
     [[nodiscard]] std::vector<ReplayPosition> sample(std::size_t batch_size) const;
+    [[nodiscard]] SampledBatch sample_batch(
+        std::size_t batch_size,
+        std::size_t encoded_state_size,
+        std::size_t policy_size,
+        std::size_t value_dim) const;
 
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] std::size_t capacity() const noexcept;

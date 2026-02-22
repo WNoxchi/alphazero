@@ -13,9 +13,9 @@ mcts:
   dirichlet_alpha: 0.3
   dirichlet_epsilon: 0.25
   temperature_moves: 30
-  concurrent_games: 256       # 4x previous — keeps eval queue full, workers mostly block on eval
+  concurrent_games: 384       # higher parallelism keeps eval queue full and smooths GPU utilization
   threads_per_game: 1         # 1 thread/game — eval latency dominates; saves CPU for more games
-  batch_size: 256             # eval queue batch; code changes needed for larger effective batches
+  batch_size: 384             # match concurrent games for larger, more efficient inference batches
   resign_threshold: -0.9
   resign_disable_fraction: 0.1
 
@@ -39,7 +39,7 @@ pipeline:
   training_steps_per_cycle: 1
 
 replay_buffer:
-  capacity: 500000
+  capacity: 750000
 
 evaluation:
   interval_steps: 5000

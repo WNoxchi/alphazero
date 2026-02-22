@@ -20,7 +20,8 @@ constexpr float kEpsilon = 1.0e-7F;
 
 }  // namespace
 
-float compute_fpu_value(const MCTSNode& node, float c_fpu) {
+template <typename NodeType>
+float compute_fpu_value(const NodeType& node, float c_fpu) {
     float visited_prior_sum = 0.0F;
     for (int i = 0; i < node.num_actions; ++i) {
         if (node.visit_count[static_cast<std::size_t>(i)] > 0) {
@@ -31,7 +32,8 @@ float compute_fpu_value(const MCTSNode& node, float c_fpu) {
     return node.node_value - (c_fpu * std::sqrt(std::max(0.0F, visited_prior_sum)));
 }
 
-MctsSearch::MctsSearch(NodeStore& node_store, const GameConfig& game_config, SearchConfig config)
+template <typename NodeType>
+MctsSearchT<NodeType>::MctsSearchT(NodeStoreT<NodeType>& node_store, const GameConfig& game_config, SearchConfig config)
     : node_store_(node_store),
       game_config_(game_config),
       config_(config),
@@ -57,7 +59,8 @@ MctsSearch::MctsSearch(NodeStore& node_store, const GameConfig& game_config, Sea
     }
 }
 
-void MctsSearch::set_root_state(std::unique_ptr<GameState> root_state) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::set_root_state(std::unique_ptr<GameState> root_state) {
     if (root_state == nullptr) {
         throw std::invalid_argument("MctsSearch root state must be non-null");
     }
@@ -71,17 +74,20 @@ void MctsSearch::set_root_state(std::unique_ptr<GameState> root_state) {
     root_noise_applied_ = false;
 }
 
-bool MctsSearch::has_root() const {
+template <typename NodeType>
+bool MctsSearchT<NodeType>::has_root() const {
     std::shared_lock root_lock(root_mutex_);
     return root_id_ != NULL_NODE && root_state_ != nullptr;
 }
 
-NodeId MctsSearch::root_id() const {
+template <typename NodeType>
+NodeId MctsSearchT<NodeType>::root_id() const {
     std::shared_lock root_lock(root_mutex_);
     return root_id_;
 }
 
-const GameState& MctsSearch::root_state() const {
+template <typename NodeType>
+const GameState& MctsSearchT<NodeType>::root_state() const {
     std::shared_lock root_lock(root_mutex_);
     if (root_state_ == nullptr) {
         throw std::logic_error("MctsSearch root state is not initialized");
@@ -89,17 +95,20 @@ const GameState& MctsSearch::root_state() const {
     return *root_state_;
 }
 
-void MctsSearch::run_simulations(std::size_t simulation_count, const EvaluateFn& evaluator) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::run_simulations(std::size_t simulation_count, const EvaluateFn& evaluator) {
     for (std::size_t i = 0; i < simulation_count; ++i) {
         run_simulation(evaluator);
     }
 }
 
-void MctsSearch::run_simulations(const EvaluateFn& evaluator) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::run_simulations(const EvaluateFn& evaluator) {
     run_simulations(config_.simulations_per_move, evaluator);
 }
 
-void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::run_simulation(const EvaluateFn& evaluator) {
     if (!evaluator) {
         throw std::invalid_argument("MctsSearch evaluator callback must be set");
     }
@@ -138,7 +147,7 @@ void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
 
         {
             std::scoped_lock node_lock(*current_mutex);
-            MCTSNode& node = node_store_.get(current);
+            NodeType& node = node_store_.get(current);
             if (node.num_actions <= 0) {
                 leaf_target.existing_node = current;
                 break;
@@ -184,7 +193,7 @@ void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
         const std::shared_ptr<std::mutex> leaf_mutex = node_mutex(leaf_target.existing_node);
         std::scoped_lock leaf_lock(*leaf_mutex);
 
-        MCTSNode& leaf_node = node_store_.get(leaf_target.existing_node);
+        NodeType& leaf_node = node_store_.get(leaf_target.existing_node);
         if (terminal_leaf) {
             leaf_node.node_value = leaf_value;
         } else if (leaf_node.num_actions == 0) {
@@ -196,7 +205,7 @@ void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
             const std::shared_ptr<std::mutex> parent_mutex = node_mutex(leaf_target.parent_node);
             std::scoped_lock parent_lock(*parent_mutex);
 
-            MCTSNode& parent_node = node_store_.get(leaf_target.parent_node);
+            NodeType& parent_node = node_store_.get(leaf_target.parent_node);
             if (leaf_target.parent_slot < 0 || leaf_target.parent_slot >= parent_node.num_actions) {
                 throw std::logic_error("MctsSearch parent slot out of range during expansion");
             }
@@ -209,7 +218,7 @@ void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
                 const std::shared_ptr<std::mutex> candidate_mutex = node_mutex(candidate_id);
                 std::scoped_lock candidate_lock(*candidate_mutex);
 
-                MCTSNode& candidate = node_store_.get(candidate_id);
+                NodeType& candidate = node_store_.get(candidate_id);
                 if (terminal_leaf) {
                     candidate.reset();
                     candidate.node_value = leaf_value;
@@ -223,7 +232,7 @@ void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
             const std::shared_ptr<std::mutex> parent_mutex = node_mutex(leaf_target.parent_node);
             std::scoped_lock parent_lock(*parent_mutex);
 
-            MCTSNode& parent_node = node_store_.get(leaf_target.parent_node);
+            NodeType& parent_node = node_store_.get(leaf_target.parent_node);
             NodeId& child_slot_ref = parent_node.children[static_cast<std::size_t>(leaf_target.parent_slot)];
             if (child_slot_ref == NULL_NODE) {
                 child_slot_ref = candidate_id;
@@ -241,14 +250,15 @@ void MctsSearch::run_simulation(const EvaluateFn& evaluator) {
         const std::shared_ptr<std::mutex> parent_mutex = node_mutex(it->node_id);
         std::scoped_lock parent_lock(*parent_mutex);
 
-        MCTSNode& parent_node = node_store_.get(it->node_id);
+        NodeType& parent_node = node_store_.get(it->node_id);
         revert_virtual_loss(&parent_node, it->action_slot);
         backed_up_value = -backed_up_value;
         apply_backup(&parent_node, it->action_slot, backed_up_value);
     }
 }
 
-std::vector<float> MctsSearch::root_policy_target(const int move_number) const {
+template <typename NodeType>
+std::vector<float> MctsSearchT<NodeType>::root_policy_target(const int move_number) const {
     NodeId root_id = NULL_NODE;
     {
         std::shared_lock root_lock(root_mutex_);
@@ -262,7 +272,7 @@ std::vector<float> MctsSearch::root_policy_target(const int move_number) const {
     const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
     std::scoped_lock root_node_lock(*root_node_mutex);
 
-    const MCTSNode& root_node = node_store_.get(root_id);
+    const NodeType& root_node = node_store_.get(root_id);
     if (root_node.num_actions <= 0) {
         return policy;
     }
@@ -313,7 +323,8 @@ std::vector<float> MctsSearch::root_policy_target(const int move_number) const {
     return policy;
 }
 
-int MctsSearch::select_action(const int move_number) {
+template <typename NodeType>
+int MctsSearchT<NodeType>::select_action(const int move_number) {
     NodeId root_id = NULL_NODE;
     {
         std::shared_lock root_lock(root_mutex_);
@@ -326,7 +337,7 @@ int MctsSearch::select_action(const int move_number) {
     const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
     std::scoped_lock root_node_lock(*root_node_mutex);
 
-    const MCTSNode& root_node = node_store_.get(root_id);
+    const NodeType& root_node = node_store_.get(root_id);
     if (root_node.num_actions <= 0) {
         throw std::logic_error("MctsSearch cannot select action from an unexpanded root");
     }
@@ -376,7 +387,8 @@ int MctsSearch::select_action(const int move_number) {
     return root_node.actions[sampled_slot];
 }
 
-void MctsSearch::advance_root(const int action) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::advance_root(const int action) {
     std::unique_lock root_lock(root_mutex_);
     if (root_id_ == NULL_NODE || root_state_ == nullptr) {
         throw std::logic_error("MctsSearch root state is not initialized");
@@ -391,7 +403,7 @@ void MctsSearch::advance_root(const int action) {
         const std::shared_ptr<std::mutex> old_root_mutex = node_mutex(old_root);
         std::scoped_lock old_root_lock(*old_root_mutex);
 
-        MCTSNode& old_root_node = node_store_.get(old_root);
+        NodeType& old_root_node = node_store_.get(old_root);
         const int action_slot = find_action_slot(old_root_node, action);
         if (action_slot < 0) {
             throw std::invalid_argument("MctsSearch advance_root action was not legal at root");
@@ -419,7 +431,7 @@ void MctsSearch::advance_root(const int action) {
         return;
     }
 
-    if (auto* arena_store = dynamic_cast<ArenaNodeStore*>(&node_store_); arena_store != nullptr) {
+    if (auto* arena_store = dynamic_cast<ArenaNodeStoreT<NodeType>*>(&node_store_); arena_store != nullptr) {
         std::scoped_lock store_lock(store_mutex_);
         root_id_ = arena_store->reuse_subtree(old_root, selected_child);
     } else {
@@ -430,7 +442,7 @@ void MctsSearch::advance_root(const int action) {
 
         const std::shared_ptr<std::mutex> child_mutex = node_mutex(selected_child);
         std::scoped_lock child_lock(*child_mutex);
-        MCTSNode& child_node = node_store_.get(selected_child);
+        NodeType& child_node = node_store_.get(selected_child);
         child_node.parent = NULL_NODE;
         child_node.parent_action = -1;
         root_id_ = selected_child;
@@ -442,7 +454,8 @@ void MctsSearch::advance_root(const int action) {
     clear_node_mutexes();
 }
 
-bool MctsSearch::should_resign() const {
+template <typename NodeType>
+bool MctsSearchT<NodeType>::should_resign() const {
     if (!config_.enable_resignation) {
         return false;
     }
@@ -459,7 +472,7 @@ bool MctsSearch::should_resign() const {
     const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
     std::scoped_lock root_node_lock(*root_node_mutex);
 
-    const MCTSNode& root_node = node_store_.get(root_id);
+    const NodeType& root_node = node_store_.get(root_id);
     if (root_node.num_actions <= 0) {
         return false;
     }
@@ -482,7 +495,8 @@ bool MctsSearch::should_resign() const {
     return best_child_q < config_.resign_threshold;
 }
 
-void MctsSearch::apply_dirichlet_noise_to_root() {
+template <typename NodeType>
+void MctsSearchT<NodeType>::apply_dirichlet_noise_to_root() {
     NodeId root_id = NULL_NODE;
     {
         std::shared_lock root_lock(root_mutex_);
@@ -495,7 +509,7 @@ void MctsSearch::apply_dirichlet_noise_to_root() {
     const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
     std::scoped_lock root_node_lock(*root_node_mutex);
 
-    MCTSNode& root_node = node_store_.get(root_id);
+    NodeType& root_node = node_store_.get(root_id);
     if (root_node.num_actions <= 0) {
         root_noise_applied_ = true;
         return;
@@ -530,7 +544,8 @@ void MctsSearch::apply_dirichlet_noise_to_root() {
     root_noise_applied_ = true;
 }
 
-std::optional<EdgeStats> MctsSearch::root_edge_stats(const int action) const {
+template <typename NodeType>
+std::optional<EdgeStats> MctsSearchT<NodeType>::root_edge_stats(const int action) const {
     NodeId root_id = NULL_NODE;
     {
         std::shared_lock root_lock(root_mutex_);
@@ -543,7 +558,7 @@ std::optional<EdgeStats> MctsSearch::root_edge_stats(const int action) const {
     const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
     std::scoped_lock root_node_lock(*root_node_mutex);
 
-    const MCTSNode& root_node = node_store_.get(root_id);
+    const NodeType& root_node = node_store_.get(root_id);
     const int action_slot = find_action_slot(root_node, action);
     if (action_slot < 0) {
         return std::nullopt;
@@ -560,14 +575,16 @@ std::optional<EdgeStats> MctsSearch::root_edge_stats(const int action) const {
     };
 }
 
-std::shared_ptr<std::mutex> MctsSearch::node_mutex(const NodeId node_id) const {
+template <typename NodeType>
+std::shared_ptr<std::mutex> MctsSearchT<NodeType>::node_mutex(const NodeId node_id) const {
     std::scoped_lock node_mutexes_lock(node_mutex_map_mutex_);
     auto [it, inserted] = node_mutexes_.emplace(node_id, std::make_shared<std::mutex>());
     (void)inserted;
     return it->second;
 }
 
-NodeId MctsSearch::allocate_node() {
+template <typename NodeType>
+NodeId MctsSearchT<NodeType>::allocate_node() {
     std::scoped_lock store_lock(store_mutex_);
     const NodeId id = node_store_.allocate();
 
@@ -576,18 +593,21 @@ NodeId MctsSearch::allocate_node() {
     return id;
 }
 
-void MctsSearch::reset_store_for_new_root() {
+template <typename NodeType>
+void MctsSearchT<NodeType>::reset_store_for_new_root() {
     std::scoped_lock store_lock(store_mutex_);
     node_store_.reset();
     clear_node_mutexes();
 }
 
-void MctsSearch::clear_node_mutexes() {
+template <typename NodeType>
+void MctsSearchT<NodeType>::clear_node_mutexes() {
     std::scoped_lock node_mutexes_lock(node_mutex_map_mutex_);
     node_mutexes_.clear();
 }
 
-void MctsSearch::ensure_root_expanded(const EvaluateFn& evaluator) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::ensure_root_expanded(const EvaluateFn& evaluator) {
     NodeId root_id = NULL_NODE;
     std::unique_ptr<GameState> root_state;
     {
@@ -604,7 +624,7 @@ void MctsSearch::ensure_root_expanded(const EvaluateFn& evaluator) {
         const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
         std::scoped_lock root_node_lock(*root_node_mutex);
 
-        MCTSNode& root_node = node_store_.get(root_id);
+        NodeType& root_node = node_store_.get(root_id);
         if (root_state->is_terminal()) {
             root_node.node_value = root_state->outcome(root_state->current_player());
             root_expanded_ = true;
@@ -621,7 +641,7 @@ void MctsSearch::ensure_root_expanded(const EvaluateFn& evaluator) {
         {
             const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
             std::scoped_lock root_node_lock(*root_node_mutex);
-            MCTSNode& root_node = node_store_.get(root_id);
+            NodeType& root_node = node_store_.get(root_id);
             needs_expansion = root_node.num_actions == 0;
         }
 
@@ -633,7 +653,7 @@ void MctsSearch::ensure_root_expanded(const EvaluateFn& evaluator) {
 
             const std::shared_ptr<std::mutex> root_node_mutex = node_mutex(root_id);
             std::scoped_lock root_node_lock(*root_node_mutex);
-            MCTSNode& root_node = node_store_.get(root_id);
+            NodeType& root_node = node_store_.get(root_id);
             if (root_node.num_actions == 0) {
                 initialize_node(&root_node, *root_state, eval_result, NULL_NODE, -1);
             }
@@ -644,7 +664,8 @@ void MctsSearch::ensure_root_expanded(const EvaluateFn& evaluator) {
     maybe_apply_root_dirichlet_noise();
 }
 
-void MctsSearch::maybe_apply_root_dirichlet_noise() {
+template <typename NodeType>
+void MctsSearchT<NodeType>::maybe_apply_root_dirichlet_noise() {
     if (!config_.enable_dirichlet_noise) {
         root_noise_applied_ = true;
         return;
@@ -660,7 +681,8 @@ void MctsSearch::maybe_apply_root_dirichlet_noise() {
     apply_dirichlet_noise_to_root();
 }
 
-std::vector<float> MctsSearch::masked_policy(
+template <typename NodeType>
+std::vector<float> MctsSearchT<NodeType>::masked_policy(
     const EvaluationResult& eval_result,
     const std::vector<int>& legal_actions) const {
     if (legal_actions.empty()) {
@@ -725,8 +747,9 @@ std::vector<float> MctsSearch::masked_policy(
     return masked;
 }
 
-void MctsSearch::initialize_node(
-    MCTSNode* node,
+template <typename NodeType>
+void MctsSearchT<NodeType>::initialize_node(
+    NodeType* node,
     const GameState& state,
     const EvaluationResult& eval_result,
     const NodeId parent,
@@ -744,7 +767,7 @@ void MctsSearch::initialize_node(
     node->parent_action = static_cast<std::int16_t>(parent_action);
 
     const std::vector<int> legal_actions = state.legal_actions();
-    if (legal_actions.size() > static_cast<std::size_t>(MCTSNode::kMaxActions)) {
+    if (legal_actions.size() > static_cast<std::size_t>(NodeType::kMaxActions)) {
         throw std::runtime_error("MctsSearch legal action count exceeds MCTS node capacity");
     }
 
@@ -757,7 +780,8 @@ void MctsSearch::initialize_node(
     }
 }
 
-int MctsSearch::select_action_slot(const MCTSNode& node) const {
+template <typename NodeType>
+int MctsSearchT<NodeType>::select_action_slot(const NodeType& node) const {
     if (node.num_actions <= 0) {
         throw std::logic_error("MctsSearch select_action_slot called on an unexpanded node");
     }
@@ -795,7 +819,8 @@ int MctsSearch::select_action_slot(const MCTSNode& node) const {
     return best_slot;
 }
 
-int MctsSearch::find_action_slot(const MCTSNode& node, const int action) {
+template <typename NodeType>
+int MctsSearchT<NodeType>::find_action_slot(const NodeType& node, const int action) {
     for (int i = 0; i < node.num_actions; ++i) {
         if (node.actions[static_cast<std::size_t>(i)] == action) {
             return i;
@@ -804,7 +829,8 @@ int MctsSearch::find_action_slot(const MCTSNode& node, const int action) {
     return -1;
 }
 
-void MctsSearch::apply_virtual_loss(MCTSNode* node, const int action_slot) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::apply_virtual_loss(NodeType* node, const int action_slot) {
     if (node == nullptr) {
         throw std::invalid_argument("MctsSearch apply_virtual_loss requires a non-null node");
     }
@@ -820,7 +846,8 @@ void MctsSearch::apply_virtual_loss(MCTSNode* node, const int action_slot) {
     node->mean_value[index] = node->total_value[index] / static_cast<float>(node->visit_count[index]);
 }
 
-void MctsSearch::revert_virtual_loss(MCTSNode* node, const int action_slot) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::revert_virtual_loss(NodeType* node, const int action_slot) {
     if (node == nullptr) {
         throw std::invalid_argument("MctsSearch revert_virtual_loss requires a non-null node");
     }
@@ -844,7 +871,8 @@ void MctsSearch::revert_virtual_loss(MCTSNode* node, const int action_slot) {
     }
 }
 
-void MctsSearch::apply_backup(MCTSNode* node, const int action_slot, const float value) {
+template <typename NodeType>
+void MctsSearchT<NodeType>::apply_backup(NodeType* node, const int action_slot, const float value) {
     if (node == nullptr) {
         throw std::invalid_argument("MctsSearch apply_backup requires a non-null node");
     }
@@ -862,14 +890,16 @@ void MctsSearch::apply_backup(MCTSNode* node, const int action_slot, const float
     node->mean_value[index] = node->total_value[index] / static_cast<float>(node->visit_count[index]);
 }
 
-float MctsSearch::dirichlet_alpha() const {
+template <typename NodeType>
+float MctsSearchT<NodeType>::dirichlet_alpha() const {
     if (config_.dirichlet_alpha_override > 0.0F) {
         return config_.dirichlet_alpha_override;
     }
     return game_config_.dirichlet_alpha;
 }
 
-std::vector<float> MctsSearch::sample_dirichlet(const int size, const float alpha) {
+template <typename NodeType>
+std::vector<float> MctsSearchT<NodeType>::sample_dirichlet(const int size, const float alpha) {
     if (size <= 0) {
         return {};
     }
@@ -902,7 +932,8 @@ std::vector<float> MctsSearch::sample_dirichlet(const int size, const float alph
     return samples;
 }
 
-int MctsSearch::argmax_visit_slot(const MCTSNode& node) const {
+template <typename NodeType>
+int MctsSearchT<NodeType>::argmax_visit_slot(const NodeType& node) const {
     if (node.num_actions <= 0) {
         throw std::logic_error("MctsSearch argmax_visit_slot requires an expanded node");
     }
@@ -928,11 +959,110 @@ int MctsSearch::argmax_visit_slot(const MCTSNode& node) const {
     return best_slot;
 }
 
-float MctsSearch::temperature_for_move(const int move_number) const {
+template <typename NodeType>
+float MctsSearchT<NodeType>::temperature_for_move(const int move_number) const {
     if (config_.temperature <= 0.0F || move_number > config_.temperature_moves) {
         return 0.0F;
     }
     return config_.temperature;
 }
+
+RuntimeMctsSearch::ChessContext::ChessContext(
+    const GameConfig& game_config,
+    const SearchConfig config,
+    const std::size_t node_arena_capacity)
+    : node_store(node_arena_capacity),
+      search(node_store, game_config, config) {}
+
+RuntimeMctsSearch::GoContext::GoContext(
+    const GameConfig& game_config,
+    const SearchConfig config,
+    const std::size_t node_arena_capacity)
+    : node_store(node_arena_capacity),
+      search(node_store, game_config, config) {}
+
+RuntimeMctsSearch::RuntimeMctsSearch(
+    const GameConfig& game_config,
+    const SearchConfig config,
+    const std::size_t node_arena_capacity)
+    : search_variant_(
+          choose_node_layout(game_config) == NodeLayout::kChess
+              ? SearchVariant(std::in_place_type<ChessContext>, game_config, config, node_arena_capacity)
+              : SearchVariant(std::in_place_type<GoContext>, game_config, config, node_arena_capacity)) {}
+
+RuntimeMctsSearch::NodeLayout RuntimeMctsSearch::choose_node_layout(const GameConfig& game_config) {
+    if (game_config.name == "chess") {
+        return NodeLayout::kChess;
+    }
+    if (game_config.name == "go") {
+        return NodeLayout::kGo;
+    }
+    if (game_config.action_space_size <= kChessMaxActions) {
+        return NodeLayout::kChess;
+    }
+    return NodeLayout::kGo;
+}
+
+void RuntimeMctsSearch::set_root_state(std::unique_ptr<GameState> root_state) {
+    with_search([&root_state](auto& search) { search.set_root_state(std::move(root_state)); });
+}
+
+bool RuntimeMctsSearch::has_root() const {
+    return with_search([](const auto& search) { return search.has_root(); });
+}
+
+NodeId RuntimeMctsSearch::root_id() const {
+    return with_search([](const auto& search) { return search.root_id(); });
+}
+
+const GameState& RuntimeMctsSearch::root_state() const {
+    return with_search([](const auto& search) -> const GameState& { return search.root_state(); });
+}
+
+void RuntimeMctsSearch::run_simulations(const std::size_t simulation_count, const EvaluateFn& evaluator) {
+    with_search([simulation_count, &evaluator](auto& search) { search.run_simulations(simulation_count, evaluator); });
+}
+
+void RuntimeMctsSearch::run_simulations(const EvaluateFn& evaluator) {
+    with_search([&evaluator](auto& search) { search.run_simulations(evaluator); });
+}
+
+void RuntimeMctsSearch::run_simulation(const EvaluateFn& evaluator) {
+    with_search([&evaluator](auto& search) { search.run_simulation(evaluator); });
+}
+
+std::vector<float> RuntimeMctsSearch::root_policy_target(const int move_number) const {
+    return with_search([move_number](const auto& search) { return search.root_policy_target(move_number); });
+}
+
+int RuntimeMctsSearch::select_action(const int move_number) {
+    return with_search([move_number](auto& search) { return search.select_action(move_number); });
+}
+
+void RuntimeMctsSearch::advance_root(const int action) {
+    with_search([action](auto& search) { search.advance_root(action); });
+}
+
+bool RuntimeMctsSearch::should_resign() const {
+    return with_search([](const auto& search) { return search.should_resign(); });
+}
+
+void RuntimeMctsSearch::apply_dirichlet_noise_to_root() {
+    with_search([](auto& search) { search.apply_dirichlet_noise_to_root(); });
+}
+
+std::optional<EdgeStats> RuntimeMctsSearch::root_edge_stats(const int action) const {
+    return with_search([action](const auto& search) { return search.root_edge_stats(action); });
+}
+
+int RuntimeMctsSearch::node_capacity_actions() const noexcept {
+    return std::holds_alternative<ChessContext>(search_variant_) ? ChessMCTSNode::kMaxActions : GoMCTSNode::kMaxActions;
+}
+
+template float compute_fpu_value<ChessMCTSNode>(const ChessMCTSNode& node, float c_fpu);
+template float compute_fpu_value<GoMCTSNode>(const GoMCTSNode& node, float c_fpu);
+
+template class MctsSearchT<ChessMCTSNode>;
+template class MctsSearchT<GoMCTSNode>;
 
 }  // namespace alphazero::mcts

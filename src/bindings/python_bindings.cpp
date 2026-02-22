@@ -44,6 +44,7 @@ using alphazero::go::GoState;
 using alphazero::mcts::EvaluationResult;
 using alphazero::mcts::EvalResult;
 using alphazero::selfplay::ReplayPosition;
+using alphazero::selfplay::SampledBatch;
 using alphazero::selfplay::SelfPlayManager;
 
 [[nodiscard]] std::vector<float> cast_float_sequence(const py::handle& handle, const char* field_name) {
@@ -112,6 +113,46 @@ using alphazero::selfplay::SelfPlayManager;
     py::array_t<float> array(static_cast<py::ssize_t>(ReplayPosition::kWdlSize));
     std::copy_n(position.value_wdl.begin(), ReplayPosition::kWdlSize, array.mutable_data());
     return array;
+}
+
+[[nodiscard]] py::ssize_t to_py_ssize(const std::size_t value, const char* field_name) {
+    if (value > static_cast<std::size_t>(std::numeric_limits<py::ssize_t>::max())) {
+        throw std::overflow_error(std::string(field_name) + " exceeds Python index range");
+    }
+    return static_cast<py::ssize_t>(value);
+}
+
+[[nodiscard]] py::array_t<float> sampled_batch_array_view(
+    const std::shared_ptr<SampledBatch>& batch,
+    const std::vector<float>& storage,
+    const std::size_t rows,
+    const std::size_t cols) {
+    py::capsule owner(
+        new std::shared_ptr<SampledBatch>(batch),
+        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    const std::array<py::ssize_t, 2> shape{to_py_ssize(rows, "rows"), to_py_ssize(cols, "cols")};
+    const std::array<py::ssize_t, 2> strides{
+        to_py_ssize(cols * sizeof(float), "row stride"),
+        static_cast<py::ssize_t>(sizeof(float))};
+    return py::array_t<float>(shape, strides, storage.data(), owner);
+}
+
+[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(
+    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const std::size_t batch_size,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size,
+    const std::size_t value_dim) {
+    SampledBatch sampled_batch{};
+    {
+        py::gil_scoped_release release_gil;
+        sampled_batch = replay_buffer.sample_batch(batch_size, encoded_state_size, policy_size, value_dim);
+    }
+    std::shared_ptr<SampledBatch> owned_batch = std::make_shared<SampledBatch>(std::move(sampled_batch));
+    return py::make_tuple(
+        sampled_batch_array_view(owned_batch, owned_batch->states, owned_batch->batch_size, encoded_state_size),
+        sampled_batch_array_view(owned_batch, owned_batch->policies, owned_batch->batch_size, policy_size),
+        sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim));
 }
 
 template <typename StateType>
@@ -560,8 +601,7 @@ public:
         const alphazero::mcts::SearchConfig config,
         const std::size_t node_arena_capacity)
         : game_config_(game_config),
-          node_store_(node_arena_capacity),
-          search_(node_store_, game_config_, config),
+          search_(game_config_, config, node_arena_capacity),
           action_space_size_(game_config_.action_space_size) {
         if (node_arena_capacity == 0U) {
             throw std::invalid_argument("MctsSearch node_arena_capacity must be greater than zero");
@@ -618,8 +658,7 @@ public:
 
 private:
     const GameConfig& game_config_;
-    alphazero::mcts::ArenaNodeStore node_store_;
-    alphazero::mcts::MctsSearch search_;
+    alphazero::mcts::RuntimeMctsSearch search_;
     int action_space_size_ = 0;
 };
 
@@ -910,6 +949,13 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("random_seed") = 0x9E3779B97F4A7C15ULL)
         .def("add_game", &alphazero::selfplay::ReplayBuffer::add_game, py::arg("positions"))
         .def("sample", &alphazero::selfplay::ReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "sample_batch",
+            &replay_buffer_sample_batch_numpy,
+            py::arg("batch_size"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"),
+            py::arg("value_dim"))
         .def("size", &alphazero::selfplay::ReplayBuffer::size)
         .def("capacity", &alphazero::selfplay::ReplayBuffer::capacity)
         .def("write_head", &alphazero::selfplay::ReplayBuffer::write_head);
@@ -1077,7 +1123,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::keep_alive<1, 3>(),
             py::keep_alive<1, 4>(),
             py::keep_alive<1, 6>())
-        .def("start", &SelfPlayManager::start, py::call_guard<py::gil_scoped_release>())
+        .def("start", &SelfPlayManager::start)
         .def("stop", &SelfPlayManager::stop, py::call_guard<py::gil_scoped_release>())
         .def("is_running", &SelfPlayManager::is_running)
         .def("metrics", &SelfPlayManager::metrics);

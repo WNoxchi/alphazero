@@ -34,6 +34,19 @@ TEST(ArenaNodeStoreTest, UsesExpectedDefaultCapacityAndStartsEmpty) {
     EXPECT_EQ(store.memory_used_bytes(), 0U);
 }
 
+// WHY: Chess and Go must not share the same fixed node footprint, otherwise chess wastes arena memory.
+TEST(ArenaNodeStoreTest, ChessAndGoNodeStoresUseDifferentNodeFootprints) {
+    alphazero::mcts::ChessArenaNodeStore chess_store(2);
+    alphazero::mcts::GoArenaNodeStore go_store(2);
+
+    static_cast<void>(chess_store.allocate());
+    static_cast<void>(go_store.allocate());
+
+    EXPECT_EQ(chess_store.memory_used_bytes(), sizeof(alphazero::mcts::ChessMCTSNode));
+    EXPECT_EQ(go_store.memory_used_bytes(), sizeof(alphazero::mcts::GoMCTSNode));
+    EXPECT_LT(chess_store.memory_used_bytes(), go_store.memory_used_bytes());
+}
+
 // WHY: The allocator contract underpins every simulation, so ID assignment, capacity checks, and accounting must
 // remain deterministic.
 TEST(ArenaNodeStoreTest, AllocatesSequentialIdsAndTracksMemory) {
