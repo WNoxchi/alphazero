@@ -266,9 +266,12 @@ def save_checkpoint(
 
     checkpoint_stem = "milestone" if is_milestone else "checkpoint"
     checkpoint_path = checkpoint_root / f"{checkpoint_stem}_{step:08d}.pt"
+    # Unwrap torch.compile wrapper to save clean state_dict keys
+    # (compiled models prefix keys with "_orig_mod.")
+    raw_model = getattr(model, "_orig_mod", model)
     payload = {
         "step": step,
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": raw_model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "lr_schedule": [list(entry) for entry in normalized_schedule],
         "replay_buffer_metadata": normalized_replay_metadata,

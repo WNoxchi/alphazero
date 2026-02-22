@@ -26,6 +26,7 @@ _SPEC.loader.exec_module(train_script)
 
 @dataclass(frozen=True, slots=True)
 class _FakeTrainingConfig:
+    batch_size: int = 1024
     momentum: float = 0.9
     wait_for_buffer_seconds: float = 1.0
     use_mixed_precision: bool = True
@@ -306,14 +307,20 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         config["system"] = {"precision": "bf16", "run_name": "explicit_run_name"}
 
         compile_calls: list[tuple[Any, str]] = []
-        compiled_model = object()
+        compiled_model = SimpleNamespace(to=lambda **kw: None)
 
         def _compile(model: Any, *, mode: str) -> Any:
             compile_calls.append((model, mode))
             return compiled_model
 
-        fake_torch = SimpleNamespace(compile=_compile)
-        with patch.dict(sys.modules, {"torch": fake_torch}):
+        fake_device = SimpleNamespace(type="cpu")
+        fake_torch = SimpleNamespace(
+            compile=_compile,
+            device=lambda x: fake_device,
+            cuda=SimpleNamespace(is_available=lambda: False),
+        )
+        with patch.dict(sys.modules, {"torch": fake_torch}), \
+                patch.object(train_script, "_warmup_compiled_model"):
             runtime = train_script.build_training_runtime(
                 config_path="configs/chess_default.yaml",
                 resume_path=None,
@@ -323,7 +330,7 @@ class TrainScriptRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(compile_calls), 1)
         compiled_input, compile_mode = compile_calls[0]
-        self.assertEqual(compile_mode, "reduce-overhead")
+        self.assertEqual(compile_mode, "default")
         self.assertIs(runtime.model, compiled_model)
         self.assertEqual(compiled_input.__class__.__name__, "_FakeResNet")
 
