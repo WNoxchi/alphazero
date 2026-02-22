@@ -7,7 +7,7 @@ network:
   se_reduction: 4
 
 mcts:
-  simulations_per_move: 400   # halved from 800 — faster games; fine for early training
+  simulations_per_move: 200   # reduced from 400 — 2x faster self-play in early training
   c_puct: 2.5
   c_fpu: 0.25
   dirichlet_alpha: 0.3
@@ -20,8 +20,8 @@ mcts:
   resign_disable_fraction: 0.1
 
 training:
-  batch_size: 4096            # 4x default — better GPU utilization per training step
-  max_steps: 10000
+  batch_size: 8192            # increased from 4096 — better GPU arithmetic intensity
+  max_steps: 10500
   lr_schedule:
     - [0, 0.2]
     - [7000, 0.02]
@@ -31,7 +31,7 @@ training:
   checkpoint_interval: 1000
   milestone_interval: 5000
   log_interval: 50
-  min_buffer_size: 8192       # 2x training batch — ensures diverse samples
+  min_buffer_size: 16384      # 2x training batch — ensures diverse samples
   wait_for_buffer_seconds: 0.01
 
 pipeline:
@@ -48,6 +48,7 @@ evaluation:
 
 system:
   precision: "bf16"
+  compile: true
   num_gpu: 1
   checkpoint_dir: "./checkpoints"
   log_dir: "./logs"

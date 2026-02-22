@@ -528,21 +528,35 @@ def _set_optimizer_learning_rate(optimizer: torch.optim.Optimizer, lr: float) ->
 
 
 def _gradient_statistics(model: nn.Module) -> tuple[float, int]:
-    squared_norm_sum = 0.0
-    nonzero_grad_parameters = 0
+    gradients: list[torch.Tensor] = []
     for parameter in model.parameters():
         gradient = parameter.grad
-        if gradient is None:
-            continue
-        if not torch.isfinite(gradient).all():
-            raise FloatingPointError("Encountered non-finite gradients during training")
+        if gradient is not None:
+            gradients.append(gradient.detach())
 
-        gradient_float = gradient.detach().to(dtype=torch.float32)
-        squared_norm_sum += float((gradient_float * gradient_float).sum().item())
-        if bool(torch.count_nonzero(gradient_float)):
-            nonzero_grad_parameters += 1
+    if not gradients:
+        return 0.0, 0
 
-    return math.sqrt(squared_norm_sum), nonzero_grad_parameters
+    finite_checks = torch.stack([torch.isfinite(gradient).all() for gradient in gradients])
+    if not bool(finite_checks.all()):
+        raise FloatingPointError("Encountered non-finite gradients during training")
+
+    per_parameter_norms = torch.stack(
+        [
+            torch.linalg.vector_norm(
+                gradient,
+                ord=2.0,
+                dtype=torch.float32,
+            )
+            for gradient in gradients
+        ]
+    )
+    global_norm = float(torch.linalg.vector_norm(per_parameter_norms, ord=2.0).item())
+
+    nonzero_flags = torch.stack([torch.count_nonzero(gradient) > 0 for gradient in gradients])
+    nonzero_grad_parameters = int(nonzero_flags.sum().item())
+
+    return global_norm, nonzero_grad_parameters
 
 
 def train_one_step(
@@ -607,12 +621,22 @@ def train_one_step(
     scaler.update()
 
     step_duration = max(time.perf_counter() - step_start_time, 1e-8)
+    # Transfer all loss components to CPU in one operation to avoid
+    # multiple GPU->CPU synchronization points from repeated `.item()` calls.
+    loss_values = torch.stack(
+        [
+            loss_components.total_loss.detach(),
+            loss_components.policy_loss.detach(),
+            loss_components.value_loss.detach(),
+            loss_components.l2_loss.detach(),
+        ]
+    ).cpu().tolist()
     return TrainingStepMetrics(
         step=global_step + 1,
-        loss_total=float(loss_components.total_loss.detach().item()),
-        loss_policy=float(loss_components.policy_loss.detach().item()),
-        loss_value=float(loss_components.value_loss.detach().item()),
-        loss_l2=float(loss_components.l2_loss.detach().item()),
+        loss_total=loss_values[0],
+        loss_policy=loss_values[1],
+        loss_value=loss_values[2],
+        loss_l2=loss_values[3],
         lr=lr,
         grad_global_norm=grad_global_norm,
         grad_nonzero_param_count=nonzero_grad_parameters,

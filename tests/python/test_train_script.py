@@ -10,6 +10,7 @@ import tempfile
 from types import SimpleNamespace
 from typing import Any, Mapping
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -245,6 +246,7 @@ def _minimal_config() -> dict[str, object]:
         },
         "system": {
             "precision": "bf16",
+            "compile": False,
             "run_name": "explicit_run_name",
         },
     }
@@ -295,6 +297,69 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertEqual(harness.resume_calls, [resume_path])
         self.assertEqual(runtime.start_step, 1234)
         self.assertEqual(runtime.lr_schedule, "loaded_lr_schedule")
+
+    def test_build_runtime_compiles_model_by_default(self) -> None:
+        """WHY: torch.compile should be enabled by default to deliver the expected GPU kernel-fusion speedup."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["system"] = {"precision": "bf16", "run_name": "explicit_run_name"}
+
+        compile_calls: list[tuple[Any, str]] = []
+        compiled_model = object()
+
+        def _compile(model: Any, *, mode: str) -> Any:
+            compile_calls.append((model, mode))
+            return compiled_model
+
+        fake_torch = SimpleNamespace(compile=_compile)
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            runtime = train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=None,
+                dependencies=dependencies,
+                config_override=config,
+            )
+
+        self.assertEqual(len(compile_calls), 1)
+        compiled_input, compile_mode = compile_calls[0]
+        self.assertEqual(compile_mode, "reduce-overhead")
+        self.assertIs(runtime.model, compiled_model)
+        self.assertEqual(compiled_input.__class__.__name__, "_FakeResNet")
+
+    def test_build_runtime_skips_compile_when_disabled(self) -> None:
+        """WHY: debugging and CPU fallback workflows need a deterministic way to bypass graph compilation."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+
+        def _compile(_model: Any, *, mode: str) -> Any:
+            raise AssertionError(f"compile should not be called when disabled, received mode={mode!r}")
+
+        fake_torch = SimpleNamespace(compile=_compile)
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            runtime = train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=None,
+                dependencies=dependencies,
+                config_override=_minimal_config(),
+            )
+
+        self.assertEqual(runtime.model.__class__.__name__, "_FakeResNet")
+
+    def test_build_runtime_rejects_non_boolean_compile_flag(self) -> None:
+        """WHY: system.compile must be strictly typed so config mistakes fail fast before long training runs."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["system"] = {"precision": "bf16", "compile": "true", "run_name": "explicit_run_name"}
+
+        with self.assertRaisesRegex(TypeError, "system.compile must be a bool"):
+            train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=None,
+                dependencies=dependencies,
+                config_override=config,
+            )
 
     def test_run_session_interrupt_saves_final_checkpoint_and_flushes_logger(self) -> None:
         """WHY: graceful shutdown must preserve progress and flush metrics when interrupted by a signal."""

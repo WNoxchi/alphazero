@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
+import math
 import pathlib
 import random
 import sys
 import tempfile
 from typing import Mapping
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -27,6 +29,7 @@ if _TORCH_AVAILABLE:
     from alphazero.training.lr_schedule import StepDecayLRSchedule
     from alphazero.training.trainer import (
         TrainingConfig,
+        _gradient_statistics,
         apply_random_go_symmetry,
         create_optimizer,
         load_training_checkpoint,
@@ -175,6 +178,62 @@ class TrainingLoopTests(unittest.TestCase):
         except (AttributeError, TypeError):
             return torch.cuda.amp.GradScaler(enabled=False)
 
+    def _reference_gradient_statistics(self, model: nn.Module) -> tuple[float, int]:
+        """Preserves the original metric math so the optimized path can be validated against it."""
+        squared_norm_sum = 0.0
+        nonzero_grad_parameters = 0
+        for parameter in model.parameters():
+            gradient = parameter.grad
+            if gradient is None:
+                continue
+            if not torch.isfinite(gradient).all():
+                raise FloatingPointError("Encountered non-finite gradients during training")
+            gradient_float = gradient.detach().to(dtype=torch.float32)
+            squared_norm_sum += float((gradient_float * gradient_float).sum().item())
+            if bool(torch.count_nonzero(gradient_float)):
+                nonzero_grad_parameters += 1
+        return math.sqrt(squared_norm_sum), nonzero_grad_parameters
+
+    def test_gradient_statistics_matches_reference_and_skips_none_gradients(self) -> None:
+        """Guards TensorBoard gradient metrics by keeping optimized stats numerically aligned with legacy logic."""
+        model = nn.Sequential(
+            nn.Linear(4, 3, bias=True),
+            nn.Linear(3, 2, bias=False),
+        )
+        first_layer_weight = model[0].weight
+        first_layer_bias = model[0].bias
+        second_layer_weight = model[1].weight
+
+        first_layer_weight.grad = torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10.0
+        first_layer_bias.grad = torch.zeros(3, dtype=torch.float32)
+        second_layer_weight.grad = None
+
+        expected_norm, expected_nonzero = self._reference_gradient_statistics(model)
+        actual_norm, actual_nonzero = _gradient_statistics(model)
+
+        self.assertTrue(math.isclose(actual_norm, expected_norm, rel_tol=1e-6, abs_tol=1e-7))
+        self.assertEqual(actual_nonzero, expected_nonzero)
+
+    def test_gradient_statistics_returns_zero_when_no_gradients_present(self) -> None:
+        """Protects no-op optimizer steps by requiring stable zero-valued gradient metrics."""
+        model = nn.Linear(2, 2)
+
+        global_norm, nonzero_count = _gradient_statistics(model)
+
+        self.assertEqual(global_norm, 0.0)
+        self.assertEqual(nonzero_count, 0)
+
+    def test_gradient_statistics_raises_for_non_finite_gradients(self) -> None:
+        """Ensures training still fails fast when NaN/Inf gradients appear before optimizer.step."""
+        model = nn.Linear(2, 2, bias=False)
+        model.weight.grad = torch.tensor(
+            [[1.0, float("nan")], [0.0, 1.0]],
+            dtype=torch.float32,
+        )
+
+        with self.assertRaises(FloatingPointError):
+            _gradient_statistics(model)
+
     def test_prepare_replay_batch_builds_dense_tensors_and_normalizes_policy_rows(self) -> None:
         """Protects replay deserialization so training sees correctly-shaped tensors and valid distributions."""
         config = self._toy_game_config(supports_symmetry=False)
@@ -321,6 +380,61 @@ class TrainingLoopTests(unittest.TestCase):
         self.assertLess(loss_after, loss_before)
         self.assertGreater(metrics.grad_nonzero_param_count, 0)
         self.assertGreater(metrics.grad_global_norm, 0.0)
+
+    def test_train_one_step_batches_loss_metric_transfer_with_single_four_scalar_stack(self) -> None:
+        """Guards TASK-04's GPU sync reduction by requiring one dedicated 4-loss stack in train_one_step."""
+        torch.manual_seed(17)
+        config = self._toy_game_config(supports_symmetry=False)
+        model = _TinyPolicyValueNetwork(config)
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer = create_optimizer(model, lr_schedule=schedule, momentum=0.9)
+        scaler = self._make_scaler()
+
+        positions = self._make_replay_positions(config, count=4)
+        states, target_policy, target_value = prepare_replay_batch(
+            positions,
+            config,
+            device=torch.device("cpu"),
+        )
+
+        original_stack = torch.stack
+        stack_signatures: list[tuple[int, tuple[int, ...]]] = []
+
+        def _recording_stack(tensors: object, *args: object, **kwargs: object) -> torch.Tensor:
+            if isinstance(tensors, (list, tuple)) and all(
+                isinstance(tensor, torch.Tensor) for tensor in tensors
+            ):
+                tensor_sequence = tuple(tensors)
+                stack_signatures.append(
+                    (
+                        len(tensor_sequence),
+                        tuple(tensor.ndim for tensor in tensor_sequence),
+                    )
+                )
+                return original_stack(tensor_sequence, *args, **kwargs)
+            return original_stack(tensors, *args, **kwargs)
+
+        with mock.patch("alphazero.training.trainer.torch.stack", side_effect=_recording_stack):
+            metrics = train_one_step(
+                model,
+                optimizer,
+                states=states,
+                target_policy=target_policy,
+                target_value=target_value,
+                game_config=config,
+                lr_schedule=schedule,
+                global_step=0,
+                l2_reg=0.0,
+                scaler=scaler,
+                use_mixed_precision=False,
+            )
+
+        four_scalar_stacks = [signature for signature in stack_signatures if signature == (4, (0, 0, 0, 0))]
+        self.assertEqual(len(four_scalar_stacks), 1)
+        self.assertIsInstance(metrics.loss_total, float)
+        self.assertIsInstance(metrics.loss_policy, float)
+        self.assertIsInstance(metrics.loss_value, float)
+        self.assertIsInstance(metrics.loss_l2, float)
 
     def test_training_loop_waits_for_min_buffer_then_reduces_loss_and_logs(self) -> None:
         """Validates end-to-end loop behavior: buffer gate, optimization progress, and periodic metric callbacks."""

@@ -301,6 +301,7 @@ def make_eval_queue_batch_evaluator(
     *,
     device: str | Any | None = None,
     use_mixed_precision: bool = True,
+    max_batch_size: int | None = None,
 ) -> Callable[[Any], tuple[Any, Any]]:
     """Build a contiguous-batch evaluator callback compatible with ``alphazero_cpp.EvalQueue``."""
 
@@ -310,8 +311,16 @@ def make_eval_queue_batch_evaluator(
     encoded_state_size = game_config.input_channels * rows * cols
     resolved_device = _resolve_torch_device(device)
     model = model.to(device=resolved_device)
+    # Dedicated inference stream allows eval-queue batches to overlap with
+    # training kernels launched on the default stream.
+    inference_stream = (
+        torch.cuda.Stream(device=resolved_device)
+        if resolved_device.type == "cuda"
+        else None
+    )
 
     def evaluator(encoded_states: Any) -> tuple[Any, Any]:
+        from contextlib import nullcontext
         import numpy as np
 
         encoded_states_array = np.asarray(encoded_states, dtype=np.float32)
@@ -335,44 +344,82 @@ def make_eval_queue_batch_evaluator(
                 np.empty((0,), dtype=np.float32),
             )
 
-        flat_states = torch.from_numpy(encoded_states_array)
-        if resolved_device.type != "cpu":
-            flat_states = flat_states.to(device=resolved_device)
-        # Keep forward pass mode-agnostic so shared-model parallel workers avoid
-        # train/eval mode thrashing while still using no-grad inference.
-        model_inputs = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
-
-        with torch.no_grad():
-            with torch.autocast(
-                device_type=resolved_device.type,
-                dtype=torch.bfloat16,
-                enabled=use_mixed_precision,
-            ):
-                policy_logits, value = model(model_inputs)
-
-        if policy_logits.ndim != 2 or int(policy_logits.shape[1]) != game_config.action_space_size:
-            raise ValueError(
-                "Model policy output has unexpected shape; expected "
-                f"(batch, {game_config.action_space_size}), got {tuple(policy_logits.shape)}"
+        # Pad to fixed batch size so torch.compile/CUDAGraph only records one graph.
+        if max_batch_size is not None and batch_size < max_batch_size:
+            pad_rows = max_batch_size - batch_size
+            encoded_states_array = np.pad(
+                encoded_states_array, ((0, pad_rows), (0, 0)), mode="constant"
             )
 
-        if game_config.value_head_type == "scalar":
-            value_scalars = value.reshape(batch_size, -1)[:, 0]
-        elif game_config.value_head_type == "wdl":
-            if value.ndim != 2 or int(value.shape[1]) < 3:
+        stream_context = (
+            torch.cuda.stream(inference_stream)
+            if inference_stream is not None
+            else nullcontext()
+        )
+        # The model stays in train() mode for the entire pipeline lifetime.
+        # Toggling eval()/train() on a torch.compile'd model invalidates
+        # dynamo guards and triggers expensive recompilation, which holds the
+        # GIL and stalls the pipeline.  With torch.no_grad() the only
+        # behavioural difference is BatchNorm (batch stats vs running stats);
+        # the slight noise is acceptable for self-play evaluation.
+        with stream_context:
+            flat_states = torch.from_numpy(encoded_states_array)
+            if resolved_device.type != "cpu":
+                flat_states = flat_states.to(device=resolved_device, non_blocking=True)
+            padded_size = int(flat_states.shape[0])
+            model_inputs = flat_states.reshape(padded_size, game_config.input_channels, rows, cols)
+
+            with torch.no_grad():
+                with torch.autocast(
+                    device_type=resolved_device.type,
+                    dtype=torch.bfloat16,
+                    enabled=use_mixed_precision,
+                ):
+                    policy_logits, value = model(model_inputs)
+
+            # Slice off padding before returning results.
+            # All GPU ops stay on the inference stream so the subsequent
+            # D2H copies are properly ordered.
+            policy_logits = policy_logits[:batch_size]
+            value = value[:batch_size]
+
+            if policy_logits.ndim != 2 or int(policy_logits.shape[1]) != game_config.action_space_size:
                 raise ValueError(
-                    "Model WDL value output must have shape (batch, 3), "
-                    f"got {tuple(value.shape)}"
+                    "Model policy output has unexpected shape; expected "
+                    f"(batch, {game_config.action_space_size}), got {tuple(policy_logits.shape)}"
                 )
-            value_scalars = value[:, 0] - value[:, 2]
-        else:
-            raise ValueError(
-                f"Unsupported value_head_type {game_config.value_head_type!r}"
+
+            if game_config.value_head_type == "scalar":
+                value_scalars = value.reshape(batch_size, -1)[:, 0]
+            elif game_config.value_head_type == "wdl":
+                if value.ndim != 2 or int(value.shape[1]) < 3:
+                    raise ValueError(
+                        "Model WDL value output must have shape (batch, 3), "
+                        f"got {tuple(value.shape)}"
+                    )
+                value_scalars = value[:, 0] - value[:, 2]
+            else:
+                raise ValueError(
+                    f"Unsupported value_head_type {game_config.value_head_type!r}"
+                )
+
+            policy_cpu = policy_logits.detach().to(
+                device="cpu",
+                dtype=torch.float32,
+                non_blocking=True,
+            )
+            value_cpu = value_scalars.detach().to(
+                device="cpu",
+                dtype=torch.float32,
+                non_blocking=True,
             )
 
-        policy_cpu = policy_logits.detach().to(device="cpu", dtype=torch.float32).contiguous()
-        value_cpu = value_scalars.detach().to(device="cpu", dtype=torch.float32).contiguous()
-        return policy_cpu.numpy(), value_cpu.numpy()
+        if inference_stream is not None:
+            # synchronize() releases the GIL while waiting, letting the training
+            # thread continue launching work on the default CUDA stream.
+            inference_stream.synchronize()
+
+        return policy_cpu.contiguous().numpy(), value_cpu.contiguous().numpy()
 
     return evaluator
 
@@ -420,6 +467,7 @@ def run_parallel_pipeline(
 ) -> PipelineRunResult:
     """Run the full self-play/training pipeline with concurrent inference and training workers."""
 
+    import torch
     from alphazero.training.lr_schedule import StepDecayLRSchedule
     from alphazero.training.trainer import (
         TrainingStepMetrics,
@@ -443,6 +491,14 @@ def run_parallel_pipeline(
 
     device = _resolve_torch_device(training_config.device)
     model = model.to(device=device)
+
+    # Move optimizer state (e.g. SGD momentum buffers) to match the model device,
+    # since checkpoints are loaded with map_location="cpu".
+    if optimizer is not None:
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device=device)
 
     active_schedule = lr_schedule or StepDecayLRSchedule()
     active_optimizer = optimizer
@@ -533,7 +589,6 @@ def run_parallel_pipeline(
                 if game_config.supports_symmetry:
                     states, target_policy = apply_random_go_symmetry(states, target_policy)
 
-                model.train()
                 step_start = time.perf_counter()
                 step_metrics = train_one_step(
                     model,

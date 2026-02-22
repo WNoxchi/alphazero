@@ -258,6 +258,71 @@ def _resolve_training_config(
     )
 
 
+def _resolve_compile_model(config: Mapping[str, Any]) -> bool:
+    system = _section(config, "system")
+    return _coerce_bool("system.compile", system.get("compile", True))
+
+
+def _warmup_compiled_model(
+    model: Any,
+    game_config: GameConfig,
+    *,
+    training_batch_size: int,
+    eval_batch_size: int,
+    device: Any,
+    use_mixed_precision: bool,
+) -> None:
+    """Pre-compile forward/backward graphs for both inference and training shapes.
+
+    torch.compile compiles lazily on the first forward pass for each distinct
+    input shape and mode.  Running warmup passes before the pipeline threads
+    start avoids holding the GIL during lazy compilation while self-play is
+    running, which would block inference and stall the entire pipeline.
+    """
+    import torch
+
+    rows, cols = game_config.board_shape
+    channels = game_config.input_channels
+
+    print(
+        f"Warming up compiled model "
+        f"(eval batch={eval_batch_size}, train batch={training_batch_size})..."
+    )
+
+    # The model stays in train() mode for the entire pipeline lifetime so
+    # that torch.compile only ever sees one set of dynamo guards per shape.
+    # Toggling eval()/train() would invalidate guards and trigger expensive
+    # recompilation that holds the GIL and stalls the pipeline.
+
+    # 1. Inference shape — forward only, train mode with no_grad
+    #    (matches the evaluator's execution context).
+    model.train()
+    dummy_inf = torch.zeros(eval_batch_size, channels, rows, cols, device=device)
+    with torch.no_grad():
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=use_mixed_precision,
+        ):
+            model(dummy_inf)
+
+    # 2. Training shape — forward + backward, train mode.
+    dummy_train = torch.zeros(
+        training_batch_size, channels, rows, cols, device=device
+    )
+    with torch.autocast(
+        device_type=device.type,
+        dtype=torch.bfloat16,
+        enabled=use_mixed_precision,
+    ):
+        policy, value = model(dummy_train)
+        loss = policy.sum() + value.sum()
+        loss.backward()
+    model.zero_grad(set_to_none=True)
+
+    print("Model warmup complete.")
+
+
 def _resolve_run_name(
     dependencies: RuntimeDependencies,
     config: Mapping[str, Any],
@@ -439,6 +504,25 @@ def build_training_runtime(
     eval_queue_config = _build_eval_queue_config(cpp, config)
     selfplay_manager_config = _build_selfplay_manager_config(cpp, config)
 
+    if _resolve_compile_model(config):
+        import torch
+
+        model = torch.compile(model, mode="default")
+        device = training_config.device
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            device = torch.device(device)
+        model.to(device=device)
+        _warmup_compiled_model(
+            model,
+            game_config,
+            training_batch_size=int(training_config.batch_size),
+            eval_batch_size=int(eval_queue_config.batch_size),
+            device=device,
+            use_mixed_precision=bool(training_config.use_mixed_precision),
+        )
+
     rows, cols = game_config.board_shape
     encoded_state_size = game_config.input_channels * rows * cols
     eval_batch_evaluator = active_dependencies.make_eval_queue_batch_evaluator(
@@ -446,6 +530,7 @@ def build_training_runtime(
         game_config,
         device=training_config.device,
         use_mixed_precision=bool(training_config.use_mixed_precision),
+        max_batch_size=eval_queue_config.batch_size,
     )
     eval_queue = cpp.EvalQueue(
         evaluator=eval_batch_evaluator,
@@ -638,6 +723,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_from_args(args)
     except (FileNotFoundError, ModuleNotFoundError, TypeError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if exc.__cause__ is not None:
+            import traceback
+            traceback.print_exception(type(exc.__cause__), exc.__cause__, exc.__cause__.__traceback__, file=sys.stderr)
         return 2
 
     _print_summary(summary)
