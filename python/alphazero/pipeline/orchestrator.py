@@ -420,6 +420,7 @@ def run_parallel_pipeline(
 ) -> PipelineRunResult:
     """Run the full self-play/training pipeline with concurrent inference and training workers."""
 
+    import torch
     from alphazero.training.lr_schedule import StepDecayLRSchedule
     from alphazero.training.trainer import (
         TrainingStepMetrics,
@@ -443,6 +444,14 @@ def run_parallel_pipeline(
 
     device = _resolve_torch_device(training_config.device)
     model = model.to(device=device)
+
+    # Move optimizer state (e.g. SGD momentum buffers) to match the model device,
+    # since checkpoints are loaded with map_location="cpu".
+    if optimizer is not None:
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device=device)
 
     active_schedule = lr_schedule or StepDecayLRSchedule()
     active_optimizer = optimizer

@@ -638,6 +638,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_from_args(args)
     except (FileNotFoundError, ModuleNotFoundError, TypeError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if exc.__cause__ is not None:
+            import traceback
+            traceback.print_exception(type(exc.__cause__), exc.__cause__, exc.__cause__.__traceback__, file=sys.stderr)
         return 2
 
     _print_summary(summary)
