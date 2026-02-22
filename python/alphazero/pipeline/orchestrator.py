@@ -310,8 +310,16 @@ def make_eval_queue_batch_evaluator(
     encoded_state_size = game_config.input_channels * rows * cols
     resolved_device = _resolve_torch_device(device)
     model = model.to(device=resolved_device)
+    # Dedicated inference stream allows eval-queue batches to overlap with
+    # training kernels launched on the default stream.
+    inference_stream = (
+        torch.cuda.Stream(device=resolved_device)
+        if resolved_device.type == "cuda"
+        else None
+    )
 
     def evaluator(encoded_states: Any) -> tuple[Any, Any]:
+        from contextlib import nullcontext
         import numpy as np
 
         encoded_states_array = np.asarray(encoded_states, dtype=np.float32)
@@ -335,20 +343,26 @@ def make_eval_queue_batch_evaluator(
                 np.empty((0,), dtype=np.float32),
             )
 
-        flat_states = torch.from_numpy(encoded_states_array)
-        if resolved_device.type != "cpu":
-            flat_states = flat_states.to(device=resolved_device)
-        # Keep forward pass mode-agnostic so shared-model parallel workers avoid
-        # train/eval mode thrashing while still using no-grad inference.
-        model_inputs = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
+        stream_context = (
+            torch.cuda.stream(inference_stream)
+            if inference_stream is not None
+            else nullcontext()
+        )
+        with stream_context:
+            model.eval()
 
-        with torch.no_grad():
-            with torch.autocast(
-                device_type=resolved_device.type,
-                dtype=torch.bfloat16,
-                enabled=use_mixed_precision,
-            ):
-                policy_logits, value = model(model_inputs)
+            flat_states = torch.from_numpy(encoded_states_array)
+            if resolved_device.type != "cpu":
+                flat_states = flat_states.to(device=resolved_device, non_blocking=True)
+            model_inputs = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
+
+            with torch.no_grad():
+                with torch.autocast(
+                    device_type=resolved_device.type,
+                    dtype=torch.bfloat16,
+                    enabled=use_mixed_precision,
+                ):
+                    policy_logits, value = model(model_inputs)
 
         if policy_logits.ndim != 2 or int(policy_logits.shape[1]) != game_config.action_space_size:
             raise ValueError(
@@ -370,9 +384,23 @@ def make_eval_queue_batch_evaluator(
                 f"Unsupported value_head_type {game_config.value_head_type!r}"
             )
 
-        policy_cpu = policy_logits.detach().to(device="cpu", dtype=torch.float32).contiguous()
-        value_cpu = value_scalars.detach().to(device="cpu", dtype=torch.float32).contiguous()
-        return policy_cpu.numpy(), value_cpu.numpy()
+        policy_cpu = policy_logits.detach().to(
+            device="cpu",
+            dtype=torch.float32,
+            non_blocking=True,
+        )
+        value_cpu = value_scalars.detach().to(
+            device="cpu",
+            dtype=torch.float32,
+            non_blocking=True,
+        )
+
+        if inference_stream is not None:
+            # synchronize() releases the GIL while waiting, letting the training
+            # thread continue launching work on the default CUDA stream.
+            inference_stream.synchronize()
+
+        return policy_cpu.contiguous().numpy(), value_cpu.contiguous().numpy()
 
     return evaluator
 

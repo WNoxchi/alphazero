@@ -258,6 +258,11 @@ def _resolve_training_config(
     )
 
 
+def _resolve_compile_model(config: Mapping[str, Any]) -> bool:
+    system = _section(config, "system")
+    return _coerce_bool("system.compile", system.get("compile", True))
+
+
 def _resolve_run_name(
     dependencies: RuntimeDependencies,
     config: Mapping[str, Any],
@@ -411,6 +416,10 @@ def build_training_runtime(
 
     game_config = _resolve_game_config(config)
     model = _build_model(active_dependencies, config, game_config)
+    if _resolve_compile_model(config):
+        import torch
+
+        model = torch.compile(model, mode="reduce-overhead")
     training_config = _resolve_training_config(active_dependencies, config)
     pipeline_config = active_dependencies.load_pipeline_config_from_config(config)
     lr_schedule = active_dependencies.load_lr_schedule_from_config(config)

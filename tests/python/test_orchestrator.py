@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import importlib.util
 import pathlib
 import sys
 import tempfile
-from typing import Sequence, cast
+from typing import Any, Sequence, cast
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -287,6 +289,172 @@ class EvalQueueModelAdapterTests(unittest.TestCase):
         self.assertEqual(tuple(value_scalars.shape), (2,))
         self.assertAlmostEqual(float(value_scalars[0]), 0.6, places=6)
         self.assertAlmostEqual(float(value_scalars[1]), -0.3, places=6)
+
+    def test_cpu_evaluator_skips_cuda_stream_initialization(self) -> None:
+        """WHY: Guards CPU fallback so stream-specific CUDA logic never runs on CPU-only evaluators."""
+
+        class _ScalarModel(nn.Module):
+            def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                batch_size = x.shape[0]
+                policy = torch.zeros(
+                    (batch_size, GO_CONFIG.action_space_size),
+                    dtype=torch.float32,
+                    device=x.device,
+                )
+                value = torch.zeros(
+                    (batch_size, 1),
+                    dtype=torch.float32,
+                    device=x.device,
+                )
+                return policy, value
+
+        model = _ScalarModel()
+        encoded_size = GO_CONFIG.input_channels * GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]
+        import numpy as np
+
+        with patch("torch.cuda.Stream") as stream_ctor, patch("torch.cuda.stream") as stream_ctx:
+            evaluator = make_eval_queue_batch_evaluator(
+                model,
+                GO_CONFIG,
+                device="cpu",
+                use_mixed_precision=False,
+            )
+            evaluator(np.zeros((1, encoded_size), dtype=np.float32))
+
+        stream_ctor.assert_not_called()
+        stream_ctx.assert_not_called()
+        self.assertFalse(model.training)
+
+    def test_cuda_evaluator_uses_non_blocking_transfers_and_stream_sync(self) -> None:
+        """WHY: Prevents GIL-holding GPU sync regressions by requiring non-blocking copies and explicit stream sync."""
+        import numpy as np
+
+        class _FakeDevice:
+            type = "cuda"
+
+        class _FakeTensor:
+            def __init__(self, array: Any, to_calls: list[tuple[Any, dict[str, Any]]]) -> None:
+                self._array = np.asarray(array, dtype=np.float32)
+                self._to_calls = to_calls
+
+            @property
+            def ndim(self) -> int:
+                return int(self._array.ndim)
+
+            @property
+            def shape(self) -> tuple[int, ...]:
+                return tuple(int(dim) for dim in self._array.shape)
+
+            def to(self, *args: Any, **kwargs: Any) -> "_FakeTensor":
+                device_arg = kwargs.get("device")
+                if device_arg is None and args:
+                    device_arg = args[0]
+                self._to_calls.append((device_arg, dict(kwargs)))
+                return self
+
+            def reshape(self, *shape: int) -> "_FakeTensor":
+                return _FakeTensor(self._array.reshape(*shape), self._to_calls)
+
+            def detach(self) -> "_FakeTensor":
+                return self
+
+            def contiguous(self) -> "_FakeTensor":
+                return self
+
+            def numpy(self) -> Any:
+                return self._array
+
+            def __getitem__(self, key: Any) -> "_FakeTensor":
+                return _FakeTensor(self._array[key], self._to_calls)
+
+            def __sub__(self, other: "_FakeTensor") -> "_FakeTensor":
+                return _FakeTensor(self._array - other._array, self._to_calls)
+
+        class _FakeModel:
+            def __init__(self, to_calls: list[tuple[Any, dict[str, Any]]]) -> None:
+                self.training = True
+                self.eval_calls = 0
+                self._to_calls = to_calls
+
+            def to(self, *, device: Any) -> "_FakeModel":
+                self.device = device
+                return self
+
+            def eval(self) -> "_FakeModel":
+                self.training = False
+                self.eval_calls += 1
+                return self
+
+            def __call__(self, model_inputs: _FakeTensor) -> tuple[_FakeTensor, _FakeTensor]:
+                batch_size = int(model_inputs.shape[0])
+                policy = _FakeTensor(
+                    np.zeros((batch_size, GO_CONFIG.action_space_size), dtype=np.float32),
+                    self._to_calls,
+                )
+                value = _FakeTensor(
+                    np.linspace(-0.3, 0.3, num=batch_size, dtype=np.float32).reshape(batch_size, 1),
+                    self._to_calls,
+                )
+                return policy, value
+
+        class _FakeStream:
+            def __init__(self) -> None:
+                self.synchronize_calls = 0
+
+            def synchronize(self) -> None:
+                self.synchronize_calls += 1
+
+        to_calls: list[tuple[Any, dict[str, Any]]] = []
+        fake_model = _FakeModel(to_calls)
+        fake_device = _FakeDevice()
+        fake_stream = _FakeStream()
+        stream_context_calls: list[_FakeStream] = []
+
+        def _stream_context(stream: _FakeStream) -> Any:
+            stream_context_calls.append(stream)
+            return nullcontext()
+
+        encoded_size = GO_CONFIG.input_channels * GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]
+        encoded_states = np.zeros((2, encoded_size), dtype=np.float32)
+        with (
+            patch("alphazero.pipeline.orchestrator._resolve_torch_device", return_value=fake_device),
+            patch("torch.cuda.Stream", return_value=fake_stream) as stream_ctor,
+            patch("torch.cuda.stream", side_effect=_stream_context),
+            patch("torch.from_numpy", side_effect=lambda array: _FakeTensor(array, to_calls)),
+            patch("torch.no_grad", side_effect=lambda: nullcontext()),
+            patch("torch.autocast", side_effect=lambda **_kwargs: nullcontext()),
+        ):
+            evaluator = make_eval_queue_batch_evaluator(
+                fake_model,
+                GO_CONFIG,
+                device="cuda:0",
+                use_mixed_precision=False,
+            )
+            policy_logits, value_scalars = evaluator(encoded_states)
+
+        stream_ctor.assert_called_once_with(device=fake_device)
+        self.assertEqual(stream_context_calls, [fake_stream])
+        self.assertEqual(fake_stream.synchronize_calls, 1)
+        self.assertEqual(fake_model.eval_calls, 1)
+        self.assertEqual(tuple(policy_logits.shape), (2, GO_CONFIG.action_space_size))
+        self.assertEqual(tuple(value_scalars.shape), (2,))
+        self.assertAlmostEqual(float(value_scalars[0]), -0.3, places=6)
+        self.assertAlmostEqual(float(value_scalars[1]), 0.3, places=6)
+
+        cuda_transfers = [
+            kwargs
+            for device_arg, kwargs in to_calls
+            if device_arg is fake_device
+        ]
+        cpu_transfers = [
+            kwargs
+            for device_arg, kwargs in to_calls
+            if device_arg == "cpu"
+        ]
+        self.assertEqual(len(cuda_transfers), 1)
+        self.assertTrue(bool(cuda_transfers[0].get("non_blocking")))
+        self.assertEqual(len(cpu_transfers), 2)
+        self.assertTrue(all(bool(kwargs.get("non_blocking")) for kwargs in cpu_transfers))
 
 
 if __name__ == "__main__":
