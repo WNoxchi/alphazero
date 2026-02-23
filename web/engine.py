@@ -47,6 +47,7 @@ class ChessEngine:
         from scripts.play import build_play_runtime, build_argument_parser
 
         self._node_arena_capacity = node_arena_capacity
+        self.model_name: str | None = None
 
         args = argparse.Namespace(
             game="chess",
@@ -75,6 +76,27 @@ class ChessEngine:
         self._state_history: list[Any] = []
         self._search: Any = None
         self.reset()
+
+    @classmethod
+    def from_runtime(
+        cls,
+        runtime: Any,
+        *,
+        model_name: str | None = None,
+        node_arena_capacity: int = 262_144,
+    ) -> "ChessEngine":
+        """Construct a ChessEngine from an existing PlayRuntime."""
+        engine = object.__new__(cls)
+        engine._runtime = runtime
+        engine._cpp = runtime.dependencies.cpp
+        engine._node_arena_capacity = node_arena_capacity
+        engine.model_name = model_name
+        engine._state = None
+        engine._action_history = []
+        engine._state_history = []
+        engine._search = None
+        engine.reset()
+        return engine
 
     def reset(self) -> dict[str, Any]:
         """Start a new game. Returns initial board state."""

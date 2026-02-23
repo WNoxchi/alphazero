@@ -14,6 +14,9 @@ let gameOver = false;
 // chess.js instance for SAN display (0.10.x global constructor)
 const chess = new Chess();
 
+let hasModelSelector = false; // whether /api/models returned models
+let selectedModelName = "";  // display name for the AI player label
+
 // ── DOM refs ───────────────────────────────────────────────────────────
 
 const boardEl = document.getElementById("board");
@@ -23,6 +26,9 @@ const evalFill = document.getElementById("eval-fill");
 const evalText = document.getElementById("eval-text");
 const resultBox = document.getElementById("game-result");
 const resultText = document.getElementById("result-text");
+const modelSelect = document.getElementById("model-select");
+const modelSelection = document.getElementById("model-selection");
+const aiLabel = document.querySelector("#player-top .player-name");
 
 // ── Chessground setup ──────────────────────────────────────────────────
 
@@ -245,7 +251,11 @@ function connect() {
   ws = new WebSocket(`${protocol}//${window.location.host}/ws/chess`);
 
   ws.onopen = () => {
-    setStatus("Your turn", "connected");
+    if (hasModelSelector) {
+      setStatus("Select a model and click New Game", "connected");
+    } else {
+      setStatus("Your turn", "connected");
+    }
   };
 
   ws.onmessage = (event) => {
@@ -287,6 +297,10 @@ function handleMessage(msg) {
     case "move_ack":
       // Our move was accepted, update board
       updateBoard(msg);
+      break;
+
+    case "loading":
+      setStatus("Loading model...", "thinking");
       break;
 
     case "thinking":
@@ -338,14 +352,24 @@ document.getElementById("btn-new-game").addEventListener("click", () => {
   playerColor = "white";
   boardFlipped = false;
   if (cg) cg.set({ orientation: "white" });
-  wsSend({ type: "new_game" });
+  const msg = { type: "new_game" };
+  if (hasModelSelector && modelSelect.value) {
+    msg.model = modelSelect.value;
+    aiLabel.textContent = modelSelect.selectedOptions[0].text;
+  }
+  wsSend(msg);
 });
 
 document.getElementById("btn-flip").addEventListener("click", () => {
   playerColor = "black";
   boardFlipped = true;
   if (cg) cg.set({ orientation: "black" });
-  wsSend({ type: "new_game_as_black" });
+  const msg = { type: "new_game_as_black" };
+  if (hasModelSelector && modelSelect.value) {
+    msg.model = modelSelect.value;
+    aiLabel.textContent = modelSelect.selectedOptions[0].text;
+  }
+  wsSend(msg);
 });
 
 document.getElementById("btn-undo").addEventListener("click", () => {
@@ -365,7 +389,40 @@ document.getElementById("btn-pgn").addEventListener("click", () => {
   wsSend({ type: "pgn" });
 });
 
+// ── Model loading ─────────────────────────────────────────────────────
+
+async function loadModels() {
+  try {
+    const response = await fetch("/api/models");
+    const data = await response.json();
+    const models = data.models || [];
+
+    if (models.length === 0) {
+      // No checkpoint-dir — hide selector (server has a --model)
+      modelSelection.style.display = "none";
+      return;
+    }
+
+    hasModelSelector = true;
+    modelSelect.innerHTML = "";
+    for (const model of models) {
+      modelSelect.add(new Option(model.display_name, model.name));
+    }
+    modelSelect.selectedIndex = models.length - 1;
+    selectedModelName = modelSelect.selectedOptions[0].text;
+    aiLabel.textContent = selectedModelName;
+  } catch (e) {
+    console.error("loadModels failed:", e);
+    modelSelection.style.display = "none";
+  }
+}
+
+modelSelect.addEventListener("change", () => {
+  selectedModelName = modelSelect.selectedOptions[0].text;
+  aiLabel.textContent = selectedModelName;
+});
+
 // ── Init ───────────────────────────────────────────────────────────────
 
 initBoard();
-connect();
+loadModels().then(() => connect());
