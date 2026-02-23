@@ -7,47 +7,50 @@ network:
   se_reduction: 4
 
 mcts:
-  simulations_per_move: 800
+  simulations_per_move: 400        # reduced from 800 — 2x faster self-play in early training
   c_puct: 2.5
   c_fpu: 0.25
   dirichlet_alpha: 0.03
   dirichlet_epsilon: 0.25
   temperature_moves: 30
-  concurrent_games: 32
-  threads_per_game: 8
-  batch_size: 256
+  concurrent_games: 384            # higher parallelism keeps eval queue full and smooths GPU utilization
+  threads_per_game: 1              # 1 thread/game — eval latency dominates; saves CPU for more games
+  batch_size: 384                  # match concurrent_games for larger, more efficient inference batches
+  node_arena_capacity: 2048        # 400 sims needs ~400 nodes; saves 22 GB vs default 8192
   resign_threshold: -0.9
   resign_disable_fraction: 0.1
 
 training:
-  batch_size: 1024
-  max_steps: 700000
+  batch_size: 4096                 # increased from 1024 — better GPU arithmetic intensity on 19x19
+  max_steps: 350000
   lr_schedule:
     - [0, 0.2]
-    - [200000, 0.02]
-    - [400000, 0.002]
-    - [600000, 0.0002]
+    - [100000, 0.02]
+    - [200000, 0.002]
+    - [300000, 0.0002]
   momentum: 0.9
   l2_reg: 0.0001
   checkpoint_interval: 1000
-  milestone_interval: 50000
-  log_interval: 100
-  min_buffer_size: 10000
+  milestone_interval: 25000
+  log_interval: 50
+  min_buffer_size: 8192            # 2x training batch — ensures diverse samples
+  wait_for_buffer_seconds: 0.01
 
 pipeline:
-  inference_batches_per_cycle: 50
+  inference_batches_per_cycle: 100 # 2x previous — more inference per cycle feeds training
   training_steps_per_cycle: 1
 
 replay_buffer:
-  capacity: 1000000
+  capacity: 800000                 # larger buffer for training diversity; fits ~120 GB memory target
 
 evaluation:
   interval_steps: 10000
-  num_games: 50
+  num_games: 20                    # reduced from 50 for faster eval rounds
   simulations_per_move: 100
 
 system:
   precision: "bf16"
+  compile: true
   num_gpu: 1
   checkpoint_dir: "./checkpoints"
   log_dir: "./logs"
