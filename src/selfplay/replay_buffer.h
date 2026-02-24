@@ -67,6 +67,30 @@ public:
     [[nodiscard]] std::size_t capacity() const noexcept;
     [[nodiscard]] std::size_t write_head() const noexcept;
 
+    /// Export all valid positions into pre-allocated flat arrays (logical order).
+    /// Returns the number of positions exported.  Caller must allocate arrays
+    /// of at least size() * field_width elements.
+    std::size_t export_positions(
+        float* out_states,
+        float* out_policies,
+        float* out_values_wdl,
+        std::uint32_t* out_game_ids,
+        std::uint16_t* out_move_numbers,
+        std::size_t encoded_state_size,
+        std::size_t policy_size) const;
+
+    /// Import positions from flat arrays into the buffer.
+    /// Appends to the current buffer (does not clear existing data).
+    void import_positions(
+        const float* states,
+        const float* policies,
+        const float* values_wdl,
+        const std::uint32_t* game_ids,
+        const std::uint16_t* move_numbers,
+        std::size_t count,
+        std::size_t encoded_state_size,
+        std::size_t policy_size);
+
 private:
     [[nodiscard]] static bool has_valid_shape(const ReplayPosition& position) noexcept;
     [[nodiscard]] std::vector<std::size_t> sample_logical_indices(

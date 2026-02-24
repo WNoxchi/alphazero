@@ -501,6 +501,21 @@ def build_training_runtime(
 
     cpp = active_dependencies.cpp
     replay_buffer = _build_replay_buffer(cpp, config)
+
+    if resume_path is not None:
+        from alphazero.utils.checkpoint import load_replay_buffer_state
+
+        rows, cols = game_config.board_shape
+        encoded_state_size = game_config.input_channels * rows * cols
+        loaded = load_replay_buffer_state(
+            replay_buffer,
+            resolved_resume,
+            encoded_state_size=encoded_state_size,
+            policy_size=game_config.action_space_size,
+        )
+        if loaded > 0:
+            print(f"Restored {loaded:,} positions to replay buffer from checkpoint.")
+
     eval_queue_config = _build_eval_queue_config(cpp, config)
     selfplay_manager_config = _build_selfplay_manager_config(cpp, config)
 
@@ -605,6 +620,7 @@ def _maybe_save_final_checkpoint(
         keep_last=int(runtime.training_config.checkpoint_keep_last),
         is_milestone=False,
         export_folded_weights=bool(runtime.training_config.export_folded_checkpoints),
+        game_config=runtime.game_config,
     )
     return Path(saved.checkpoint_path)
 

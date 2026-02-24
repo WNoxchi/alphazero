@@ -661,11 +661,12 @@ def save_training_checkpoint(
     keep_last: int = DEFAULT_CHECKPOINT_KEEP_LAST,
     is_milestone: bool = False,
     export_folded_weights: bool = True,
+    game_config: Any | None = None,
 ) -> CheckpointPaths:
-    """Persist model/optimizer/schedule state with replay metadata."""
+    """Persist model/optimizer/schedule state with replay metadata and buffer contents."""
 
     replay_metadata = extract_replay_buffer_metadata(replay_buffer)
-    return save_checkpoint(
+    result = save_checkpoint(
         model,
         optimizer,
         step=step,
@@ -676,6 +677,20 @@ def save_training_checkpoint(
         export_folded_weights=export_folded_weights,
         keep_last=keep_last,
     )
+
+    if replay_buffer is not None and game_config is not None:
+        from alphazero.utils.checkpoint import save_replay_buffer_state
+
+        rows, cols = game_config.board_shape
+        encoded_state_size = game_config.input_channels * rows * cols
+        save_replay_buffer_state(
+            replay_buffer,
+            result.checkpoint_path,
+            encoded_state_size=encoded_state_size,
+            policy_size=game_config.action_space_size,
+        )
+
+    return result
 
 
 def load_training_checkpoint(

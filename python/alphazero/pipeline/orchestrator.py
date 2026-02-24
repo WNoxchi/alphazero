@@ -639,6 +639,7 @@ def run_parallel_pipeline(
                             keep_last=int(training_config.checkpoint_keep_last),
                             is_milestone=False,
                             export_folded_weights=bool(training_config.export_folded_checkpoints),
+                            game_config=game_config,
                         )
                     )
                     if next_step % training_config.milestone_interval == 0:
@@ -653,6 +654,7 @@ def run_parallel_pipeline(
                                 keep_last=int(training_config.checkpoint_keep_last),
                                 is_milestone=True,
                                 export_folded_weights=bool(training_config.export_folded_checkpoints),
+                                game_config=game_config,
                             )
                         )
 

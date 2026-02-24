@@ -179,6 +179,93 @@ SampledBatch ReplayBuffer::sample_batch(
     return packed;
 }
 
+std::size_t ReplayBuffer::export_positions(
+    float* const out_states,
+    float* const out_policies,
+    float* const out_values_wdl,
+    std::uint32_t* const out_game_ids,
+    std::uint16_t* const out_move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) const {
+    if (encoded_state_size == 0U || encoded_state_size > ReplayPosition::kMaxEncodedStateSize) {
+        throw std::invalid_argument("export_positions: encoded_state_size is out of range");
+    }
+    if (policy_size == 0U || policy_size > ReplayPosition::kMaxPolicySize) {
+        throw std::invalid_argument("export_positions: policy_size is out of range");
+    }
+
+    std::shared_lock lock(mutex_);
+    const std::size_t current_count = count_.load(std::memory_order_relaxed);
+    const std::size_t current_head = write_head_.load(std::memory_order_relaxed);
+
+    for (std::size_t i = 0U; i < current_count; ++i) {
+        const std::size_t physical = to_physical_index(i, current_count, current_head);
+        const ReplayPosition& pos = buffer_[physical];
+
+        std::copy_n(pos.encoded_state.begin(), encoded_state_size,
+                     out_states + i * encoded_state_size);
+        std::copy_n(pos.policy.begin(), policy_size,
+                     out_policies + i * policy_size);
+        std::copy_n(pos.value_wdl.begin(), ReplayPosition::kWdlSize,
+                     out_values_wdl + i * ReplayPosition::kWdlSize);
+        out_game_ids[i] = pos.game_id;
+        out_move_numbers[i] = pos.move_number;
+    }
+    return current_count;
+}
+
+void ReplayBuffer::import_positions(
+    const float* const states,
+    const float* const policies,
+    const float* const values_wdl,
+    const std::uint32_t* const game_ids,
+    const std::uint16_t* const move_numbers,
+    const std::size_t count,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    if (count == 0U) {
+        return;
+    }
+    if (encoded_state_size == 0U || encoded_state_size > ReplayPosition::kMaxEncodedStateSize) {
+        throw std::invalid_argument("import_positions: encoded_state_size is out of range");
+    }
+    if (policy_size == 0U || policy_size > ReplayPosition::kMaxPolicySize) {
+        throw std::invalid_argument("import_positions: policy_size is out of range");
+    }
+
+    std::unique_lock lock(mutex_);
+    std::size_t head = write_head_.load(std::memory_order_relaxed);
+    std::size_t current_count = count_.load(std::memory_order_relaxed);
+
+    for (std::size_t i = 0U; i < count; ++i) {
+        ReplayPosition& pos = buffer_[head];
+        // Zero the full arrays first so trailing elements are clean.
+        pos.encoded_state.fill(0.0F);
+        pos.policy.fill(0.0F);
+
+        std::copy_n(states + i * encoded_state_size, encoded_state_size,
+                     pos.encoded_state.begin());
+        std::copy_n(policies + i * policy_size, policy_size,
+                     pos.policy.begin());
+        std::copy_n(values_wdl + i * ReplayPosition::kWdlSize, ReplayPosition::kWdlSize,
+                     pos.value_wdl.begin());
+        pos.value = values_wdl[i * ReplayPosition::kWdlSize + 0]
+                    - values_wdl[i * ReplayPosition::kWdlSize + 2];
+        pos.game_id = game_ids[i];
+        pos.move_number = move_numbers[i];
+        pos.encoded_state_size = static_cast<std::uint16_t>(encoded_state_size);
+        pos.policy_size = static_cast<std::uint16_t>(policy_size);
+
+        head = (head + 1U) % buffer_.size();
+        if (current_count < buffer_.size()) {
+            ++current_count;
+        }
+    }
+
+    write_head_.store(head, std::memory_order_release);
+    count_.store(current_count, std::memory_order_release);
+}
+
 std::size_t ReplayBuffer::size() const noexcept { return count_.load(std::memory_order_acquire); }
 
 std::size_t ReplayBuffer::capacity() const noexcept { return buffer_.size(); }

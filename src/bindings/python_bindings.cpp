@@ -155,6 +155,77 @@ using alphazero::selfplay::SelfPlayManager;
         sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim));
 }
 
+[[nodiscard]] py::tuple replay_buffer_export_numpy(
+    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    const std::size_t n = replay_buffer.size();
+    if (n == 0U) {
+        return py::make_tuple(
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(encoded_state_size)}),
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(policy_size)}),
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(ReplayPosition::kWdlSize)}),
+            py::array_t<std::uint32_t>(std::vector<py::ssize_t>{py::ssize_t(0)}),
+            py::array_t<std::uint16_t>(std::vector<py::ssize_t>{py::ssize_t(0)}));
+    }
+
+    py::array_t<float> states({to_py_ssize(n, "rows"), to_py_ssize(encoded_state_size, "encoded_state_size")});
+    py::array_t<float> policies({to_py_ssize(n, "rows"), to_py_ssize(policy_size, "policy_size")});
+    py::array_t<float> values_wdl({to_py_ssize(n, "rows"), to_py_ssize(ReplayPosition::kWdlSize, "wdl")});
+    py::array_t<std::uint32_t> game_ids({to_py_ssize(n, "rows")});
+    py::array_t<std::uint16_t> move_numbers({to_py_ssize(n, "rows")});
+
+    std::size_t exported;
+    {
+        py::gil_scoped_release release_gil;
+        exported = replay_buffer.export_positions(
+            states.mutable_data(), policies.mutable_data(), values_wdl.mutable_data(),
+            game_ids.mutable_data(), move_numbers.mutable_data(),
+            encoded_state_size, policy_size);
+    }
+    // Trim if fewer positions were exported than expected (shouldn't happen, but be safe).
+    if (exported < n) {
+        auto sl = py::slice(0, static_cast<py::ssize_t>(exported), 1);
+        auto sl2d = py::make_tuple(sl, py::ellipsis());
+        states = py::array_t<float>(states[sl2d]);
+        policies = py::array_t<float>(policies[sl2d]);
+        values_wdl = py::array_t<float>(values_wdl[sl2d]);
+        game_ids = py::array_t<std::uint32_t>(game_ids[sl]);
+        move_numbers = py::array_t<std::uint16_t>(move_numbers[sl]);
+    }
+    return py::make_tuple(states, policies, values_wdl, game_ids, move_numbers);
+}
+
+void replay_buffer_import_numpy(
+    alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
+    const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
+    const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    if (states.ndim() != 2 || policies.ndim() != 2 || values_wdl.ndim() != 2) {
+        throw std::invalid_argument("import_buffer: states, policies, values_wdl must be 2D arrays");
+    }
+    if (game_ids.ndim() != 1 || move_numbers.ndim() != 1) {
+        throw std::invalid_argument("import_buffer: game_ids, move_numbers must be 1D arrays");
+    }
+    const auto n = static_cast<std::size_t>(states.shape(0));
+    if (static_cast<std::size_t>(policies.shape(0)) != n ||
+        static_cast<std::size_t>(values_wdl.shape(0)) != n ||
+        static_cast<std::size_t>(game_ids.shape(0)) != n ||
+        static_cast<std::size_t>(move_numbers.shape(0)) != n) {
+        throw std::invalid_argument("import_buffer: all arrays must have the same first dimension");
+    }
+
+    py::gil_scoped_release release_gil;
+    replay_buffer.import_positions(
+        states.data(), policies.data(), values_wdl.data(),
+        game_ids.data(), move_numbers.data(),
+        n, encoded_state_size, policy_size);
+}
+
 template <typename StateType>
 [[nodiscard]] std::unique_ptr<StateType> downcast_state_unique_ptr(
     std::unique_ptr<GameState> base_ptr,
@@ -958,7 +1029,22 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("value_dim"))
         .def("size", &alphazero::selfplay::ReplayBuffer::size)
         .def("capacity", &alphazero::selfplay::ReplayBuffer::capacity)
-        .def("write_head", &alphazero::selfplay::ReplayBuffer::write_head);
+        .def("write_head", &alphazero::selfplay::ReplayBuffer::write_head)
+        .def(
+            "export_buffer",
+            &replay_buffer_export_numpy,
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"))
+        .def(
+            "import_buffer",
+            &replay_buffer_import_numpy,
+            py::arg("states"),
+            py::arg("policies"),
+            py::arg("values_wdl"),
+            py::arg("game_ids"),
+            py::arg("move_numbers"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"));
 
     py::enum_<alphazero::selfplay::GameTerminationReason>(module, "GameTerminationReason")
         .value("NATURAL", alphazero::selfplay::GameTerminationReason::kNatural)
