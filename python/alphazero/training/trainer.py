@@ -572,6 +572,7 @@ def train_one_step(
     l2_reg: float,
     scaler: Any,
     use_mixed_precision: bool,
+    compute_gradient_stats: bool = True,
 ) -> TrainingStepMetrics:
     """Run one optimization step and return decomposed metrics."""
 
@@ -616,7 +617,11 @@ def train_one_step(
 
     scaler.scale(loss_components.total_loss).backward()
     scaler.unscale_(optimizer)
-    grad_global_norm, nonzero_grad_parameters = _gradient_statistics(model)
+    if compute_gradient_stats:
+        grad_global_norm, nonzero_grad_parameters = _gradient_statistics(model)
+    else:
+        grad_global_norm = 0.0
+        nonzero_grad_parameters = 0
     scaler.step(optimizer)
     scaler.update()
 

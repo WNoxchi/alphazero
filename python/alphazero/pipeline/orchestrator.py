@@ -590,6 +590,11 @@ def run_parallel_pipeline(
                     states, target_policy = apply_random_go_symmetry(states, target_policy)
 
                 step_start = time.perf_counter()
+                next_step = step_to_train + 1
+                is_log_step = (
+                    step_logger is not None
+                    and next_step % training_config.log_interval == 0
+                )
                 step_metrics = train_one_step(
                     model,
                     active_optimizer,
@@ -602,10 +607,10 @@ def run_parallel_pipeline(
                     l2_reg=float(training_config.l2_reg),
                     scaler=scaler,
                     use_mixed_precision=bool(training_config.use_mixed_precision),
+                    compute_gradient_stats=is_log_step,
                 )
                 training_step_seconds = max(time.perf_counter() - step_start, 0.0)
 
-                next_step = step_to_train + 1
                 updated_metrics = TrainingStepMetrics(
                     step=next_step,
                     loss_total=step_metrics.loss_total,
