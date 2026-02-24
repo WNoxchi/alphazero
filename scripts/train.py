@@ -616,6 +616,10 @@ def run_training_session(
 ) -> TrainingRunSummary:
     """Execute one training session and ensure graceful finalization."""
 
+    from datetime import datetime, timedelta
+
+    from tqdm import tqdm
+
     active_dependencies = dependencies or load_runtime_dependencies()
 
     latest_step = runtime.start_step
@@ -624,19 +628,64 @@ def run_training_session(
     final_checkpoint_path: Path | None = None
     pipeline_error: BaseException | None = None
 
+    max_steps = int(runtime.training_config.max_steps)
+    start_step = runtime.start_step
+    session_start = datetime.now()
+
+    # Persistent progress bar pinned to the bottom of the terminal.
+    # leave=False ensures the bar is cleared on close (no trailing artifacts).
+    pbar = tqdm(
+        total=max_steps,
+        initial=start_step,
+        unit="step",
+        bar_format=(
+            "{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+            "[{elapsed}<{remaining}, {rate_fmt}]{postfix}"
+        ),
+        desc="Training",
+        dynamic_ncols=True,
+        leave=False,
+        smoothing=0.05,
+    )
+    pbar.set_postfix_str(f" Start {session_start:%H:%M}")
+
+    # Route console summaries through tqdm.write() so the progress bar stays
+    # pinned at the bottom while step logs scroll above it.
+    console_interval = runtime.logger._console_summary_interval_steps
+
+    def _update_bar(step: int) -> None:
+        pbar.n = step
+        elapsed = (datetime.now() - session_start).total_seconds()
+        progress = step - start_step
+        if progress > 0 and elapsed > 0:
+            remaining_steps = max_steps - step
+            remaining_secs = remaining_steps * elapsed / progress
+            end_time = datetime.now() + timedelta(seconds=remaining_secs)
+            pbar.set_postfix_str(
+                f" Start {session_start:%H:%M} | End ~{end_time:%H:%M}"
+            )
+        pbar.refresh()
+
     def games_total_getter() -> int:
         snapshot = runtime.self_play_manager.metrics()
         return int(snapshot.games_completed)
 
     base_step_logger = runtime.logger.make_training_step_logger(
         games_total_getter=games_total_getter,
-        emit_console=True,
+        emit_console=False,
     )
 
     def step_logger(step: int, metrics: Mapping[str, float]) -> None:
         nonlocal latest_step
         latest_step = max(latest_step, int(step))
         base_step_logger(step, metrics)
+        _update_bar(step)
+        if step % console_interval == 0:
+            try:
+                summary = runtime.logger.render_console_summary(step)
+                tqdm.write(summary)
+            except RuntimeError:
+                pass
 
     def cycle_logger(_cycle: int, metrics: Mapping[str, float]) -> None:
         nonlocal latest_step
@@ -645,6 +694,7 @@ def run_training_session(
         runtime.logger.log_selfplay_snapshot(latest_step, runtime.self_play_manager.metrics())
         for tag, value in metrics.items():
             runtime.logger.log_scalar(tag, value, latest_step)
+        _update_bar(latest_step)
 
     try:
         with _raise_keyboard_interrupt_on_signal():
@@ -667,6 +717,7 @@ def run_training_session(
     except BaseException as exc:  # pragma: no cover - exercised in runtime failure conditions.
         pipeline_error = exc
     finally:
+        pbar.close()
         if pipeline_result is not None:
             latest_step = max(latest_step, int(pipeline_result.final_step))
 

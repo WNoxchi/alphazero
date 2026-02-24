@@ -34,6 +34,7 @@ class _FakeTrainingConfig:
     device: str | None = None
     checkpoint_dir: Path | None = Path("checkpoints")
     checkpoint_keep_last: int = 10
+    max_steps: int = 100
 
 
 class _FakeLogger:
@@ -43,12 +44,16 @@ class _FakeLogger:
         self.scalars: list[tuple[str, float, int]] = []
         self.flush_calls = 0
         self.close_calls = 0
+        self._console_summary_interval_steps = 100
 
     def make_training_step_logger(self, **_kwargs: Any) -> Any:
         def _logger(step: int, _metrics: Mapping[str, float]) -> None:
             self.training_steps.append(int(step))
 
         return _logger
+
+    def render_console_summary(self, _step: int) -> str:
+        return ""
 
     def log_selfplay_snapshot(self, step: int, _snapshot: Any) -> None:
         self.snapshots.append(int(step))
