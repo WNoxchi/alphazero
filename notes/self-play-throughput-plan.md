@@ -112,6 +112,10 @@ struct CompactReplayPosition {
 
 ### 1.2 Compression/decompression helpers
 
+Status (2026-02-26): Completed. Added standalone helpers in `src/selfplay/replay_compression.{h,cpp}` for
+`compress_state`, `decompress_state`, `compress_policy`, `decompress_policy`, plus FP16 conversion utilities; wired
+the implementation into `src/CMakeLists.txt` and added coverage in `tests/cpp/test_replay_compression.cpp`.
+
 Create standalone, unit-testable functions (can live in `compact_replay_buffer.cpp` or a separate `compression.{h,cpp}`):
 
 **State compression** (`compress_state`):
