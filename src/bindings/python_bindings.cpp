@@ -1381,6 +1381,63 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::keep_alive<1, 3>(),
             py::keep_alive<1, 4>(),
             py::keep_alive<1, 6>())
+        .def(
+            py::init(
+                [](const GameConfig& game_config,
+                   CompactReplayBuffer& compact_buffer,
+                   py::function evaluator,
+                   alphazero::selfplay::SelfPlayManagerConfig config,
+                   py::object completion_callback) {
+                    SelfPlayManager::AddGameFn add_game_fn =
+                        [&compact_buffer](const std::vector<alphazero::selfplay::ReplayPosition>& positions) {
+                            compact_buffer.add_game(positions);
+                        };
+                    return std::make_unique<SelfPlayManager>(
+                        game_config,
+                        std::move(add_game_fn),
+                        make_selfplay_evaluator(std::move(evaluator), game_config.action_space_size),
+                        config,
+                        make_completion_callback(completion_callback));
+                }),
+            py::arg("game_config"),
+            py::arg("replay_buffer"),
+            py::arg("evaluator"),
+            py::arg("config") = alphazero::selfplay::SelfPlayManagerConfig{},
+            py::arg("completion_callback") = py::none(),
+            py::keep_alive<1, 2>(),
+            py::keep_alive<1, 3>(),
+            py::keep_alive<1, 4>(),
+            py::keep_alive<1, 6>())
+        .def(
+            py::init(
+                [](const GameConfig& game_config,
+                   CompactReplayBuffer& compact_buffer,
+                   PyEvalQueue& eval_queue,
+                   alphazero::selfplay::SelfPlayManagerConfig config,
+                   py::object completion_callback) {
+                    SelfPlayManager::AddGameFn add_game_fn =
+                        [&compact_buffer](const std::vector<alphazero::selfplay::ReplayPosition>& positions) {
+                            compact_buffer.add_game(positions);
+                        };
+                    return std::make_unique<SelfPlayManager>(
+                        game_config,
+                        std::move(add_game_fn),
+                        alphazero::mcts::make_eval_queue_evaluator(
+                            eval_queue.raw_queue(),
+                            encoded_state_size(game_config),
+                            game_config.action_space_size),
+                        config,
+                        make_completion_callback(completion_callback));
+                }),
+            py::arg("game_config"),
+            py::arg("replay_buffer"),
+            py::arg("eval_queue"),
+            py::arg("config") = alphazero::selfplay::SelfPlayManagerConfig{},
+            py::arg("completion_callback") = py::none(),
+            py::keep_alive<1, 2>(),
+            py::keep_alive<1, 3>(),
+            py::keep_alive<1, 4>(),
+            py::keep_alive<1, 6>())
         .def("start", &SelfPlayManager::start)
         .def("stop", &SelfPlayManager::stop, py::call_guard<py::gil_scoped_release>())
         .def("is_running", &SelfPlayManager::is_running)

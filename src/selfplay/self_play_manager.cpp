@@ -20,8 +20,23 @@ SelfPlayManager::SelfPlayManager(
     EvaluateFn evaluator,
     SelfPlayManagerConfig config,
     CompletionCallback completion_callback)
+    : SelfPlayManager(
+          game_config,
+          [&replay_buffer](const std::vector<ReplayPosition>& positions) {
+              replay_buffer.add_game(positions);
+          },
+          std::move(evaluator),
+          config,
+          std::move(completion_callback)) {}
+
+SelfPlayManager::SelfPlayManager(
+    const GameConfig& game_config,
+    AddGameFn add_game_fn,
+    EvaluateFn evaluator,
+    SelfPlayManagerConfig config,
+    CompletionCallback completion_callback)
     : game_config_(game_config),
-      replay_buffer_(replay_buffer),
+      add_game_fn_(std::move(add_game_fn)),
       evaluator_(std::move(evaluator)),
       config_(config),
       completion_callback_(std::move(completion_callback)),
@@ -223,7 +238,7 @@ void SelfPlayManager::worker_loop(const std::size_t slot_index, SelfPlayGameConf
                 game_config.dirichlet_epsilon = epsilon_distribution(slot_rng);
             }
 
-            SelfPlayGame game(game_config_, replay_buffer_, evaluator_, game_config);
+            SelfPlayGame game(game_config_, add_game_fn_, evaluator_, game_config);
             const std::uint32_t game_id = next_game_id_.fetch_add(1U, std::memory_order_acq_rel);
             const SelfPlayGameResult result = game.play(game_id);
             record_completed_game(slot_index, result);

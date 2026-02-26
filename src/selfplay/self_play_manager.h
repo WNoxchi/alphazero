@@ -62,11 +62,19 @@ struct SelfPlayMetricsSnapshot {
 class SelfPlayManager {
 public:
     using EvaluateFn = SelfPlayGame::EvaluateFn;
+    using AddGameFn = SelfPlayGame::AddGameFn;
     using CompletionCallback = std::function<void(std::size_t slot_index, const SelfPlayGameResult& result)>;
 
     SelfPlayManager(
         const GameConfig& game_config,
         ReplayBuffer& replay_buffer,
+        EvaluateFn evaluator,
+        SelfPlayManagerConfig config = {},
+        CompletionCallback completion_callback = {});
+
+    SelfPlayManager(
+        const GameConfig& game_config,
+        AddGameFn add_game_fn,
         EvaluateFn evaluator,
         SelfPlayManagerConfig config = {},
         CompletionCallback completion_callback = {});
@@ -94,7 +102,7 @@ private:
     [[nodiscard]] std::chrono::steady_clock::duration elapsed_time() const;
 
     const GameConfig& game_config_;
-    ReplayBuffer& replay_buffer_;
+    AddGameFn add_game_fn_;
     EvaluateFn evaluator_;
     SelfPlayManagerConfig config_;
     CompletionCallback completion_callback_;

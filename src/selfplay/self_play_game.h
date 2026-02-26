@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <random>
 #include <vector>
@@ -69,10 +70,17 @@ struct SelfPlayGameResult {
 class SelfPlayGame {
 public:
     using EvaluateFn = mcts::EvaluateFn;
+    using AddGameFn = std::function<void(const std::vector<ReplayPosition>&)>;
 
     SelfPlayGame(
         const GameConfig& game_config,
         ReplayBuffer& replay_buffer,
+        const EvaluateFn& evaluator,
+        SelfPlayGameConfig config = {});
+
+    SelfPlayGame(
+        const GameConfig& game_config,
+        AddGameFn add_game_fn,
         const EvaluateFn& evaluator,
         SelfPlayGameConfig config = {});
 
@@ -93,7 +101,7 @@ private:
     [[nodiscard]] std::size_t encoded_state_size() const noexcept;
 
     const GameConfig& game_config_;
-    ReplayBuffer& replay_buffer_;
+    AddGameFn add_game_fn_;
     const EvaluateFn& evaluator_;
     SelfPlayGameConfig config_;
     mcts::SearchConfig search_config_{};

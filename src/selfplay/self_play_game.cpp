@@ -37,8 +37,21 @@ SelfPlayGame::SelfPlayGame(
     ReplayBuffer& replay_buffer,
     const EvaluateFn& evaluator,
     SelfPlayGameConfig config)
+    : SelfPlayGame(
+          game_config,
+          [&replay_buffer](const std::vector<ReplayPosition>& positions) {
+              replay_buffer.add_game(positions);
+          },
+          evaluator,
+          config) {}
+
+SelfPlayGame::SelfPlayGame(
+    const GameConfig& game_config,
+    AddGameFn add_game_fn,
+    const EvaluateFn& evaluator,
+    SelfPlayGameConfig config)
     : game_config_(game_config),
-      replay_buffer_(replay_buffer),
+      add_game_fn_(std::move(add_game_fn)),
       evaluator_(evaluator),
       config_(config),
       search_config_(make_search_config(config_)),
@@ -224,7 +237,7 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
             sample.training_weight));
     }
 
-    replay_buffer_.add_game(replay_positions);
+    add_game_fn_(replay_positions);
     result.replay_positions_written = replay_positions.size();
     return result;
 }
