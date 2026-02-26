@@ -23,6 +23,9 @@ struct SelfPlayGameConfig {
     std::size_t simulations_per_move = 800U;
     std::size_t mcts_threads = 8U;
     std::size_t node_arena_capacity = mcts::ArenaNodeStore::kDefaultCapacity;
+    bool enable_playout_cap = false;
+    std::size_t reduced_simulations = 50U;
+    float full_playout_probability = 0.25F;
 
     float c_puct = 2.5F;
     float c_fpu = 0.25F;

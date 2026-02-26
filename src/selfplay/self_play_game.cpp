@@ -56,6 +56,18 @@ SelfPlayGame::SelfPlayGame(
     if (config_.simulations_per_move == 0U) {
         throw std::invalid_argument("SelfPlayGame simulations_per_move must be greater than zero");
     }
+    if (config_.enable_playout_cap) {
+        if (config_.reduced_simulations == 0U) {
+            throw std::invalid_argument("SelfPlayGame reduced_simulations must be greater than zero");
+        }
+        if (config_.reduced_simulations > config_.simulations_per_move) {
+            throw std::invalid_argument("SelfPlayGame reduced_simulations must not exceed simulations_per_move");
+        }
+        if (!std::isfinite(config_.full_playout_probability) || config_.full_playout_probability < 0.0F ||
+            config_.full_playout_probability > 1.0F) {
+            throw std::invalid_argument("SelfPlayGame full_playout_probability must be finite and in [0, 1]");
+        }
+    }
     if (config_.mcts_threads == 0U) {
         throw std::invalid_argument("SelfPlayGame mcts_threads must be greater than zero");
     }

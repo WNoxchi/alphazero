@@ -196,6 +196,112 @@ private:
     return config;
 }
 
+// WHY: Playout-cap configuration is validated at construction so misconfigured training runs fail fast before worker
+// threads start.
+TEST(SelfPlayGameTest, RejectsZeroReducedSimulations) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model, /*max_game_length=*/8);
+    ReplayBuffer replay_buffer(4U, 41U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayGameConfig config = default_test_selfplay_config();
+    config.enable_playout_cap = true;
+    config.reduced_simulations = 0U;
+
+    EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, config), std::invalid_argument);
+}
+
+// WHY: The reduced simulation budget must be a true reduction; larger values would invert intended playout-cap
+// semantics and break future weighting logic.
+TEST(SelfPlayGameTest, RejectsReducedSimulationsAboveFullBudget) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model, /*max_game_length=*/8);
+    ReplayBuffer replay_buffer(4U, 43U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayGameConfig config = default_test_selfplay_config();
+    config.enable_playout_cap = true;
+    config.reduced_simulations = config.simulations_per_move + 1U;
+
+    EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, config), std::invalid_argument);
+}
+
+// WHY: Probability knobs are user-configured from YAML and must reject out-of-range values to prevent undefined
+// stochastic behavior when playout caps are enabled.
+TEST(SelfPlayGameTest, RejectsPlayoutProbabilityOutsideUnitInterval) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model, /*max_game_length=*/8);
+    ReplayBuffer replay_buffer(4U, 47U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayGameConfig negative_prob = default_test_selfplay_config();
+    negative_prob.enable_playout_cap = true;
+    negative_prob.full_playout_probability = -0.01F;
+    EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, negative_prob), std::invalid_argument);
+
+    SelfPlayGameConfig over_one_prob = default_test_selfplay_config();
+    over_one_prob.enable_playout_cap = true;
+    over_one_prob.full_playout_probability = 1.01F;
+    EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, over_one_prob), std::invalid_argument);
+}
+
 // WHY: A complete self-play game should emit one replay sample per played move with outcomes labeled from the player
 // to move at each sampled state, and should report subtree reuse when advancing the root.
 TEST(SelfPlayGameTest, NaturalTerminationBackfillsPerspectiveTargetsAndTracksReuse) {

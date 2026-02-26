@@ -329,6 +329,15 @@ KataGo-style technique: for each move, with probability 0.25 use full simulation
 
 ### 2.1 Config fields
 
+Status (2026-02-26): Completed. Added playout-cap controls to `SelfPlayGameConfig` in
+`src/selfplay/self_play_game.h` (`enable_playout_cap`, `reduced_simulations`,
+`full_playout_probability`) and added constructor-side validation in
+`src/selfplay/self_play_game.cpp` that enforces valid reduced-budget/probability bounds when
+playout-cap mode is enabled. Added coverage in `tests/cpp/test_self_play_game.cpp` via
+`SelfPlayGameTest.RejectsZeroReducedSimulations`,
+`SelfPlayGameTest.RejectsReducedSimulationsAboveFullBudget`, and
+`SelfPlayGameTest.RejectsPlayoutProbabilityOutsideUnitInterval`.
+
 Add to `SelfPlayGameConfig` in `src/selfplay/self_play_game.h`:
 ```cpp
 bool enable_playout_cap = false;
