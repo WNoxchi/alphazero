@@ -397,6 +397,13 @@ The `run_simulation_batch()` method currently reads `config_.simulations_per_mov
 
 ### 2.4 Weighted loss in training
 
+Status (2026-02-26): Completed. `sample_batch()` bindings in `src/bindings/python_bindings.cpp` now expose packed
+`weights` alongside `states`, `policies`, and `values`; `python/alphazero/training/trainer.py` now threads weights
+through `sample_replay_batch_tensors()` and applies weighted per-sample policy/value loss in `train_one_step()`,
+defaulting legacy 3-field packed batches to unit weights for compatibility. Updated call sites in
+`python/alphazero/pipeline/orchestrator.py` and added regression coverage in
+`tests/python/test_training.py` plus binding contract checks in `tests/python/test_bindings.py`.
+
 In `python/alphazero/training/trainer.py`, `train_one_step()`:
 - Extract `weights` from `SampledBatch`
 - Multiply per-sample loss by weight before averaging: `loss = (per_sample_loss * weights).mean()`

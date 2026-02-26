@@ -141,6 +141,19 @@ using alphazero::selfplay::SelfPlayManager;
     return py::array_t<float>(shape, strides, storage.data(), owner);
 }
 
+[[nodiscard]] py::array_t<float> sampled_batch_vector_view(
+    const std::shared_ptr<SampledBatch>& batch,
+    const std::vector<float>& storage,
+    const std::size_t size) {
+    py::capsule owner(
+        new std::shared_ptr<SampledBatch>(batch),
+        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    const std::array<py::ssize_t, 1> shape{to_py_ssize(size, "size")};
+    const std::array<py::ssize_t, 1> strides{
+        static_cast<py::ssize_t>(sizeof(float))};
+    return py::array_t<float>(shape, strides, storage.data(), owner);
+}
+
 template <typename ReplayBufferType>
 [[nodiscard]] py::tuple replay_buffer_sample_batch_numpy_impl(
     const ReplayBufferType& replay_buffer,
@@ -157,7 +170,8 @@ template <typename ReplayBufferType>
     return py::make_tuple(
         sampled_batch_array_view(owned_batch, owned_batch->states, owned_batch->batch_size, encoded_state_size),
         sampled_batch_array_view(owned_batch, owned_batch->policies, owned_batch->batch_size, policy_size),
-        sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim));
+        sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim),
+        sampled_batch_vector_view(owned_batch, owned_batch->weights, owned_batch->batch_size));
 }
 
 [[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(

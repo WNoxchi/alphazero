@@ -581,7 +581,7 @@ def run_parallel_pipeline(
                 continue
 
             try:
-                states, target_policy, target_value = sample_replay_batch_tensors(
+                states, target_policy, target_value, sample_weights = sample_replay_batch_tensors(
                     replay_buffer,
                     game_config,
                     batch_size=training_config.batch_size,
@@ -602,6 +602,7 @@ def run_parallel_pipeline(
                     states=states,
                     target_policy=target_policy,
                     target_value=target_value,
+                    sample_weights=sample_weights,
                     game_config=game_config,
                     lr_schedule=active_schedule,
                     global_step=step_to_train,

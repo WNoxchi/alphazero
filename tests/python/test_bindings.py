@@ -137,6 +137,9 @@ class PythonBindingsTests(unittest.TestCase):
                 return [0.0, 0.0, 1.0]
             return [0.0, 1.0, 0.0]
 
+        def weight_for(game_id: int, move_number: int) -> float:
+            return 0.5 + ((game_id + move_number) % 4) * 0.125
+
         positions = []
         for game_id, move_number in ((11, 1), (12, 2), (13, 3)):
             signature = float(game_id * 1000 + move_number)
@@ -149,6 +152,7 @@ class PythonBindingsTests(unittest.TestCase):
                     value_wdl=wdl_for(scalar_value),
                     game_id=game_id,
                     move_number=move_number,
+                    training_weight=weight_for(game_id, move_number),
                 )
             )
         replay_buffer.add_game(positions)
@@ -156,7 +160,7 @@ class PythonBindingsTests(unittest.TestCase):
         import numpy as np
         import numpy.testing as npt
 
-        states, policies, scalar_values = replay_buffer.sample_batch(
+        states, policies, scalar_values, scalar_weights = replay_buffer.sample_batch(
             batch_size=8,
             encoded_state_size=4,
             policy_size=3,
@@ -168,6 +172,8 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(states.dtype, np.float32)
         self.assertEqual(policies.dtype, np.float32)
         self.assertEqual(scalar_values.dtype, np.float32)
+        self.assertEqual(scalar_weights.shape, (8,))
+        self.assertEqual(scalar_weights.dtype, np.float32)
 
         for row in range(8):
             game_id = int(round(float(policies[row, 1])))
@@ -177,8 +183,9 @@ class PythonBindingsTests(unittest.TestCase):
             self.assertAlmostEqual(float(states[row, 1]), float(move_number))
             self.assertAlmostEqual(float(policies[row, 0]), expected_signature + 0.5)
             self.assertAlmostEqual(float(scalar_values[row, 0]), scalar_for(game_id, move_number))
+            self.assertAlmostEqual(float(scalar_weights[row]), weight_for(game_id, move_number))
 
-        _, wdl_policies, wdl_values = replay_buffer.sample_batch(
+        _, wdl_policies, wdl_values, wdl_weights = replay_buffer.sample_batch(
             batch_size=8,
             encoded_state_size=4,
             policy_size=3,
@@ -186,11 +193,13 @@ class PythonBindingsTests(unittest.TestCase):
         )
         self.assertEqual(wdl_policies.shape, (8, 3))
         self.assertEqual(wdl_values.shape, (8, 3))
+        self.assertEqual(wdl_weights.shape, (8,))
         for row in range(8):
             game_id = int(round(float(wdl_policies[row, 1])))
             move_number = int(round(float(wdl_policies[row, 2])))
             expected = wdl_for(scalar_for(game_id, move_number))
             npt.assert_allclose(wdl_values[row], expected, rtol=1e-6)
+            self.assertAlmostEqual(float(wdl_weights[row]), weight_for(game_id, move_number))
 
     def test_compact_replay_buffer_binding_matches_dense_buffer_contract(self) -> None:
         """Validates that Python can drive the compact buffer with the same add/sample/export/import API surface."""
@@ -226,7 +235,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(sampled[0].game_id, 77)
         self.assertEqual(sampled[0].move_number, 9)
 
-        states, policies, values_wdl = compact_buffer.sample_batch(
+        states, policies, values_wdl, weights = compact_buffer.sample_batch(
             batch_size=1,
             encoded_state_size=128,
             policy_size=5,
@@ -238,6 +247,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(float(policies[0, 0]), 0.7, places=3)
         self.assertAlmostEqual(float(policies[0, 3]), 0.3, places=3)
         npt.assert_allclose(values_wdl[0], value_wdl, rtol=1e-6)
+        npt.assert_allclose(weights, [1.0], rtol=1e-6)
 
         exported = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
         restored = bindings.CompactReplayBuffer(

@@ -34,6 +34,7 @@ if _TORCH_AVAILABLE:
         create_optimizer,
         load_training_checkpoint,
         prepare_replay_batch,
+        sample_replay_batch_tensors,
         save_training_checkpoint,
         train_one_step,
         training_loop,
@@ -48,6 +49,7 @@ if _TORCH_AVAILABLE:
         policy: list[float]
         value: float
         value_wdl: list[float]
+        training_weight: float
         game_id: int
         move_number: int
         encoded_state_size: int
@@ -90,12 +92,13 @@ if _TORCH_AVAILABLE:
             encoded_state_size: int,
             policy_size: int,
             value_dim: int,
-        ) -> tuple[list[list[float]], list[list[float]], list[list[float]]]:
+        ) -> tuple[list[list[float]], list[list[float]], list[list[float]], list[float]]:
             self.sample_batch_calls += 1
             sampled = [self._rng.choice(self._positions) for _ in range(batch_size)]
             states: list[list[float]] = []
             policies: list[list[float]] = []
             values: list[list[float]] = []
+            weights: list[float] = []
             for position in sampled:
                 if position.encoded_state_size != encoded_state_size:
                     raise ValueError("encoded_state_size mismatch")
@@ -109,6 +112,26 @@ if _TORCH_AVAILABLE:
                     values.append(position.value_wdl[:3])
                 else:
                     raise ValueError("value_dim must be 1 or 3")
+                weights.append(position.training_weight)
+            return states, policies, values, weights
+
+
+if _TORCH_AVAILABLE:
+
+    class _LegacyPackedReplayBuffer(_PackedReplayBuffer):
+        def sample_batch(
+            self,
+            batch_size: int,
+            encoded_state_size: int,
+            policy_size: int,
+            value_dim: int,
+        ) -> tuple[list[list[float]], list[list[float]], list[list[float]]]:
+            states, policies, values, _weights = super().sample_batch(
+                batch_size,
+                encoded_state_size,
+                policy_size,
+                value_dim,
+            )
             return states, policies, values
 
 
@@ -164,6 +187,7 @@ class TrainingLoopTests(unittest.TestCase):
                 policy=base_policy.copy(),
                 value=1.0,
                 value_wdl=[1.0, 0.0, 0.0],
+                training_weight=1.0,
                 game_id=1,
                 move_number=index,
                 encoded_state_size=encoded_size,
@@ -291,6 +315,118 @@ class TrainingLoopTests(unittest.TestCase):
 
         self.assertEqual(result.final_step, training_config.max_steps)
         self.assertEqual(replay_buffer.sample_batch_calls, training_config.max_steps)
+
+    def test_sample_replay_batch_tensors_reads_training_weights_from_packed_batches(self) -> None:
+        """Ensures packed replay sampling carries per-sample weights into Python for weighted training loss."""
+        config = self._toy_game_config(supports_symmetry=False)
+        positions = self._make_replay_positions(config, count=4)
+        action_to_weight: dict[int, float] = {}
+        for index, position in enumerate(positions):
+            action = index + 1
+            position.policy = [0.0] * config.action_space_size
+            position.policy[action] = 1.0
+            position.training_weight = 0.25 + (0.125 * index)
+            action_to_weight[action] = position.training_weight
+
+        replay_buffer = _PackedReplayBuffer(positions)
+        _states, target_policy, _target_value, sample_weights = sample_replay_batch_tensors(
+            replay_buffer,
+            config,
+            batch_size=8,
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(tuple(sample_weights.shape), (8,))
+        for row in range(sample_weights.shape[0]):
+            action = int(torch.argmax(target_policy[row]).item())
+            self.assertAlmostEqual(float(sample_weights[row]), action_to_weight[action], places=6)
+
+    def test_sample_replay_batch_tensors_defaults_weights_to_one_for_legacy_three_field_batches(self) -> None:
+        """Protects backward compatibility so older 3-tuple sample_batch bindings keep training behavior unchanged."""
+        config = self._toy_game_config(supports_symmetry=False)
+        positions = self._make_replay_positions(config, count=4)
+        for index, position in enumerate(positions):
+            position.training_weight = 0.5 + (0.1 * index)
+        replay_buffer = _LegacyPackedReplayBuffer(positions)
+
+        _states, _target_policy, _target_value, sample_weights = sample_replay_batch_tensors(
+            replay_buffer,
+            config,
+            batch_size=8,
+            device=torch.device("cpu"),
+        )
+
+        self.assertTrue(torch.allclose(sample_weights, torch.ones_like(sample_weights)))
+
+    def test_train_one_step_uses_sample_weights_for_policy_and_value_terms(self) -> None:
+        """Verifies playout-cap weights scale optimization loss so zero-weight batches do not update model parameters."""
+        torch.manual_seed(29)
+        config = self._toy_game_config(supports_symmetry=False)
+        base_model = _TinyPolicyValueNetwork(config)
+        initial_state = {name: parameter.detach().clone() for name, parameter in base_model.state_dict().items()}
+
+        model_zero = _TinyPolicyValueNetwork(config)
+        model_zero.load_state_dict(initial_state)
+        model_one = _TinyPolicyValueNetwork(config)
+        model_one.load_state_dict(initial_state)
+
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer_zero = create_optimizer(model_zero, lr_schedule=schedule, momentum=0.9)
+        optimizer_one = create_optimizer(model_one, lr_schedule=schedule, momentum=0.9)
+        scaler = self._make_scaler()
+
+        positions = self._make_replay_positions(config, count=4)
+        states, target_policy, target_value = prepare_replay_batch(
+            positions,
+            config,
+            device=torch.device("cpu"),
+        )
+        zero_weights = torch.zeros(states.shape[0], dtype=torch.float32)
+        unit_weights = torch.ones(states.shape[0], dtype=torch.float32)
+
+        zero_metrics = train_one_step(
+            model_zero,
+            optimizer_zero,
+            states=states,
+            target_policy=target_policy,
+            target_value=target_value,
+            sample_weights=zero_weights,
+            game_config=config,
+            lr_schedule=schedule,
+            global_step=0,
+            l2_reg=0.0,
+            scaler=scaler,
+            use_mixed_precision=False,
+        )
+        one_metrics = train_one_step(
+            model_one,
+            optimizer_one,
+            states=states,
+            target_policy=target_policy,
+            target_value=target_value,
+            sample_weights=unit_weights,
+            game_config=config,
+            lr_schedule=schedule,
+            global_step=0,
+            l2_reg=0.0,
+            scaler=scaler,
+            use_mixed_precision=False,
+        )
+
+        for name, parameter in model_zero.state_dict().items():
+            self.assertTrue(torch.equal(parameter, initial_state[name]))
+
+        any_parameter_changed = any(
+            not torch.equal(parameter, initial_state[name])
+            for name, parameter in model_one.state_dict().items()
+        )
+        self.assertTrue(any_parameter_changed)
+        self.assertAlmostEqual(zero_metrics.loss_policy, 0.0, places=7)
+        self.assertAlmostEqual(zero_metrics.loss_value, 0.0, places=7)
+        self.assertAlmostEqual(zero_metrics.loss_total, 0.0, places=7)
+        self.assertGreater(one_metrics.loss_policy, 0.0)
+        self.assertGreater(one_metrics.loss_value, 0.0)
+        self.assertGreater(one_metrics.loss_total, 0.0)
 
     def test_go_symmetry_augmentation_preserves_pass_action_and_policy_consistency(self) -> None:
         """Ensures data augmentation never corrupts pass probability or board-policy alignment."""
