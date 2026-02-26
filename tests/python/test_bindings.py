@@ -98,6 +98,7 @@ class PythonBindingsTests(unittest.TestCase):
             value_wdl=value_wdl,
             game_id=7,
             move_number=3,
+            training_weight=0.625,
         )
 
         replay_buffer.add_game([position])
@@ -108,6 +109,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(sample.encoded_state_size, len(encoded_state))
         self.assertEqual(sample.policy_size, len(policy))
         self.assertAlmostEqual(sample.value, 1.0)
+        self.assertAlmostEqual(sample.training_weight, 0.625)
         self.assertEqual(sample.game_id, 7)
         self.assertEqual(sample.move_number, 3)
         import numpy.testing as npt

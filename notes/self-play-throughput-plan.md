@@ -349,6 +349,16 @@ float full_playout_probability = 0.25F;
 
 ### 2.2 Training weight
 
+Status (2026-02-26): Completed. Added `training_weight` to `PendingSample`
+(`src/selfplay/self_play_game.h`), `ReplayPosition`/`CompactReplayPosition`
+(`src/selfplay/replay_buffer.h`), and `SampledBatch` as packed `weights`.
+Propagated weights through dense and compact replay buffer write/read paths in
+`src/selfplay/replay_buffer.cpp` and `src/selfplay/compact_replay_buffer.cpp`,
+including defaulting imported legacy checkpoint rows to `1.0` for format
+compatibility. Added regression coverage in
+`tests/cpp/test_replay_buffer.cpp`, `tests/cpp/test_compact_replay_buffer.cpp`,
+`tests/cpp/test_self_play_game.cpp`, and `tests/python/test_bindings.py`.
+
 Add `float training_weight = 1.0F` to:
 - `PendingSample` in `src/selfplay/self_play_game.h`
 - `ReplayPosition` in `src/selfplay/replay_buffer.h`

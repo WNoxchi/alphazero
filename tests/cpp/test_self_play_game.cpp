@@ -364,6 +364,7 @@ TEST(SelfPlayGameTest, NaturalTerminationBackfillsPerspectiveTargetsAndTracksReu
     EXPECT_EQ(replay[0].move_number, 0U);
     EXPECT_FLOAT_EQ(replay[0].encoded_state[0], 0.0F);
     EXPECT_FLOAT_EQ(replay[0].value, 1.0F);
+    EXPECT_FLOAT_EQ(replay[0].training_weight, 1.0F);
     EXPECT_EQ(replay[0].value_wdl, (std::array<float, 3>{1.0F, 0.0F, 0.0F}));
     EXPECT_EQ(replay[0].policy_size, 2U);
     EXPECT_FLOAT_EQ(replay[0].policy[0], 1.0F);
@@ -372,6 +373,7 @@ TEST(SelfPlayGameTest, NaturalTerminationBackfillsPerspectiveTargetsAndTracksReu
     EXPECT_EQ(replay[1].move_number, 1U);
     EXPECT_FLOAT_EQ(replay[1].encoded_state[0], 1.0F);
     EXPECT_FLOAT_EQ(replay[1].value, -1.0F);
+    EXPECT_FLOAT_EQ(replay[1].training_weight, 1.0F);
     EXPECT_EQ(replay[1].value_wdl, (std::array<float, 3>{0.0F, 0.0F, 1.0F}));
     EXPECT_EQ(replay[1].policy_size, 2U);
     EXPECT_FLOAT_EQ(replay[1].policy[0], 1.0F);
@@ -476,6 +478,7 @@ TEST(SelfPlayGameTest, ResignationDisableFractionForcesPlaythrough) {
     const std::vector<ReplayPosition> replay = sorted_replay_positions(replay_buffer);
     ASSERT_EQ(replay.size(), 1U);
     EXPECT_FLOAT_EQ(replay[0].value, -1.0F);
+    EXPECT_FLOAT_EQ(replay[0].training_weight, 1.0F);
     EXPECT_EQ(replay[0].value_wdl, (std::array<float, 3>{0.0F, 0.0F, 1.0F}));
 }
 
@@ -532,6 +535,7 @@ TEST(SelfPlayGameTest, MaxLengthAdjudicationStopsNonTerminalGameAndBackfillsDraw
     const std::vector<ReplayPosition> replay = sorted_replay_positions(replay_buffer);
     ASSERT_EQ(replay.size(), 1U);
     EXPECT_FLOAT_EQ(replay[0].value, 0.0F);
+    EXPECT_FLOAT_EQ(replay[0].training_weight, 1.0F);
     EXPECT_EQ(replay[0].value_wdl, (std::array<float, 3>{0.0F, 1.0F, 0.0F}));
 }
 

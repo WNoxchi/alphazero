@@ -142,6 +142,7 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
         sample.encoded_state.resize(encoded_state_size());
         pre_move_state.encode(sample.encoded_state.data());
         sample.policy = std::move(policy);
+        sample.training_weight = 1.0F;
         sample.player = pre_move_state.current_player();
         sample.move_number = static_cast<std::uint16_t>(
             std::min<std::size_t>(result.move_count, std::numeric_limits<std::uint16_t>::max()));
@@ -188,7 +189,8 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
             scalar_value,
             wdl_target(scalar_value),
             game_id,
-            sample.move_number));
+            sample.move_number,
+            sample.training_weight));
     }
 
     replay_buffer_.add_game(replay_positions);

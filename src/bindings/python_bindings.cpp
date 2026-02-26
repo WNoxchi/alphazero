@@ -85,7 +85,8 @@ using alphazero::selfplay::SelfPlayManager;
     const float value,
     const py::handle& value_wdl,
     const std::uint32_t game_id,
-    const std::uint16_t move_number) {
+    const std::uint16_t move_number,
+    const float training_weight) {
     const std::vector<float> encoded_state_values = cast_float_sequence(encoded_state, "encoded_state");
     const std::vector<float> policy_values = cast_float_sequence(policy, "policy");
     const std::array<float, ReplayPosition::kWdlSize> wdl = cast_wdl_sequence(value_wdl);
@@ -96,7 +97,8 @@ using alphazero::selfplay::SelfPlayManager;
         value,
         wdl,
         game_id,
-        move_number);
+        move_number,
+        training_weight);
 }
 
 [[nodiscard]] py::array_t<float> replay_position_encoded_state_view(const ReplayPosition& position) {
@@ -1086,10 +1088,12 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("value"),
             py::arg("value_wdl"),
             py::arg("game_id"),
-            py::arg("move_number"))
+            py::arg("move_number"),
+            py::arg("training_weight") = 1.0F)
         .def_property_readonly("encoded_state", &replay_position_encoded_state_view)
         .def_property_readonly("policy", &replay_position_policy_view)
         .def_readwrite("value", &ReplayPosition::value)
+        .def_readwrite("training_weight", &ReplayPosition::training_weight)
         .def_property_readonly("value_wdl", &replay_position_wdl_view)
         .def_readwrite("game_id", &ReplayPosition::game_id)
         .def_readwrite("move_number", &ReplayPosition::move_number)

@@ -78,6 +78,7 @@ private:
     struct PendingSample {
         std::vector<float> encoded_state;
         std::vector<float> policy;
+        float training_weight = 1.0F;
         int player = 0;
         std::uint16_t move_number = 0U;
     };

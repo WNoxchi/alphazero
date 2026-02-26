@@ -1,6 +1,7 @@
 #include "selfplay/replay_buffer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -33,7 +34,8 @@ ReplayPosition ReplayPosition::make(
     const float scalar_value,
     const std::array<float, kWdlSize>& wdl_value,
     const std::uint32_t game_id_value,
-    const std::uint16_t move_number_value) {
+    const std::uint16_t move_number_value,
+    const float training_weight_value) {
     if (encoded_state_values.empty()) {
         throw std::invalid_argument("ReplayPosition encoded_state must be non-empty");
     }
@@ -46,11 +48,15 @@ ReplayPosition ReplayPosition::make(
     if (policy_values.size() > kMaxPolicySize) {
         throw std::invalid_argument("ReplayPosition policy exceeds maximum supported size");
     }
+    if (!std::isfinite(training_weight_value) || training_weight_value < 0.0F) {
+        throw std::invalid_argument("ReplayPosition training_weight must be finite and non-negative");
+    }
 
     ReplayPosition position{};
     std::copy(encoded_state_values.begin(), encoded_state_values.end(), position.encoded_state.begin());
     std::copy(policy_values.begin(), policy_values.end(), position.policy.begin());
     position.value = scalar_value;
+    position.training_weight = training_weight_value;
     position.value_wdl = wdl_value;
     position.game_id = game_id_value;
     position.move_number = move_number_value;
@@ -148,6 +154,7 @@ SampledBatch ReplayBuffer::sample_batch(
     packed.states.resize(checked_flat_size(packed.batch_size, encoded_state_size, "states"));
     packed.policies.resize(checked_flat_size(packed.batch_size, policy_size, "policies"));
     packed.values.resize(checked_flat_size(packed.batch_size, value_dim, "values"));
+    packed.weights.resize(packed.batch_size, 1.0F);
 
     for (std::size_t sample_index = 0U; sample_index < logical_indices.size(); ++sample_index) {
         const std::size_t logical_index = logical_indices[sample_index];
@@ -174,6 +181,8 @@ SampledBatch ReplayBuffer::sample_batch(
         } else {
             std::copy_n(position.value_wdl.begin(), ReplayPosition::kWdlSize, value_row);
         }
+
+        packed.weights[sample_index] = position.training_weight;
     }
 
     return packed;
@@ -251,6 +260,7 @@ void ReplayBuffer::import_positions(
                      pos.value_wdl.begin());
         pos.value = values_wdl[i * ReplayPosition::kWdlSize + 0]
                     - values_wdl[i * ReplayPosition::kWdlSize + 2];
+        pos.training_weight = 1.0F;
         pos.game_id = game_ids[i];
         pos.move_number = move_numbers[i];
         pos.encoded_state_size = static_cast<std::uint16_t>(encoded_state_size);
@@ -274,7 +284,8 @@ std::size_t ReplayBuffer::write_head() const noexcept { return write_head_.load(
 
 bool ReplayBuffer::has_valid_shape(const ReplayPosition& position) noexcept {
     return position.encoded_state_size > 0U && position.encoded_state_size <= ReplayPosition::kMaxEncodedStateSize &&
-           position.policy_size > 0U && position.policy_size <= ReplayPosition::kMaxPolicySize;
+           position.policy_size > 0U && position.policy_size <= ReplayPosition::kMaxPolicySize &&
+           std::isfinite(position.training_weight) && position.training_weight >= 0.0F;
 }
 
 std::vector<std::size_t> ReplayBuffer::sample_logical_indices(

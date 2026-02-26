@@ -32,6 +32,11 @@ constexpr std::size_t kPolicySize = 6U;
     return -1.0F;
 }
 
+[[nodiscard]] float training_weight_for(const std::uint32_t game_id, const std::uint16_t move_number) {
+    const std::uint32_t bucket = ((game_id * 13U) + move_number) % 11U;
+    return 0.25F + (static_cast<float>(bucket) * 0.125F);
+}
+
 [[nodiscard]] std::array<float, ReplayPosition::kWdlSize> wdl_for(const float value) {
     if (value > 0.0F) {
         return {1.0F, 0.0F, 0.0F};
@@ -59,7 +64,14 @@ constexpr std::size_t kPolicySize = 6U;
         signature + 5.0F,
         signature + 6.0F,
     };
-    return ReplayPosition::make(state, policy, value, wdl_for(value), game_id, move_number);
+    return ReplayPosition::make(
+        state,
+        policy,
+        value,
+        wdl_for(value),
+        game_id,
+        move_number,
+        training_weight_for(game_id, move_number));
 }
 
 [[nodiscard]] std::uint64_t signature_of(const ReplayPosition& position) {
@@ -79,6 +91,7 @@ void expect_position_is_consistent(const ReplayPosition& position) {
 
     const float expected_value = scalar_value_for(position.game_id, position.move_number);
     EXPECT_FLOAT_EQ(position.value, expected_value);
+    EXPECT_FLOAT_EQ(position.training_weight, training_weight_for(position.game_id, position.move_number));
     const auto expected_wdl = wdl_for(expected_value);
     EXPECT_EQ(position.value_wdl, expected_wdl);
 }
@@ -97,8 +110,8 @@ void expect_position_is_consistent(const ReplayPosition& position) {
 
 }  // namespace
 
-// WHY: Phase-1 replay compression depends on a fixed-size compact record with deterministic zero defaults so the
-// compression path can safely populate only touched fields.
+// WHY: Phase-1 replay compression depends on a fixed-size compact record with deterministic defaults so the
+// compression path can safely populate only touched fields while full-playout samples default to weight 1.0.
 TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefaults) {
     CompactReplayPosition position{};
 
@@ -123,6 +136,7 @@ TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefau
     EXPECT_EQ(position.num_policy_entries, 0U);
 
     EXPECT_FLOAT_EQ(position.value, 0.0F);
+    EXPECT_FLOAT_EQ(position.training_weight, 1.0F);
     EXPECT_EQ(position.value_wdl, (std::array<float, ReplayPosition::kWdlSize>{0.0F, 0.0F, 0.0F}));
     EXPECT_EQ(position.game_id, 0U);
     EXPECT_EQ(position.move_number, 0U);
@@ -323,6 +337,7 @@ TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
     ASSERT_EQ(scalar_batch.states.size(), 12U * kStateSize);
     ASSERT_EQ(scalar_batch.policies.size(), 12U * kPolicySize);
     ASSERT_EQ(scalar_batch.values.size(), 12U);
+    ASSERT_EQ(scalar_batch.weights.size(), 12U);
 
     for (std::size_t sample_index = 0U; sample_index < scalar_batch.batch_size; ++sample_index) {
         const float signature = scalar_batch.states[sample_index * kStateSize];
@@ -337,12 +352,14 @@ TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
         EXPECT_FLOAT_EQ(state_move, static_cast<float>(move_number));
         EXPECT_FLOAT_EQ(scalar_batch.policies[sample_index * kPolicySize], expected_signature + 0.5F);
         EXPECT_FLOAT_EQ(scalar_batch.values[sample_index], scalar_value_for(game_id, move_number));
+        EXPECT_FLOAT_EQ(scalar_batch.weights[sample_index], training_weight_for(game_id, move_number));
     }
 
     const alphazero::selfplay::SampledBatch wdl_batch =
         buffer.sample_batch(12U, kStateSize, kPolicySize, ReplayPosition::kWdlSize);
     ASSERT_EQ(wdl_batch.batch_size, 12U);
     ASSERT_EQ(wdl_batch.values.size(), 12U * ReplayPosition::kWdlSize);
+    ASSERT_EQ(wdl_batch.weights.size(), 12U);
 
     for (std::size_t sample_index = 0U; sample_index < wdl_batch.batch_size; ++sample_index) {
         const float policy_game = wdl_batch.policies[(sample_index * kPolicySize) + 1U];
@@ -355,6 +372,7 @@ TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
         EXPECT_FLOAT_EQ(wdl_batch.values[value_offset], expected_wdl[0]);
         EXPECT_FLOAT_EQ(wdl_batch.values[value_offset + 1U], expected_wdl[1]);
         EXPECT_FLOAT_EQ(wdl_batch.values[value_offset + 2U], expected_wdl[2]);
+        EXPECT_FLOAT_EQ(wdl_batch.weights[sample_index], training_weight_for(game_id, move_number));
     }
 }
 

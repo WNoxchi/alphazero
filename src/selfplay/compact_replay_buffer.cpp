@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -132,6 +133,7 @@ void CompactReplayBuffer::add_game(const std::vector<ReplayPosition>& positions)
             compact.policy_probs_fp16);
         compact.policy_size = checked_u16(full_policy_size_, "policy_size");
         compact.value = position.value;
+        compact.training_weight = position.training_weight;
         compact.value_wdl = position.value_wdl;
         compact.game_id = position.game_id;
         compact.move_number = position.move_number;
@@ -190,6 +192,7 @@ std::vector<ReplayPosition> CompactReplayBuffer::sample(const std::size_t batch_
             std::span<float>(dense.policy.data(), full_policy_size_));
 
         dense.value = compact.value;
+        dense.training_weight = compact.training_weight;
         dense.value_wdl = compact.value_wdl;
         dense.game_id = compact.game_id;
         dense.move_number = compact.move_number;
@@ -232,6 +235,7 @@ SampledBatch CompactReplayBuffer::sample_batch(
     packed.states.resize(checked_flat_size(packed.batch_size, encoded_state_size_, "states"));
     packed.policies.resize(checked_flat_size(packed.batch_size, full_policy_size_, "policies"));
     packed.values.resize(checked_flat_size(packed.batch_size, value_dim, "values"));
+    packed.weights.resize(packed.batch_size, 1.0F);
 
     for (std::size_t sample_index = 0U; sample_index < logical_indices.size(); ++sample_index) {
         const std::size_t logical_index = logical_indices[sample_index];
@@ -261,6 +265,8 @@ SampledBatch CompactReplayBuffer::sample_batch(
         } else {
             std::copy_n(compact.value_wdl.begin(), ReplayPosition::kWdlSize, value_row);
         }
+
+        packed.weights[sample_index] = compact.training_weight;
     }
 
     return packed;
@@ -363,6 +369,7 @@ void CompactReplayBuffer::import_positions(
             compact.value_wdl.begin());
         compact.value =
             values_wdl[i * ReplayPosition::kWdlSize] - values_wdl[(i * ReplayPosition::kWdlSize) + 2U];
+        compact.training_weight = 1.0F;
         compact.game_id = game_ids[i];
         compact.move_number = move_numbers[i];
         compact_positions.push_back(compact);
@@ -400,7 +407,8 @@ bool CompactReplayBuffer::has_valid_shape(const ReplayPosition& position) noexce
 bool CompactReplayBuffer::has_valid_compact_shape(const CompactReplayPosition& position) const noexcept {
     return position.num_binary_planes == num_binary_planes_ && position.num_float_planes == num_float_planes_ &&
            position.policy_size == full_policy_size_ &&
-           position.num_policy_entries <= CompactReplayPosition::kMaxSparsePolicy;
+           position.num_policy_entries <= CompactReplayPosition::kMaxSparsePolicy &&
+           std::isfinite(position.training_weight) && position.training_weight >= 0.0F;
 }
 
 std::vector<std::size_t> CompactReplayBuffer::sample_logical_indices(

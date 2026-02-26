@@ -43,6 +43,11 @@ enum class PolicyVariant {
     return -1.0F;
 }
 
+[[nodiscard]] float training_weight_for(const std::uint32_t game_id, const std::uint16_t move_number) {
+    const std::uint32_t bucket = ((game_id * 17U) + move_number) % 9U;
+    return 0.2F + (static_cast<float>(bucket) * 0.1F);
+}
+
 [[nodiscard]] std::array<float, ReplayPosition::kWdlSize> wdl_for(const float value) {
     if (value > 0.0F) {
         return {1.0F, 0.0F, 0.0F};
@@ -116,7 +121,14 @@ enum class PolicyVariant {
     const std::vector<float> state = make_state(game_id, move_number);
     const std::vector<float> policy = make_policy(game_id, move_number, variant);
     const float value = scalar_value_for(game_id, move_number);
-    return ReplayPosition::make(state, policy, value, wdl_for(value), game_id, move_number);
+    return ReplayPosition::make(
+        state,
+        policy,
+        value,
+        wdl_for(value),
+        game_id,
+        move_number,
+        training_weight_for(game_id, move_number));
 }
 
 [[nodiscard]] std::vector<ReplayPosition> make_game(
@@ -141,6 +153,7 @@ void expect_roundtrip_match(const ReplayPosition& expected, const ReplayPosition
     EXPECT_EQ(observed.game_id, expected.game_id);
     EXPECT_EQ(observed.move_number, expected.move_number);
     EXPECT_FLOAT_EQ(observed.value, expected.value);
+    EXPECT_FLOAT_EQ(observed.training_weight, expected.training_weight);
     EXPECT_EQ(observed.value_wdl, expected.value_wdl);
 
     for (std::size_t plane = 0U; plane < kTotalPlanes; ++plane) {
@@ -299,6 +312,7 @@ TEST(CompactReplayBufferTest, ConcurrentWritesAndSamplingRemainConsistent) {
             EXPECT_EQ(batch.states.size(), batch.batch_size * kStateSize);
             EXPECT_EQ(batch.policies.size(), batch.batch_size * kPolicySize);
             EXPECT_EQ(batch.values.size(), batch.batch_size);
+            EXPECT_EQ(batch.weights.size(), batch.batch_size);
             reader_iterations.fetch_add(1, std::memory_order_relaxed);
         }
     });
@@ -410,4 +424,3 @@ TEST(CompactReplayBufferTest, ExportImportRoundtripPreservesLogicalContents) {
     EXPECT_EQ(game_ids_again, game_ids);
     EXPECT_EQ(move_numbers_again, move_numbers);
 }
-

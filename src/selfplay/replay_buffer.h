@@ -22,6 +22,7 @@ struct ReplayPosition {
     std::array<float, kMaxEncodedStateSize> encoded_state{};
     std::array<float, kMaxPolicySize> policy{};
     float value = 0.0F;
+    float training_weight = 1.0F;
     std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
     std::uint32_t game_id = 0U;
     std::uint16_t move_number = 0U;
@@ -34,7 +35,8 @@ struct ReplayPosition {
         float value,
         const std::array<float, kWdlSize>& value_wdl,
         std::uint32_t game_id,
-        std::uint16_t move_number);
+        std::uint16_t move_number,
+        float training_weight = 1.0F);
 };
 
 struct CompactReplayPosition {
@@ -55,6 +57,7 @@ struct CompactReplayPosition {
 
     // Metadata and value targets matching ReplayPosition semantics.
     float value = 0.0F;
+    float training_weight = 1.0F;
     std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
     std::uint32_t game_id = 0U;
     std::uint16_t move_number = 0U;
@@ -67,6 +70,7 @@ struct SampledBatch {
     std::vector<float> states;
     std::vector<float> policies;
     std::vector<float> values;
+    std::vector<float> weights;
     std::size_t batch_size = 0U;
 };
 
