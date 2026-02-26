@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 import re
+import threading
+import time as _time
 from typing import Any, Callable, Mapping, Protocol
 
 from alphazero.config import load_yaml_config
@@ -279,6 +281,7 @@ class PeriodicEloEvaluator:
         match_runner: MatchRunner,
         scalar_logger: ScalarLogCallback | ScalarLoggerLike | None = None,
         start_step: int = 0,
+        console_writer: Callable[[str], None] | None = None,
     ) -> None:
         if not isinstance(config, EvaluationConfig):
             raise TypeError(f"config must be EvaluationConfig, got {type(config).__name__}")
@@ -294,6 +297,7 @@ class PeriodicEloEvaluator:
         self._config = config
         self._match_runner = match_runner
         self._scalar_logger = scalar_logger
+        self._console_writer = console_writer or print
         self._last_evaluated_step: int | None = None
 
     @property
@@ -338,6 +342,13 @@ class PeriodicEloEvaluator:
         if milestone_step is None:
             raise RuntimeError(f"Invalid milestone checkpoint filename: {milestone_path}")
 
+        self._console_writer(
+            f"Elo eval: step {normalized_step} — playing "
+            f"{self._config.num_games} games vs milestone {milestone_step} "
+            f"({milestone_path.name})"
+        )
+        t0 = _time.monotonic()
+
         raw_outcome = self._match_runner(
             current_network=current_network,
             milestone_checkpoint=milestone_path,
@@ -351,6 +362,7 @@ class PeriodicEloEvaluator:
                 f"expected {self._config.num_games}, got {outcome.total_games}"
             )
 
+        elapsed = _time.monotonic() - t0
         elo_difference = estimate_elo_difference(outcome)
         result = EloEvaluationResult(
             step=normalized_step,
@@ -361,10 +373,14 @@ class PeriodicEloEvaluator:
             elo_difference=elo_difference,
         )
         self._last_evaluated_step = normalized_step
-        self._emit_scalar(
-            result.metric_tag,
-            result.elo_difference,
-            normalized_step,
+        self._emit_scalar("eval/elo_vs_milestone", result.elo_difference, normalized_step)
+        self._emit_scalar("eval/score_vs_milestone", result.score, normalized_step)
+
+        self._console_writer(
+            f"Elo eval: step {normalized_step} — "
+            f"W/D/L {outcome.wins}/{outcome.draws}/{outcome.losses}  "
+            f"score {outcome.score:.2f}  Elo {elo_difference:+.0f}  "
+            f"({elapsed:.1f}s)"
         )
         return result
 
@@ -376,6 +392,395 @@ class PeriodicEloEvaluator:
             self._scalar_logger(tag, value, step)
             return
         self._scalar_logger.log_scalar(tag, value, step)
+
+
+def _build_eval_state_evaluator(
+    *,
+    model: Any,
+    game_config: Any,
+    device: Any,
+    use_mixed_precision: bool,
+) -> Callable[[Any], dict[str, object]]:
+    """Build a single-state evaluator closure for ``MctsSearch.run_simulations()``.
+
+    Parameters
+    ----------
+    model:
+        A PyTorch model (may be ``torch.compile``-d) in eval mode on *device*.
+    game_config:
+        A :class:`~alphazero.config.GameConfig` providing board dimensions,
+        input channels, action-space size, and value-head type.
+    device:
+        ``torch.device`` the model lives on.
+    use_mixed_precision:
+        When *True* and *device* is CUDA, runs inference under
+        ``torch.autocast(dtype=bfloat16)``.
+
+    Returns
+    -------
+    Callable[[state], dict]
+        ``{"policy": list[float], "value": float, "policy_is_logits": True}``
+    """
+    import torch as _torch
+
+    rows, cols = game_config.board_shape
+    encoded_state_size = game_config.input_channels * rows * cols
+
+    def evaluator(state: Any) -> dict[str, object]:
+        encoded = _torch.as_tensor(
+            state.encode(), dtype=_torch.float32, device=device,
+        ).flatten()
+        if int(encoded.numel()) != encoded_state_size:
+            raise ValueError(
+                f"State encoding size mismatch: "
+                f"expected {encoded_state_size}, got {int(encoded.numel())}"
+            )
+
+        model_input = encoded.reshape(1, game_config.input_channels, rows, cols)
+        with _torch.no_grad():
+            with _torch.autocast(
+                device_type=device.type,
+                dtype=_torch.bfloat16,
+                enabled=use_mixed_precision and device.type == "cuda",
+            ):
+                policy_logits, value = model(model_input)
+
+        if game_config.value_head_type == "scalar":
+            scalar_value = float(value.reshape(1, -1)[0, 0].detach().item())
+        elif game_config.value_head_type == "wdl":
+            reshaped = value.reshape(1, -1)
+            if int(reshaped.shape[1]) < 3:
+                raise ValueError(
+                    "WDL value head output must have at least three channels, "
+                    f"got shape {tuple(value.shape)}"
+                )
+            scalar_value = float((reshaped[0, 0] - reshaped[0, 2]).detach().item())
+        else:
+            raise ValueError(
+                f"Unsupported value_head_type {game_config.value_head_type!r}"
+            )
+
+        policy = (
+            policy_logits.reshape(1, -1)
+            .detach()
+            .to(device="cpu", dtype=_torch.float32)
+        )
+        if int(policy.shape[1]) != game_config.action_space_size:
+            raise ValueError(
+                f"Policy output size mismatch: "
+                f"expected {game_config.action_space_size}, got {int(policy.shape[1])}"
+            )
+
+        return {
+            "policy": policy[0].tolist(),
+            "value": scalar_value,
+            "policy_is_logits": True,
+        }
+
+    return evaluator
+
+
+class _BatchInferenceServer:
+    """Accumulates eval requests from concurrent game threads and runs batched inference.
+
+    Game threads call the evaluator returned by :meth:`create_evaluator` which
+    blocks until the main thread calls :meth:`process_pending` to run a batched
+    forward pass and distribute results.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: Any,
+        game_config: Any,
+        device: Any,
+        use_mixed_precision: bool,
+    ) -> None:
+        import torch as _torch
+
+        self._model = model
+        self._device = device
+        self._use_mixed_precision = use_mixed_precision
+        self._game_config = game_config
+        self._torch = _torch
+
+        rows, cols = game_config.board_shape
+        self._rows = rows
+        self._cols = cols
+        self._channels = game_config.input_channels
+        self._encoded_state_size = self._channels * rows * cols
+
+        self._lock = threading.Lock()
+        self._pending: list[tuple[Any, threading.Event, list[dict[str, object] | None]]] = []
+        self._stopped = False
+
+    def create_evaluator(self) -> Callable[[Any], dict[str, object]]:
+        """Return a single-state evaluator for ``MctsSearch.run_simulations()``."""
+
+        _torch = self._torch
+        device = self._device
+        encoded_state_size = self._encoded_state_size
+        server = self
+
+        def evaluator(state: Any) -> dict[str, object]:
+            encoded = _torch.as_tensor(
+                state.encode(), dtype=_torch.float32, device=device,
+            ).flatten()
+            if int(encoded.numel()) != encoded_state_size:
+                raise ValueError(
+                    f"State encoding size mismatch: "
+                    f"expected {encoded_state_size}, got {int(encoded.numel())}"
+                )
+
+            event = threading.Event()
+            result_holder: list[dict[str, object] | None] = [None]
+            with server._lock:
+                if server._stopped:
+                    raise RuntimeError("BatchInferenceServer has been stopped")
+                server._pending.append((encoded, event, result_holder))
+            event.wait()
+            if result_holder[0] is None:
+                raise RuntimeError("BatchInferenceServer stopped before producing a result")
+            return result_holder[0]
+
+        return evaluator
+
+    def process_pending(self) -> int:
+        """Collect all pending requests, run batched inference, distribute results."""
+
+        with self._lock:
+            if not self._pending:
+                return 0
+            batch = self._pending[:]
+            self._pending.clear()
+
+        _torch = self._torch
+        batch_size = len(batch)
+        encoded_batch = _torch.stack([item[0] for item in batch])
+        model_input = encoded_batch.reshape(
+            batch_size, self._channels, self._rows, self._cols
+        )
+
+        with _torch.no_grad():
+            with _torch.autocast(
+                device_type=self._device.type,
+                dtype=_torch.bfloat16,
+                enabled=self._use_mixed_precision and self._device.type == "cuda",
+            ):
+                policy_logits, value = self._model(model_input)
+
+        game_config = self._game_config
+        if game_config.value_head_type == "scalar":
+            value_scalars = value.reshape(batch_size, -1)[:, 0].detach()
+        elif game_config.value_head_type == "wdl":
+            reshaped = value.reshape(batch_size, -1)
+            value_scalars = (reshaped[:, 0] - reshaped[:, 2]).detach()
+        else:
+            raise ValueError(
+                f"Unsupported value_head_type {game_config.value_head_type!r}"
+            )
+
+        policy_cpu = (
+            policy_logits.reshape(batch_size, -1)
+            .detach()
+            .to(device="cpu", dtype=_torch.float32)
+        )
+
+        for i, (_, event, holder) in enumerate(batch):
+            holder[0] = {
+                "policy": policy_cpu[i].tolist(),
+                "value": float(value_scalars[i].item()),
+                "policy_is_logits": True,
+            }
+            event.set()
+
+        return batch_size
+
+    def stop(self) -> None:
+        """Stop the server and wake all waiting threads."""
+
+        with self._lock:
+            self._stopped = True
+            for _, event, _ in self._pending:
+                event.set()
+            self._pending.clear()
+
+
+def create_mcts_match_runner(
+    *,
+    game_config: Any,
+    network_factory: Callable[[], Any],
+    cpp_game_config: Any,
+    device: Any | None = None,
+    use_mixed_precision: bool = True,
+) -> Callable[..., MatchOutcome]:
+    """Create a :class:`MatchRunner`-compatible closure for MCTS self-play matches.
+
+    Parameters
+    ----------
+    game_config:
+        :class:`~alphazero.config.GameConfig` for the target game.
+    network_factory:
+        Zero-argument callable returning a fresh, untrained model instance
+        (same architecture as the training model).
+    cpp_game_config:
+        C++ game config object (e.g. ``cpp.chess_game_config()``).
+    device:
+        ``torch.device`` for inference. ``None`` auto-selects CUDA if available.
+    use_mixed_precision:
+        Whether to use bfloat16 autocast during inference.
+
+    Returns
+    -------
+    Callable
+        A ``MatchRunner`` that plays ``num_games`` games between the current
+        network and a milestone checkpoint, returning a :class:`MatchOutcome`.
+    """
+
+    def match_runner(
+        *,
+        current_network: object,
+        milestone_checkpoint: Path,
+        num_games: int,
+        simulations_per_move: int,
+    ) -> MatchOutcome:
+        import copy
+
+        import torch as _torch
+
+        import alphazero_cpp as cpp  # type: ignore[import-not-found]
+        from alphazero.utils.checkpoint import load_checkpoint
+
+        resolved_device = device
+        if resolved_device is None:
+            resolved_device = _torch.device(
+                "cuda" if _torch.cuda.is_available() else "cpu"
+            )
+
+        # --- snapshot current weights into a fresh model ---
+        source_model = current_network
+        if hasattr(source_model, "_orig_mod"):
+            source_model = source_model._orig_mod
+        current_model = network_factory()
+        current_model.load_state_dict(copy.deepcopy(source_model.state_dict()))
+        current_model.to(device=resolved_device)
+        current_model.eval()
+
+        # --- load milestone into a fresh model ---
+        milestone_model = network_factory()
+        load_checkpoint(
+            milestone_checkpoint,
+            milestone_model,
+            optimizer=None,
+            map_location="cpu",
+        )
+        milestone_model.to(device=resolved_device)
+        milestone_model.eval()
+
+        # --- batched inference servers (one per model) ---
+        current_server = _BatchInferenceServer(
+            model=current_model,
+            game_config=game_config,
+            device=resolved_device,
+            use_mixed_precision=use_mixed_precision,
+        )
+        milestone_server = _BatchInferenceServer(
+            model=milestone_model,
+            game_config=game_config,
+            device=resolved_device,
+            use_mixed_precision=use_mixed_precision,
+        )
+
+        # --- configure search (deterministic, no noise) ---
+        search_config = cpp.SearchConfig()
+        search_config.simulations_per_move = simulations_per_move
+        search_config.enable_dirichlet_noise = False
+        search_config.dirichlet_epsilon = 0.0
+        search_config.temperature = 0.0
+        search_config.temperature_moves = 0
+        search_config.enable_resignation = False
+
+        game_name = game_config.name.strip().lower()
+        node_arena_capacity = max(simulations_per_move * 2, 1000)
+        results: list[float | None] = [None] * num_games
+        errors: list[BaseException | None] = [None] * num_games
+
+        def _play_game(game_index: int) -> None:
+            try:
+                current_player = game_index % 2
+
+                if game_name == "chess":
+                    state = cpp.ChessState()
+                elif game_name == "go":
+                    state = cpp.GoState()
+                else:
+                    raise ValueError(f"Unsupported game {game_config.name!r}")
+
+                current_eval = current_server.create_evaluator()
+                milestone_eval = milestone_server.create_evaluator()
+                evaluators = [None, None]
+                evaluators[current_player] = current_eval
+                evaluators[1 - current_player] = milestone_eval
+
+                searches = [
+                    cpp.MctsSearch(cpp_game_config, search_config, node_arena_capacity),
+                    cpp.MctsSearch(cpp_game_config, search_config, node_arena_capacity),
+                ]
+
+                while not bool(state.is_terminal()):
+                    player = int(state.current_player())
+                    search = searches[player]
+                    search.set_root_state(state)
+                    search.run_simulations(evaluators[player])
+                    action = int(search.select_action(0))
+                    state = state.apply_action(action)
+
+                results[game_index] = float(state.outcome(current_player))
+            except BaseException as exc:
+                errors[game_index] = exc
+
+        # --- run all games in parallel, batch-process inference on main thread ---
+        threads = [
+            threading.Thread(target=_play_game, args=(i,), daemon=True)
+            for i in range(num_games)
+        ]
+        for t in threads:
+            t.start()
+
+        try:
+            while any(t.is_alive() for t in threads):
+                n1 = current_server.process_pending()
+                n2 = milestone_server.process_pending()
+                if n1 == 0 and n2 == 0:
+                    _time.sleep(0.0001)
+        except BaseException:
+            current_server.stop()
+            milestone_server.stop()
+            raise
+        finally:
+            for t in threads:
+                t.join(timeout=5.0)
+
+        for i, err in enumerate(errors):
+            if err is not None:
+                raise RuntimeError(f"Eval game {i} failed") from err
+
+        wins = 0
+        draws = 0
+        losses = 0
+        for r in results:
+            if r is None:
+                raise RuntimeError("Not all eval games completed")
+            if r > 0:
+                wins += 1
+            elif r < 0:
+                losses += 1
+            else:
+                draws += 1
+
+        return MatchOutcome(wins=wins, draws=draws, losses=losses)
+
+    return match_runner
 
 
 __all__ = [
@@ -397,4 +802,5 @@ __all__ = [
     "find_latest_milestone_checkpoint",
     "estimate_elo_from_score",
     "estimate_elo_difference",
+    "create_mcts_match_runner",
 ]

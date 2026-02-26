@@ -103,6 +103,7 @@ class TrainingRuntime:
     optimizer: Any
     logger: Any
     start_step: int
+    elo_evaluator: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,6 +563,48 @@ def build_training_runtime(
     run_name = _resolve_run_name(active_dependencies, config, game_config.name)
     logger = active_dependencies.create_metrics_logger(run_name=run_name, config=config)
 
+    # --- Elo evaluator (optional) ---
+    elo_evaluator = None
+    from alphazero.pipeline.evaluation import (
+        EvaluationConfig,
+        create_mcts_match_runner,
+        load_evaluation_config_from_config,
+    )
+
+    try:
+        eval_config = load_evaluation_config_from_config(config)
+    except (TypeError, ValueError):
+        eval_config = EvaluationConfig()
+
+    checkpoint_dir = training_config.checkpoint_dir
+    if checkpoint_dir is not None:
+        eval_config = EvaluationConfig(
+            interval_steps=eval_config.interval_steps,
+            num_games=eval_config.num_games,
+            simulations_per_move=eval_config.simulations_per_move,
+            checkpoint_dir=Path(checkpoint_dir),
+        )
+
+    def _network_factory() -> Any:
+        return _build_model(active_dependencies, config, game_config)
+
+    match_runner = create_mcts_match_runner(
+        game_config=game_config,
+        network_factory=_network_factory,
+        cpp_game_config=_build_cpp_game_config(cpp, game_config.name),
+        device=None,
+        use_mixed_precision=bool(training_config.use_mixed_precision),
+    )
+
+    from alphazero.pipeline.evaluation import PeriodicEloEvaluator
+
+    elo_evaluator = PeriodicEloEvaluator(
+        eval_config,
+        match_runner=match_runner,
+        scalar_logger=logger.log_scalar,
+        start_step=start_step,
+    )
+
     return TrainingRuntime(
         config_path=resolved_config_path,
         config=config,
@@ -576,6 +619,7 @@ def build_training_runtime(
         optimizer=optimizer,
         logger=logger,
         start_step=start_step,
+        elo_evaluator=elo_evaluator,
     )
 
 
@@ -667,6 +711,8 @@ def run_training_session(
 
     # Route console summaries through tqdm.write() so the progress bar stays
     # pinned at the bottom while step logs scroll above it.
+    if runtime.elo_evaluator is not None:
+        runtime.elo_evaluator._console_writer = tqdm.write
     console_interval = runtime.logger._console_summary_interval_steps
 
     def _update_bar(step: int) -> None:
@@ -727,6 +773,7 @@ def run_training_session(
                 step_logger=step_logger,
                 cycle_logger=cycle_logger,
                 start_step=runtime.start_step,
+                elo_evaluator=runtime.elo_evaluator,
             )
     except KeyboardInterrupt:
         interrupted = True

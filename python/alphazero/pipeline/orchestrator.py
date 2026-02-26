@@ -464,6 +464,7 @@ def run_parallel_pipeline(
     cycle_logger: CycleLogger | None = None,
     start_step: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
+    elo_evaluator: object | None = None,
 ) -> PipelineRunResult:
     """Run the full self-play/training pipeline with concurrent inference and training workers."""
 
@@ -656,6 +657,11 @@ def run_parallel_pipeline(
                                 export_folded_weights=bool(training_config.export_folded_checkpoints),
                                 game_config=game_config,
                             )
+                        )
+
+                    if elo_evaluator is not None:
+                        elo_evaluator.maybe_evaluate(
+                            step=next_step, current_network=model,
                         )
 
                 with progress_condition:
@@ -864,6 +870,7 @@ def run_interleaved_pipeline(
     cycle_logger: CycleLogger | None = None,
     start_step: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
+    elo_evaluator: object | None = None,
 ) -> PipelineRunResult:
     """Backward-compatible wrapper for the parallel pipeline runtime."""
 
@@ -881,6 +888,7 @@ def run_interleaved_pipeline(
         cycle_logger=cycle_logger,
         start_step=start_step,
         sleep_fn=sleep_fn,
+        elo_evaluator=elo_evaluator,
     )
 
 
