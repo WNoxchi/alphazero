@@ -274,6 +274,12 @@ compact_buf = cpp.CompactReplayBuffer(
 
 ### 1.6 Wire up in `scripts/train.py`
 
+Status (2026-02-26): Completed. `scripts/train.py` now builds `CompactReplayBuffer` from
+`GameConfig` metadata (`num_binary_planes`, `num_float_planes`, `float_plane_indices`,
+`action_space_size`) for 8x8 games (chess), and falls back to dense `ReplayBuffer` for
+non-8x8 games until replay compression supports board sizes beyond 64 squares. Added
+Python coverage in `tests/python/test_train_script.py` and `tests/python/test_config.py`.
+
 Modify `_build_replay_buffer()` (currently constructs `ReplayBuffer`) to construct `CompactReplayBuffer` instead, passing game-specific plane metadata derived from the game config.
 
 The `GameConfig` struct already has `input_channels` (119), `board_shape` (8,8), `action_space_size` (4672). Need to add or derive `float_plane_indices` — either add to the game config or hardcode per game type. Recommend adding `float_plane_indices` to `GameConfig` in `src/games/chess/chess_config.cpp` and `src/games/go/go_config.cpp`.

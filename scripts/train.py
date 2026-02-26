@@ -347,7 +347,7 @@ def _build_cpp_game_config(cpp: Any, game_name: str) -> Any:
     raise ValueError(f"Unsupported game {game_name!r}")
 
 
-def _build_replay_buffer(cpp: Any, config: Mapping[str, Any]) -> Any:
+def _build_replay_buffer(cpp: Any, config: Mapping[str, Any], game_config: GameConfig) -> Any:
     replay = _section(config, "replay_buffer")
     capacity = _coerce_positive_int(
         "replay_buffer.capacity",
@@ -357,7 +357,19 @@ def _build_replay_buffer(cpp: Any, config: Mapping[str, Any]) -> Any:
         "replay_buffer.random_seed",
         int(replay.get("random_seed", 0x9E3779B97F4A7C15)),
     )
-    return cpp.ReplayBuffer(capacity=capacity, random_seed=random_seed)
+
+    rows, cols = game_config.board_shape
+    if rows * cols != 64 or not hasattr(cpp, "CompactReplayBuffer"):
+        return cpp.ReplayBuffer(capacity=capacity, random_seed=random_seed)
+
+    return cpp.CompactReplayBuffer(
+        capacity=capacity,
+        num_binary_planes=game_config.num_binary_planes,
+        num_float_planes=game_config.num_float_planes,
+        float_plane_indices=list(game_config.float_plane_indices),
+        full_policy_size=game_config.action_space_size,
+        random_seed=random_seed,
+    )
 
 
 def _build_eval_queue_config(cpp: Any, config: Mapping[str, Any]) -> Any:
@@ -501,7 +513,7 @@ def build_training_runtime(
         )
 
     cpp = active_dependencies.cpp
-    replay_buffer = _build_replay_buffer(cpp, config)
+    replay_buffer = _build_replay_buffer(cpp, config, game_config)
 
     if resume_path is not None:
         from alphazero.utils.checkpoint import load_replay_buffer_state

@@ -21,6 +21,7 @@ class GameConfig:
     value_head_type: str
     supports_symmetry: bool
     num_symmetries: int
+    float_plane_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         rows, cols = self.board_shape
@@ -39,6 +40,35 @@ class GameConfig:
             raise ValueError("num_symmetries must be positive")
         if not self.supports_symmetry and self.num_symmetries != 1:
             raise ValueError("num_symmetries must be 1 when supports_symmetry is False")
+        seen: set[int] = set()
+        for plane_index in self.float_plane_indices:
+            if isinstance(plane_index, bool) or not isinstance(plane_index, int):
+                raise TypeError(
+                    "float_plane_indices entries must be integers, "
+                    f"got {type(plane_index).__name__}"
+                )
+            if plane_index < 0 or plane_index >= self.input_channels:
+                raise ValueError(
+                    "float_plane_indices entries must be in range "
+                    f"[0, {self.input_channels}), got {plane_index}"
+                )
+            if plane_index in seen:
+                raise ValueError(
+                    f"float_plane_indices entries must be unique, got duplicate {plane_index}"
+                )
+            seen.add(plane_index)
+        if self.input_channels - len(self.float_plane_indices) <= 0:
+            raise ValueError(
+                "input_channels must include at least one binary plane for replay compression"
+            )
+
+    @property
+    def num_float_planes(self) -> int:
+        return len(self.float_plane_indices)
+
+    @property
+    def num_binary_planes(self) -> int:
+        return self.input_channels - self.num_float_planes
 
 
 CHESS_CONFIG = GameConfig(
@@ -49,6 +79,7 @@ CHESS_CONFIG = GameConfig(
     value_head_type="wdl",
     supports_symmetry=False,
     num_symmetries=1,
+    float_plane_indices=(113, 118),
 )
 
 GO_CONFIG = GameConfig(
@@ -59,6 +90,7 @@ GO_CONFIG = GameConfig(
     value_head_type="scalar",
     supports_symmetry=True,
     num_symmetries=8,
+    float_plane_indices=(),
 )
 
 

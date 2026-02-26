@@ -74,6 +74,25 @@ class _FakeReplayBuffer:
         self.random_seed = random_seed
 
 
+class _FakeCompactReplayBuffer:
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        num_binary_planes: int,
+        num_float_planes: int,
+        float_plane_indices: list[int],
+        full_policy_size: int,
+        random_seed: int,
+    ) -> None:
+        self.capacity = capacity
+        self.num_binary_planes = num_binary_planes
+        self.num_float_planes = num_float_planes
+        self.float_plane_indices = list(float_plane_indices)
+        self.full_policy_size = full_policy_size
+        self.random_seed = random_seed
+
+
 class _FakeEvalQueueConfig:
     def __init__(self) -> None:
         self.batch_size = 256
@@ -146,6 +165,7 @@ class _Harness:
             EvalQueueConfig=_FakeEvalQueueConfig,
             SelfPlayManagerConfig=_FakeSelfPlayManagerConfig,
             ReplayBuffer=_FakeReplayBuffer,
+            CompactReplayBuffer=_FakeCompactReplayBuffer,
             EvalQueue=self._make_eval_queue,
             SelfPlayManager=_FakeSelfPlayManager,
             chess_game_config=lambda: "chess_cpp_config",
@@ -372,6 +392,44 @@ class TrainScriptRuntimeTests(unittest.TestCase):
                 dependencies=dependencies,
                 config_override=config,
             )
+
+    def test_build_replay_buffer_uses_compact_buffer_for_chess_metadata(self) -> None:
+        """WHY: training must route chess replay storage through compact compression to unlock larger buffer capacity."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        game_config = train_script.get_game_config("chess")
+
+        replay_buffer = train_script._build_replay_buffer(
+            dependencies.cpp,
+            config,
+            game_config,
+        )
+
+        self.assertIsInstance(replay_buffer, _FakeCompactReplayBuffer)
+        self.assertEqual(replay_buffer.capacity, 512)
+        self.assertEqual(replay_buffer.random_seed, 42)
+        self.assertEqual(replay_buffer.num_binary_planes, 117)
+        self.assertEqual(replay_buffer.num_float_planes, 2)
+        self.assertEqual(replay_buffer.float_plane_indices, [113, 118])
+        self.assertEqual(replay_buffer.full_policy_size, 4672)
+
+    def test_build_replay_buffer_falls_back_to_dense_for_non_chess_board_shapes(self) -> None:
+        """WHY: current compact encoding assumes 8x8 planes, so Go must stay on the dense buffer path."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        go_config = train_script.get_game_config("go")
+
+        replay_buffer = train_script._build_replay_buffer(
+            dependencies.cpp,
+            config,
+            go_config,
+        )
+
+        self.assertIsInstance(replay_buffer, _FakeReplayBuffer)
+        self.assertEqual(replay_buffer.capacity, 512)
+        self.assertEqual(replay_buffer.random_seed, 42)
 
     def test_run_session_interrupt_saves_final_checkpoint_and_flushes_logger(self) -> None:
         """WHY: graceful shutdown must preserve progress and flush metrics when interrupted by a signal."""
