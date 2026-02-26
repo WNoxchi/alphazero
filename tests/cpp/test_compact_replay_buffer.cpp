@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -16,6 +17,7 @@ namespace {
 
 using alphazero::selfplay::CompactReplayBuffer;
 using alphazero::selfplay::ReplayPosition;
+using alphazero::selfplay::SamplingStrategy;
 using alphazero::selfplay::SampledBatch;
 
 constexpr std::size_t kSquaresPerPlane = 64U;
@@ -278,6 +280,63 @@ TEST(CompactReplayBufferTest, SupportsZeroAndSingleMovePolicies) {
 
     EXPECT_TRUE(saw_zero_policy);
     EXPECT_TRUE(saw_single_policy);
+}
+
+// WHY: Recency-weighted sampling is intended to prioritize fresh self-play data to improve policy freshness.
+TEST(CompactReplayBufferTest, RecencyWeightedSamplingBiasesTowardNewestEntries) {
+    constexpr std::size_t kPopulation = 100U;
+    constexpr std::size_t kSampleCount = 20'000U;
+    constexpr std::size_t kQuartileWidth = kPopulation / 4U;
+
+    CompactReplayBuffer buffer(
+        /*capacity=*/kPopulation,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/24680U,
+        /*sampling_strategy=*/SamplingStrategy::kRecencyWeighted,
+        /*recency_weight_lambda=*/4.0F);
+
+    for (std::uint32_t game_id = 0U; game_id < kPopulation; ++game_id) {
+        buffer.add_game(make_game(game_id, 1U));
+    }
+
+    const std::vector<ReplayPosition> sampled = buffer.sample(kSampleCount);
+    ASSERT_EQ(sampled.size(), kSampleCount);
+
+    std::array<std::size_t, kPopulation> counts{};
+    for (const ReplayPosition& position : sampled) {
+        ASSERT_LT(position.game_id, kPopulation);
+        ++counts[position.game_id];
+    }
+
+    std::size_t oldest_quartile = 0U;
+    for (std::size_t i = 0U; i < kQuartileWidth; ++i) {
+        oldest_quartile += counts[i];
+    }
+    std::size_t newest_quartile = 0U;
+    for (std::size_t i = kPopulation - kQuartileWidth; i < kPopulation; ++i) {
+        newest_quartile += counts[i];
+    }
+
+    EXPECT_GT(newest_quartile, oldest_quartile * 2U);
+    EXPECT_GT(counts[kPopulation - 1U], counts[0U]);
+}
+
+// WHY: Invalid recency-weight hyperparameters should fail at construction to prevent undefined sampling behavior.
+TEST(CompactReplayBufferTest, RejectsNegativeRecencyWeightLambda) {
+    EXPECT_THROW(
+        static_cast<void>(CompactReplayBuffer(
+            /*capacity=*/8U,
+            /*num_binary_planes=*/kNumBinaryPlanes,
+            /*num_float_planes=*/kNumFloatPlanes,
+            /*float_plane_indices=*/{kFloatPlaneIndex},
+            /*full_policy_size=*/kPolicySize,
+            /*random_seed=*/1234U,
+            /*sampling_strategy=*/SamplingStrategy::kRecencyWeighted,
+            /*recency_weight_lambda=*/-0.01F)),
+        std::invalid_argument);
 }
 
 // WHY: Self-play writers and training readers run concurrently; this ensures compact storage remains thread-safe.

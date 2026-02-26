@@ -84,6 +84,8 @@ class _FakeCompactReplayBuffer:
         float_plane_indices: list[int],
         full_policy_size: int,
         random_seed: int,
+        sampling_strategy: object = "uniform",
+        recency_weight_lambda: float = 1.0,
     ) -> None:
         self.capacity = capacity
         self.num_binary_planes = num_binary_planes
@@ -91,6 +93,13 @@ class _FakeCompactReplayBuffer:
         self.float_plane_indices = list(float_plane_indices)
         self.full_policy_size = full_policy_size
         self.random_seed = random_seed
+        self.sampling_strategy = sampling_strategy
+        self.recency_weight_lambda = float(recency_weight_lambda)
+
+
+class _FakeReplaySamplingStrategy:
+    UNIFORM = "uniform"
+    RECENCY_WEIGHTED = "recency_weighted"
 
 
 class _FakeEvalQueueConfig:
@@ -177,6 +186,7 @@ class _Harness:
             SelfPlayManagerConfig=_FakeSelfPlayManagerConfig,
             ReplayBuffer=_FakeReplayBuffer,
             CompactReplayBuffer=_FakeCompactReplayBuffer,
+            ReplaySamplingStrategy=_FakeReplaySamplingStrategy,
             EvalQueue=self._make_eval_queue,
             SelfPlayManager=_FakeSelfPlayManager,
             chess_game_config=lambda: "chess_cpp_config",
@@ -434,6 +444,34 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertEqual(replay_buffer.num_float_planes, 2)
         self.assertEqual(replay_buffer.float_plane_indices, [113, 118])
         self.assertEqual(replay_buffer.full_policy_size, 4672)
+        self.assertEqual(replay_buffer.sampling_strategy, _FakeReplaySamplingStrategy.UNIFORM)
+        self.assertEqual(replay_buffer.recency_weight_lambda, 1.0)
+
+    def test_build_replay_buffer_maps_recency_weighted_sampling_settings(self) -> None:
+        """WHY: recency-weighted replay sampling must propagate YAML controls into compact buffer construction."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["replay_buffer"] = {
+            "capacity": 512,
+            "random_seed": 42,
+            "sampling_strategy": "recency_weighted",
+            "recency_weight_lambda": 2.5,
+        }
+        game_config = train_script.get_game_config("chess")
+
+        replay_buffer = train_script._build_replay_buffer(
+            dependencies.cpp,
+            config,
+            game_config,
+        )
+
+        self.assertIsInstance(replay_buffer, _FakeCompactReplayBuffer)
+        self.assertEqual(
+            replay_buffer.sampling_strategy,
+            _FakeReplaySamplingStrategy.RECENCY_WEIGHTED,
+        )
+        self.assertEqual(replay_buffer.recency_weight_lambda, 2.5)
 
     def test_build_replay_buffer_falls_back_to_dense_for_non_chess_board_shapes(self) -> None:
         """WHY: current compact encoding assumes 8x8 planes, so Go must stay on the dense buffer path."""
@@ -451,6 +489,43 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertIsInstance(replay_buffer, _FakeReplayBuffer)
         self.assertEqual(replay_buffer.capacity, 512)
         self.assertEqual(replay_buffer.random_seed, 42)
+
+    def test_build_replay_buffer_rejects_unknown_sampling_strategy(self) -> None:
+        """WHY: invalid replay sampling strategy values should fail fast before worker startup."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["replay_buffer"] = {
+            "capacity": 512,
+            "random_seed": 42,
+            "sampling_strategy": "newest_only",
+        }
+        game_config = train_script.get_game_config("chess")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "replay_buffer.sampling_strategy must be 'uniform' or 'recency_weighted'",
+        ):
+            train_script._build_replay_buffer(dependencies.cpp, config, game_config)
+
+    def test_build_replay_buffer_rejects_negative_recency_weight_lambda(self) -> None:
+        """WHY: negative recency lambda would invert weighting intent and should be rejected explicitly."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["replay_buffer"] = {
+            "capacity": 512,
+            "random_seed": 42,
+            "sampling_strategy": "recency_weighted",
+            "recency_weight_lambda": -0.1,
+        }
+        game_config = train_script.get_game_config("chess")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "replay_buffer.recency_weight_lambda must be finite and non-negative",
+        ):
+            train_script._build_replay_buffer(dependencies.cpp, config, game_config)
 
     def test_build_selfplay_manager_config_maps_playout_cap_fields(self) -> None:
         """WHY: playout-cap throughput tuning only works when YAML values propagate into C++ game config."""

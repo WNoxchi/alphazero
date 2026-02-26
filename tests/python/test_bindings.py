@@ -264,6 +264,52 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(restored_sample.game_id, 77)
         self.assertEqual(restored_sample.move_number, 9)
 
+    def test_compact_replay_buffer_binding_exposes_recency_sampling_controls(self) -> None:
+        """WHY: Python training entrypoints must be able to select recency-weighted replay sampling when configured."""
+        bindings = _require_bindings()
+        self.assertTrue(hasattr(bindings, "ReplaySamplingStrategy"))
+        strategy = bindings.ReplaySamplingStrategy.RECENCY_WEIGHTED
+
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=16,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=2026,
+            sampling_strategy=strategy,
+            recency_weight_lambda=2.0,
+        )
+
+        binary_plane = [1.0 if (square % 2) == 0 else 0.0 for square in range(64)]
+        float_plane = [0.5] * 64
+        encoded_state = binary_plane + float_plane
+        compact_buffer.add_game(
+            [
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_state,
+                    policy=[1.0, 0.0, 0.0, 0.0, 0.0],
+                    value=1.0,
+                    value_wdl=[1.0, 0.0, 0.0],
+                    game_id=1,
+                    move_number=0,
+                ),
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_state,
+                    policy=[0.0, 1.0, 0.0, 0.0, 0.0],
+                    value=-1.0,
+                    value_wdl=[0.0, 0.0, 1.0],
+                    game_id=2,
+                    move_number=0,
+                ),
+            ]
+        )
+
+        sampled = compact_buffer.sample(4)
+        self.assertEqual(len(sampled), 4)
+        for position in sampled:
+            self.assertIn(position.game_id, {1, 2})
+
     def test_compact_buffer_loads_dense_replay_checkpoint_without_format_changes(self) -> None:
         """WHY: dense replay checkpoints must stay loadable after switching training to compact replay storage."""
         bindings = _require_bindings()

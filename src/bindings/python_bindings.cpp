@@ -46,6 +46,7 @@ using alphazero::mcts::EvaluationResult;
 using alphazero::mcts::EvalResult;
 using alphazero::selfplay::CompactReplayBuffer;
 using alphazero::selfplay::ReplayPosition;
+using alphazero::selfplay::SamplingStrategy;
 using alphazero::selfplay::SampledBatch;
 using alphazero::selfplay::SelfPlayManager;
 
@@ -1151,15 +1152,30 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("encoded_state_size"),
             py::arg("policy_size"));
 
+    py::enum_<SamplingStrategy>(module, "ReplaySamplingStrategy")
+        .value("UNIFORM", SamplingStrategy::kUniform)
+        .value("RECENCY_WEIGHTED", SamplingStrategy::kRecencyWeighted)
+        .export_values();
+
     py::class_<CompactReplayBuffer>(module, "CompactReplayBuffer")
         .def(
-            py::init<std::size_t, std::size_t, std::size_t, std::vector<std::size_t>, std::size_t, std::uint64_t>(),
+            py::init<
+                std::size_t,
+                std::size_t,
+                std::size_t,
+                std::vector<std::size_t>,
+                std::size_t,
+                std::uint64_t,
+                SamplingStrategy,
+                float>(),
             py::arg("capacity"),
             py::arg("num_binary_planes"),
             py::arg("num_float_planes"),
             py::arg("float_plane_indices"),
             py::arg("full_policy_size"),
-            py::arg("random_seed") = 0x9E3779B97F4A7C15ULL)
+            py::arg("random_seed") = 0x9E3779B97F4A7C15ULL,
+            py::arg("sampling_strategy") = SamplingStrategy::kUniform,
+            py::arg("recency_weight_lambda") = 1.0F)
         .def("add_game", &CompactReplayBuffer::add_game, py::arg("positions"))
         .def("sample", &CompactReplayBuffer::sample, py::arg("batch_size"))
         .def(

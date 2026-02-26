@@ -12,6 +12,11 @@
 
 namespace alphazero::selfplay {
 
+enum class SamplingStrategy : std::uint8_t {
+    kUniform = 0U,
+    kRecencyWeighted = 1U,
+};
+
 class CompactReplayBuffer {
 public:
     static constexpr std::size_t kDefaultCapacity = ReplayBuffer::kDefaultCapacity;
@@ -22,7 +27,9 @@ public:
         std::size_t num_float_planes,
         std::vector<std::size_t> float_plane_indices,
         std::size_t full_policy_size,
-        std::uint64_t random_seed = 0x9E3779B97F4A7C15ULL);
+        std::uint64_t random_seed = 0x9E3779B97F4A7C15ULL,
+        SamplingStrategy sampling_strategy = SamplingStrategy::kUniform,
+        float recency_weight_lambda = 1.0F);
 
     void add_game(const std::vector<ReplayPosition>& positions);
 
@@ -36,6 +43,8 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] std::size_t capacity() const noexcept;
     [[nodiscard]] std::size_t write_head() const noexcept;
+    [[nodiscard]] SamplingStrategy sampling_strategy() const noexcept;
+    [[nodiscard]] float recency_weight_lambda() const noexcept;
 
     std::size_t export_positions(
         float* out_states,
@@ -64,6 +73,8 @@ private:
         std::size_t population_size,
         std::size_t sample_size) const;
     [[nodiscard]] std::size_t uniform_index(std::size_t upper_bound_exclusive) const;
+    [[nodiscard]] std::size_t recency_weighted_index(std::size_t population_size) const;
+    [[nodiscard]] double uniform_unit_interval() const;
     [[nodiscard]] std::size_t to_physical_index(
         std::size_t logical_index,
         std::size_t current_count,
@@ -82,6 +93,9 @@ private:
     std::size_t num_binary_planes_ = 0U;
     std::size_t num_float_planes_ = 0U;
     std::size_t full_policy_size_ = 0U;
+    SamplingStrategy sampling_strategy_ = SamplingStrategy::kUniform;
+    float recency_weight_lambda_ = 1.0F;
+    double recency_weight_expm1_ = 0.0;
 };
 
 }  // namespace alphazero::selfplay

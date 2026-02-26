@@ -46,13 +46,17 @@ CompactReplayBuffer::CompactReplayBuffer(
     const std::size_t num_float_planes,
     std::vector<std::size_t> float_plane_indices,
     const std::size_t full_policy_size,
-    const std::uint64_t random_seed)
+    const std::uint64_t random_seed,
+    const SamplingStrategy sampling_strategy,
+    const float recency_weight_lambda)
     : buffer_(capacity),
       rng_(random_seed),
       float_plane_indices_(std::move(float_plane_indices)),
       num_binary_planes_(num_binary_planes),
       num_float_planes_(num_float_planes),
-      full_policy_size_(full_policy_size) {
+      full_policy_size_(full_policy_size),
+      sampling_strategy_(sampling_strategy),
+      recency_weight_lambda_(recency_weight_lambda) {
     if (capacity == 0U) {
         throw std::invalid_argument("CompactReplayBuffer capacity must be greater than zero");
     }
@@ -75,6 +79,14 @@ CompactReplayBuffer::CompactReplayBuffer(
     if (full_policy_size_ > (static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max()) + 1U)) {
         throw std::invalid_argument("CompactReplayBuffer full_policy_size exceeds sparse policy action-index range");
     }
+    if (!std::isfinite(recency_weight_lambda_) || recency_weight_lambda_ < 0.0F) {
+        throw std::invalid_argument(
+            "CompactReplayBuffer recency_weight_lambda must be finite and non-negative");
+    }
+    if (sampling_strategy_ != SamplingStrategy::kUniform &&
+        sampling_strategy_ != SamplingStrategy::kRecencyWeighted) {
+        throw std::invalid_argument("CompactReplayBuffer sampling_strategy is invalid");
+    }
 
     const std::size_t total_planes = num_binary_planes_ + num_float_planes_;
     if (total_planes > (ReplayPosition::kMaxEncodedStateSize / 64U)) {
@@ -91,6 +103,13 @@ CompactReplayBuffer::CompactReplayBuffer(
             throw std::invalid_argument("CompactReplayBuffer float_plane_indices must be unique");
         }
         seen[plane] = true;
+    }
+
+    if (sampling_strategy_ == SamplingStrategy::kRecencyWeighted && recency_weight_lambda_ > 0.0F) {
+        recency_weight_expm1_ = std::expm1(static_cast<double>(recency_weight_lambda_));
+        if (!std::isfinite(recency_weight_expm1_)) {
+            throw std::invalid_argument("CompactReplayBuffer recency_weight_lambda is too large");
+        }
     }
 }
 
@@ -399,6 +418,10 @@ std::size_t CompactReplayBuffer::write_head() const noexcept {
     return write_head_.load(std::memory_order_acquire);
 }
 
+SamplingStrategy CompactReplayBuffer::sampling_strategy() const noexcept { return sampling_strategy_; }
+
+float CompactReplayBuffer::recency_weight_lambda() const noexcept { return recency_weight_lambda_; }
+
 bool CompactReplayBuffer::has_valid_shape(const ReplayPosition& position) noexcept {
     return position.encoded_state_size > 0U && position.encoded_state_size <= ReplayPosition::kMaxEncodedStateSize &&
            position.policy_size > 0U && position.policy_size <= ReplayPosition::kMaxPolicySize;
@@ -416,6 +439,13 @@ std::vector<std::size_t> CompactReplayBuffer::sample_logical_indices(
     const std::size_t sample_size) const {
     std::vector<std::size_t> logical_indices;
     logical_indices.reserve(sample_size);
+
+    if (sampling_strategy_ == SamplingStrategy::kRecencyWeighted) {
+        for (std::size_t i = 0U; i < sample_size; ++i) {
+            logical_indices.push_back(recency_weighted_index(population_size));
+        }
+        return logical_indices;
+    }
 
     if (sample_size <= population_size) {
         std::unordered_set<std::size_t> selected;
@@ -454,6 +484,28 @@ std::size_t CompactReplayBuffer::uniform_index(const std::size_t upper_bound_exc
             return static_cast<std::size_t>(candidate % upper);
         }
     }
+}
+
+std::size_t CompactReplayBuffer::recency_weighted_index(const std::size_t population_size) const {
+    if (population_size == 0U) {
+        throw std::invalid_argument("CompactReplayBuffer recency_weighted_index population must be positive");
+    }
+    if (recency_weight_lambda_ <= 0.0F) {
+        return uniform_index(population_size);
+    }
+
+    const double sample = std::log1p(uniform_unit_interval() * recency_weight_expm1_) /
+                          static_cast<double>(recency_weight_lambda_);
+    std::size_t index = static_cast<std::size_t>(sample * static_cast<double>(population_size));
+    if (index >= population_size) {
+        index = population_size - 1U;
+    }
+    return index;
+}
+
+double CompactReplayBuffer::uniform_unit_interval() const {
+    std::lock_guard lock(rng_mutex_);
+    return std::ldexp(static_cast<double>(rng_()), -64);
 }
 
 std::size_t CompactReplayBuffer::to_physical_index(

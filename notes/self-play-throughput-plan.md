@@ -559,6 +559,23 @@ Expose `update_simulations_per_move` via pybind11 in `src/bindings/python_bindin
 
 **Impact**: Better training signal from recent positions, lowest priority
 
+Status (2026-02-26): Completed. Added `SamplingStrategy` (`kUniform`, `kRecencyWeighted`) to
+`src/selfplay/compact_replay_buffer.h` and extended `CompactReplayBuffer` in
+`src/selfplay/compact_replay_buffer.cpp` with inverse-CDF recency-weighted index sampling using
+`w(i) = exp(-lambda * (N - i) / N)` and O(1) per-sample generation. Exposed strategy controls in
+`src/bindings/python_bindings.cpp` as `ReplaySamplingStrategy`, wired replay sampling config parsing in
+`scripts/train.py` (`replay_buffer.sampling_strategy`, `replay_buffer.recency_weight_lambda`), and added
+regression coverage in `tests/cpp/test_compact_replay_buffer.cpp`,
+`tests/python/test_bindings.py`, and `tests/python/test_train_script.py`.
+Validation note: `cmake --build build -j$(nproc)`, `ctest --test-dir build -R "CompactReplayBufferTest"
+--output-on-failure`, `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python
+-m unittest tests/python/test_train_script.py tests/python/test_bindings.py`,
+`python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`, and
+`python3 -m compileall scripts/train.py tests/python/test_train_script.py tests/python/test_bindings.py`
+passed. `python3 -m mypy scripts/train.py tests/python/test_train_script.py tests/python/test_bindings.py`
+still reports existing environment/stub issues (`alphazero.*`, `torch`, `numpy`) and pre-existing test typing
+errors; `ruff` is unavailable in this sandbox interpreter.
+
 Add optional sampling mode to `CompactReplayBuffer`:
 ```cpp
 enum class SamplingStrategy { kUniform, kRecencyWeighted };

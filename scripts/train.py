@@ -359,6 +359,34 @@ def _build_cpp_game_config(cpp: Any, game_name: str) -> Any:
     raise ValueError(f"Unsupported game {game_name!r}")
 
 
+def _resolve_replay_sampling_strategy(cpp: Any, replay: Mapping[str, Any]) -> Any | None:
+    raw_strategy = replay.get("sampling_strategy", "uniform")
+    if not isinstance(raw_strategy, str) or not raw_strategy.strip():
+        raise ValueError("replay_buffer.sampling_strategy must be a non-empty string")
+
+    normalized = raw_strategy.strip().lower()
+    if normalized == "uniform":
+        enum_member = "UNIFORM"
+    elif normalized in {"recency_weighted", "recency-weighted"}:
+        enum_member = "RECENCY_WEIGHTED"
+    else:
+        raise ValueError(
+            "replay_buffer.sampling_strategy must be 'uniform' or 'recency_weighted'"
+        )
+
+    strategy_enum = getattr(cpp, "ReplaySamplingStrategy", None)
+    if strategy_enum is None:
+        if enum_member != "UNIFORM":
+            raise ValueError(
+                "replay_buffer.sampling_strategy='recency_weighted' requires "
+                "alphazero_cpp ReplaySamplingStrategy support"
+            )
+        return None
+    if not hasattr(strategy_enum, enum_member):
+        raise ValueError("alphazero_cpp.ReplaySamplingStrategy is missing expected enum members")
+    return getattr(strategy_enum, enum_member)
+
+
 def _build_replay_buffer(cpp: Any, config: Mapping[str, Any], game_config: GameConfig) -> Any:
     replay = _section(config, "replay_buffer")
     capacity = _coerce_positive_int(
@@ -369,19 +397,33 @@ def _build_replay_buffer(cpp: Any, config: Mapping[str, Any], game_config: GameC
         "replay_buffer.random_seed",
         int(replay.get("random_seed", 0x9E3779B97F4A7C15)),
     )
+    sampling_strategy = _resolve_replay_sampling_strategy(cpp, replay)
+    recency_weight_lambda = _coerce_numeric(
+        "replay_buffer.recency_weight_lambda",
+        float(replay.get("recency_weight_lambda", 1.0)),
+    )
+    if not math.isfinite(recency_weight_lambda) or recency_weight_lambda < 0.0:
+        raise ValueError(
+            "replay_buffer.recency_weight_lambda must be finite and non-negative"
+        )
 
     rows, cols = game_config.board_shape
     if rows * cols != 64 or not hasattr(cpp, "CompactReplayBuffer"):
         return cpp.ReplayBuffer(capacity=capacity, random_seed=random_seed)
 
-    return cpp.CompactReplayBuffer(
-        capacity=capacity,
-        num_binary_planes=game_config.num_binary_planes,
-        num_float_planes=game_config.num_float_planes,
-        float_plane_indices=list(game_config.float_plane_indices),
-        full_policy_size=game_config.action_space_size,
-        random_seed=random_seed,
-    )
+    compact_kwargs: dict[str, Any] = {
+        "capacity": capacity,
+        "num_binary_planes": game_config.num_binary_planes,
+        "num_float_planes": game_config.num_float_planes,
+        "float_plane_indices": list(game_config.float_plane_indices),
+        "full_policy_size": game_config.action_space_size,
+        "random_seed": random_seed,
+    }
+    if sampling_strategy is not None:
+        compact_kwargs["sampling_strategy"] = sampling_strategy
+        compact_kwargs["recency_weight_lambda"] = recency_weight_lambda
+
+    return cpp.CompactReplayBuffer(**compact_kwargs)
 
 
 def _build_eval_queue_config(cpp: Any, config: Mapping[str, Any]) -> Any:
