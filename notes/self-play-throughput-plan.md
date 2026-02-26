@@ -368,6 +368,14 @@ Carry through to `SampledBatch` as a new `std::vector<float> weights` field.
 
 ### 2.3 Modify `SelfPlayGame::play()`
 
+Status (2026-02-26): Completed. `SelfPlayGame::play()` in `src/selfplay/self_play_game.cpp` now samples a
+per-move playout-cap decision when enabled, executes MCTS with either full or reduced simulation budgets via
+`run_simulation_batch(std::size_t simulations)`, and writes reduced `training_weight` values
+(`reduced_simulations / simulations_per_move`) for capped moves. Added coverage in
+`tests/cpp/test_self_play_game.cpp` via
+`SelfPlayGameTest.PlayoutCapUsesReducedWeightWhenFullBudgetIsNeverSelected` and
+`SelfPlayGameTest.PlayoutCapKeepsUnitWeightWhenFullBudgetAlwaysSelected`.
+
 In `src/selfplay/self_play_game.cpp`, before each move's simulations:
 
 ```cpp

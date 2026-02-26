@@ -83,7 +83,7 @@ private:
         std::uint16_t move_number = 0U;
     };
 
-    void run_simulation_batch();
+    void run_simulation_batch(std::size_t simulations);
     [[nodiscard]] bool choose_resignation_disabled_for_game();
     [[nodiscard]] std::array<float, ReplayPosition::kWdlSize> wdl_target(float scalar_value) const;
     [[nodiscard]] std::size_t encoded_state_size() const noexcept;
