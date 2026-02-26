@@ -437,6 +437,32 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
 
+    def test_self_play_manager_exposes_simulation_budget_update_api(self) -> None:
+        """WHY: train.py must be able to retune self-play simulation budgets at runtime for phase-4 scheduling."""
+        bindings = _require_bindings()
+        go_config = bindings.go_game_config()
+        replay_buffer = bindings.ReplayBuffer(capacity=32, random_seed=123)
+
+        pass_favoring_policy = [-100.0] * go_config.action_space_size
+        pass_favoring_policy[-1] = 100.0
+
+        def evaluator(_state: object) -> dict[str, object]:
+            return {
+                "policy": pass_favoring_policy,
+                "value": 0.0,
+                "policy_is_logits": True,
+            }
+
+        manager_config = bindings.SelfPlayManagerConfig()
+        manager = bindings.SelfPlayManager(go_config, replay_buffer, evaluator, manager_config)
+
+        manager.update_simulations_per_move(5)
+        with self.assertRaisesRegex(
+            ValueError,
+            "SelfPlayManager simulations-per-move update must be greater than zero",
+        ):
+            manager.update_simulations_per_move(0)
+
     def test_eval_queue_processes_requests_with_python_batch_callback(self) -> None:
         """Protects the CPU↔Python batching bridge so each submitter gets the correct per-request result."""
         bindings = _require_bindings()

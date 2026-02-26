@@ -1368,5 +1368,9 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def("start", &SelfPlayManager::start)
         .def("stop", &SelfPlayManager::stop, py::call_guard<py::gil_scoped_release>())
         .def("is_running", &SelfPlayManager::is_running)
+        .def(
+            "update_simulations_per_move",
+            &SelfPlayManager::update_simulations_per_move,
+            py::arg("new_sims"))
         .def("metrics", &SelfPlayManager::metrics);
 }

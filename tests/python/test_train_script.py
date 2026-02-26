@@ -149,9 +149,13 @@ class _FakeSelfPlayManager:
     ) -> None:
         self.eval_source = _evaluator
         self._metrics = SimpleNamespace(games_completed=7)
+        self.simulation_updates: list[int] = []
 
     def metrics(self) -> Any:
         return self._metrics
+
+    def update_simulations_per_move(self, new_sims: int) -> None:
+        self.simulation_updates.append(int(new_sims))
 
 
 class _Harness:
@@ -161,6 +165,7 @@ class _Harness:
         self.saved_steps: list[int] = []
         self.run_mode = "return"
         self.run_final_step = 0
+        self.pipeline_steps: list[int] = []
         self.resume_step = 0
         self.resume_schedule: Any = "resumed_lr_schedule"
         self.created_eval_queue: _FakeEvalQueue | None = None
@@ -231,6 +236,10 @@ class _Harness:
     def _run_parallel_pipeline(self, *_args: Any, **_kwargs: Any) -> Any:
         if self.run_mode == "interrupt":
             raise KeyboardInterrupt
+        step_logger = _kwargs.get("step_logger")
+        if callable(step_logger):
+            for step in self.pipeline_steps:
+                step_logger(int(step), {})
         return SimpleNamespace(final_step=self.run_final_step)
 
     def _save_training_checkpoint(self, *_args: Any, **kwargs: Any) -> Any:
@@ -573,6 +582,51 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertEqual(summary.final_step, 777)
         self.assertEqual(harness.saved_steps, [777])
         self.assertEqual(summary.final_checkpoint_path, Path("checkpoints/checkpoint_00000777.pt"))
+
+    def test_run_session_updates_simulation_schedule_on_step_progress(self) -> None:
+        """WHY: dynamic self-play throughput tuning must switch from 100 to 200 simulations at step 10k."""
+        harness = _Harness()
+        harness.run_mode = "return"
+        harness.run_final_step = 12_000
+        harness.pipeline_steps = [1, 9_999, 10_000, 12_000]
+        dependencies = harness.build_dependencies()
+
+        runtime = train_script.build_training_runtime(
+            config_path="configs/chess_default.yaml",
+            resume_path=None,
+            dependencies=dependencies,
+            config_override=_minimal_config(),
+        )
+
+        summary = train_script.run_training_session(runtime, dependencies=dependencies)
+
+        self.assertFalse(summary.interrupted)
+        self.assertEqual(summary.final_step, 12_000)
+        self.assertEqual(runtime.self_play_manager.simulation_updates, [100, 100, 100, 200, 200])
+
+    def test_run_session_applies_resume_step_schedule_before_pipeline(self) -> None:
+        """WHY: resumed runs past the switch step should immediately restore the 200-simulation budget."""
+        harness = _Harness()
+        harness.run_mode = "return"
+        harness.run_final_step = 15_000
+        harness.resume_step = 15_000
+        dependencies = harness.build_dependencies()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            resume_path = Path(temp_dir) / "checkpoint_00015000.pt"
+            resume_path.write_text("placeholder", encoding="utf-8")
+            runtime = train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=resume_path,
+                dependencies=dependencies,
+                config_override=_minimal_config(),
+            )
+
+        summary = train_script.run_training_session(runtime, dependencies=dependencies)
+
+        self.assertFalse(summary.interrupted)
+        self.assertEqual(summary.final_step, 15_000)
+        self.assertEqual(runtime.self_play_manager.simulation_updates, [200])
 
 
 if __name__ == "__main__":

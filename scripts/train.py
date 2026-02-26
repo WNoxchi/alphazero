@@ -117,6 +117,17 @@ class TrainingRunSummary:
     final_checkpoint_path: Path | None
 
 
+_DYNAMIC_SIM_SCHEDULE_SWITCH_STEP = 10_000
+_DYNAMIC_SIM_EARLY_BUDGET = 100
+_DYNAMIC_SIM_LATE_BUDGET = 200
+
+
+def _scheduled_simulations_per_move(step: int) -> int:
+    if step < _DYNAMIC_SIM_SCHEDULE_SWITCH_STEP:
+        return _DYNAMIC_SIM_EARLY_BUDGET
+    return _DYNAMIC_SIM_LATE_BUDGET
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser for training runs."""
 
@@ -792,6 +803,11 @@ def run_training_session(
         snapshot = runtime.self_play_manager.metrics()
         return int(snapshot.games_completed)
 
+    def _apply_simulation_schedule(step: int) -> None:
+        runtime.self_play_manager.update_simulations_per_move(
+            _scheduled_simulations_per_move(step)
+        )
+
     base_step_logger = runtime.logger.make_training_step_logger(
         games_total_getter=games_total_getter,
         emit_console=False,
@@ -800,6 +816,7 @@ def run_training_session(
     def step_logger(step: int, metrics: Mapping[str, float]) -> None:
         nonlocal latest_step
         latest_step = max(latest_step, int(step))
+        _apply_simulation_schedule(latest_step)
         base_step_logger(step, metrics)
         _update_bar(step)
         if step % console_interval == 0:
@@ -817,6 +834,8 @@ def run_training_session(
         for tag, value in metrics.items():
             runtime.logger.log_scalar(tag, value, latest_step)
         _update_bar(latest_step)
+
+    _apply_simulation_schedule(latest_step)
 
     try:
         with _raise_keyboard_interrupt_on_signal():

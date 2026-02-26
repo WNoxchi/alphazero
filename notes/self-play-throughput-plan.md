@@ -524,6 +524,25 @@ Implementation stores the value atomically. Worker threads read it at the start 
 
 ### 4.2 Schedule in training loop
 
+Status (2026-02-26): Completed. Added runtime schedule control in `scripts/train.py` so
+`run_training_session()` now applies `100` simulations per move before step `10_000` and `200` at/after
+`10_000`, including an initial schedule application for resumed runs. Exposed
+`SelfPlayManager::update_simulations_per_move` to Python in `src/bindings/python_bindings.cpp`. Added
+regression coverage in `tests/python/test_train_script.py` via
+`TrainScriptRuntimeTests.test_run_session_updates_simulation_schedule_on_step_progress` and
+`TrainScriptRuntimeTests.test_run_session_applies_resume_step_schedule_before_pipeline`, plus binding
+coverage in `tests/python/test_bindings.py` via
+`PythonBindingsTests.test_self_play_manager_exposes_simulation_budget_update_api`.
+Validation note: `cmake --build build -j$(nproc)`,
+`ctest --test-dir build -R "SelfPlayManagerTest" --output-on-failure`,
+`/home/hakan/miniconda3/envs/alphazero/bin/python -m unittest tests/python/test_train_script.py`,
+`PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m unittest tests.python.test_bindings.PythonBindingsTests.test_self_play_manager_exposes_simulation_budget_update_api`,
+`python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`, and
+`python3 -m compileall scripts/train.py tests/python/test_train_script.py tests/python/test_bindings.py`
+passed. `python3 -m mypy scripts/train.py tests/python/test_train_script.py tests/python/test_bindings.py`
+reports existing environment/type-stub issues (`alphazero.*`, `torch`, `numpy`) and unrelated pre-existing
+typing errors in tests; `ruff` is unavailable in this sandbox interpreter.
+
 In `scripts/train.py`, after each training step:
 ```python
 if step < 10000:
