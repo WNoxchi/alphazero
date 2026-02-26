@@ -444,6 +444,16 @@ Validation note: `mypy` and `ruff` are unavailable in the sandbox interpreter, s
 
 ### 3.1 Increase temperature_moves
 
+Status (2026-02-26): Completed. Updated `configs/chess.yaml` to set `mcts.temperature_moves: 40` so
+proportional move sampling remains enabled through move 40, and added regression coverage in
+`tests/python/test_config.py` via
+`GameConfigTests.test_chess_runtime_config_extends_opening_temperature_window`.
+Additional compatibility fix discovered during validation: restored `configs/chess_default.yaml` and
+`configs/go_default.yaml` aliases to keep existing default-config path references working in runtime tests.
+Validation note: `python3 -m unittest tests/python/test_config.py` and
+`MYPYPATH=python python3 -m mypy tests/python/test_config.py` passed; `ruff` is unavailable in this
+sandbox interpreter, so static validation used `python3 -m compileall`.
+
 In `configs/chess.yaml`, change `temperature_moves: 30` to `temperature_moves: 40`. No code changes — the value is read from config and passed to MCTS. This makes moves 31-40 use proportional sampling instead of greedy, producing more variety in the early middlegame.
 
 ### 3.2 Per-game Dirichlet noise variation

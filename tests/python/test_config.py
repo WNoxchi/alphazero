@@ -88,6 +88,11 @@ class GameConfigTests(unittest.TestCase):
         self.assertIn("replay_buffer:", chess_runtime_config)
         self.assertIn("capacity: 5000000", chess_runtime_config)
 
+    def test_chess_runtime_config_extends_opening_temperature_window(self) -> None:
+        """WHY: self-play diversity tuning requires stochastic move sampling to remain active through move 40."""
+        chess_runtime_config = (ROOT / "configs" / "chess.yaml").read_text(encoding="utf-8")
+        self.assertIn("temperature_moves: 40", chess_runtime_config)
+
     def test_get_game_config_is_case_insensitive_and_strips_whitespace(self) -> None:
         """Prevents fragile CLI/config plumbing from failing due to harmless casing or spacing."""
         self.assertEqual(get_game_config(" Chess "), CHESS_CONFIG)
