@@ -411,6 +411,21 @@ In `python/alphazero/training/trainer.py`, `train_one_step()`:
 
 ### 2.5 Bindings and config
 
+Status (2026-02-26): Completed. Exposed `SelfPlayGameConfig` playout-cap fields in
+`src/bindings/python_bindings.cpp` (`enable_playout_cap`, `reduced_simulations`,
+`full_playout_probability`), wired YAML parsing and validation in
+`scripts/train.py` `_build_selfplay_manager_config()`, and enabled playout-cap defaults in
+`configs/chess.yaml`. Added regression coverage in
+`tests/python/test_train_script.py` via
+`TrainScriptRuntimeTests.test_build_selfplay_manager_config_maps_playout_cap_fields`,
+`TrainScriptRuntimeTests.test_build_selfplay_manager_config_rejects_reduced_simulations_above_full_budget`,
+`TrainScriptRuntimeTests.test_build_selfplay_manager_config_rejects_playout_probability_outside_unit_interval`,
+plus binding surface coverage in
+`tests/python/test_bindings.py` via
+`PythonBindingsTests.test_self_play_game_config_exposes_playout_cap_fields`.
+Validation note: `mypy` and `ruff` are unavailable in the sandbox interpreter, so static validation used
+`python -m compileall` plus targeted Python binding/runtime tests.
+
 - Expose new `SelfPlayGameConfig` fields in `src/bindings/python_bindings.cpp`
 - Read them in `scripts/train.py` `_build_selfplay_manager_config()`
 - Add to `configs/chess.yaml`:

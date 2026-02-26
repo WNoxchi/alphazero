@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+import math
 from pathlib import Path
 import signal
 import sys
@@ -421,6 +422,18 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
         "mcts.node_arena_capacity",
         int(mcts.get("node_arena_capacity", game_config.node_arena_capacity)),
     )
+    game_config.enable_playout_cap = _coerce_bool(
+        "mcts.enable_playout_cap",
+        mcts.get("enable_playout_cap", game_config.enable_playout_cap),
+    )
+    game_config.reduced_simulations = _coerce_positive_int(
+        "mcts.reduced_simulations",
+        int(mcts.get("reduced_simulations", game_config.reduced_simulations)),
+    )
+    game_config.full_playout_probability = _coerce_numeric(
+        "mcts.full_playout_probability",
+        float(mcts.get("full_playout_probability", game_config.full_playout_probability)),
+    )
     game_config.c_puct = _coerce_positive_float(
         "mcts.c_puct",
         float(mcts.get("c_puct", game_config.c_puct)),
@@ -469,6 +482,15 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
 
     if game_config.resign_disable_fraction < 0.0 or game_config.resign_disable_fraction > 1.0:
         raise ValueError("mcts.resign_disable_fraction must be in [0, 1]")
+    if game_config.enable_playout_cap:
+        if game_config.reduced_simulations > game_config.simulations_per_move:
+            raise ValueError("mcts.reduced_simulations must not exceed mcts.simulations_per_move")
+        if (
+            not math.isfinite(game_config.full_playout_probability)
+            or game_config.full_playout_probability < 0.0
+            or game_config.full_playout_probability > 1.0
+        ):
+            raise ValueError("mcts.full_playout_probability must be finite and in [0, 1]")
     return manager_config
 
 

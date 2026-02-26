@@ -111,6 +111,9 @@ class _FakeSelfPlayGameConfig:
         self.simulations_per_move = 800
         self.mcts_threads = 8
         self.node_arena_capacity = 1024
+        self.enable_playout_cap = False
+        self.reduced_simulations = 50
+        self.full_playout_probability = 0.25
         self.c_puct = 2.5
         self.c_fpu = 0.25
         self.enable_dirichlet_noise = True
@@ -248,6 +251,9 @@ def _minimal_config() -> dict[str, object]:
             "c_fpu": 0.25,
             "dirichlet_alpha": 0.3,
             "dirichlet_epsilon": 0.25,
+            "enable_playout_cap": False,
+            "reduced_simulations": 16,
+            "full_playout_probability": 0.25,
             "temperature": 1.0,
             "temperature_moves": 30,
             "concurrent_games": 2,
@@ -430,6 +436,56 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertIsInstance(replay_buffer, _FakeReplayBuffer)
         self.assertEqual(replay_buffer.capacity, 512)
         self.assertEqual(replay_buffer.random_seed, 42)
+
+    def test_build_selfplay_manager_config_maps_playout_cap_fields(self) -> None:
+        """WHY: playout-cap throughput tuning only works when YAML values propagate into C++ game config."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        mcts = dict(config["mcts"])
+        mcts["enable_playout_cap"] = True
+        mcts["reduced_simulations"] = 8
+        mcts["full_playout_probability"] = 0.4
+        config["mcts"] = mcts
+
+        manager_config = train_script._build_selfplay_manager_config(dependencies.cpp, config)
+
+        self.assertTrue(manager_config.game_config.enable_playout_cap)
+        self.assertEqual(manager_config.game_config.reduced_simulations, 8)
+        self.assertAlmostEqual(manager_config.game_config.full_playout_probability, 0.4)
+
+    def test_build_selfplay_manager_config_rejects_reduced_simulations_above_full_budget(self) -> None:
+        """WHY: invalid reduced playout budget should fail fast instead of crashing inside long-running workers."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        mcts = dict(config["mcts"])
+        mcts["enable_playout_cap"] = True
+        mcts["simulations_per_move"] = 16
+        mcts["reduced_simulations"] = 17
+        config["mcts"] = mcts
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "mcts.reduced_simulations must not exceed mcts.simulations_per_move",
+        ):
+            train_script._build_selfplay_manager_config(dependencies.cpp, config)
+
+    def test_build_selfplay_manager_config_rejects_playout_probability_outside_unit_interval(self) -> None:
+        """WHY: playout-cap probability must remain a true probability to avoid undefined sampling behavior."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        mcts = dict(config["mcts"])
+        mcts["enable_playout_cap"] = True
+        mcts["full_playout_probability"] = 1.5
+        config["mcts"] = mcts
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "mcts.full_playout_probability must be finite and in \\[0, 1\\]",
+        ):
+            train_script._build_selfplay_manager_config(dependencies.cpp, config)
 
     def test_run_session_interrupt_saves_final_checkpoint_and_flushes_logger(self) -> None:
         """WHY: graceful shutdown must preserve progress and flush metrics when interrupted by a signal."""

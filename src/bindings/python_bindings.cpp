@@ -1199,6 +1199,11 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("simulations_per_move", &alphazero::selfplay::SelfPlayGameConfig::simulations_per_move)
         .def_readwrite("mcts_threads", &alphazero::selfplay::SelfPlayGameConfig::mcts_threads)
         .def_readwrite("node_arena_capacity", &alphazero::selfplay::SelfPlayGameConfig::node_arena_capacity)
+        .def_readwrite("enable_playout_cap", &alphazero::selfplay::SelfPlayGameConfig::enable_playout_cap)
+        .def_readwrite("reduced_simulations", &alphazero::selfplay::SelfPlayGameConfig::reduced_simulations)
+        .def_readwrite(
+            "full_playout_probability",
+            &alphazero::selfplay::SelfPlayGameConfig::full_playout_probability)
         .def_readwrite("c_puct", &alphazero::selfplay::SelfPlayGameConfig::c_puct)
         .def_readwrite("c_fpu", &alphazero::selfplay::SelfPlayGameConfig::c_fpu)
         .def_readwrite("enable_dirichlet_noise", &alphazero::selfplay::SelfPlayGameConfig::enable_dirichlet_noise)
