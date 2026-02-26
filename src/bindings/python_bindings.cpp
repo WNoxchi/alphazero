@@ -29,6 +29,7 @@
 #include "mcts/arena_node_store.h"
 #include "mcts/eval_queue.h"
 #include "mcts/mcts_search.h"
+#include "selfplay/compact_replay_buffer.h"
 #include "selfplay/replay_buffer.h"
 #include "selfplay/self_play_game.h"
 #include "selfplay/self_play_manager.h"
@@ -43,6 +44,7 @@ using alphazero::chess::ChessState;
 using alphazero::go::GoState;
 using alphazero::mcts::EvaluationResult;
 using alphazero::mcts::EvalResult;
+using alphazero::selfplay::CompactReplayBuffer;
 using alphazero::selfplay::ReplayPosition;
 using alphazero::selfplay::SampledBatch;
 using alphazero::selfplay::SelfPlayManager;
@@ -137,8 +139,9 @@ using alphazero::selfplay::SelfPlayManager;
     return py::array_t<float>(shape, strides, storage.data(), owner);
 }
 
-[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(
-    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+template <typename ReplayBufferType>
+[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy_impl(
+    const ReplayBufferType& replay_buffer,
     const std::size_t batch_size,
     const std::size_t encoded_state_size,
     const std::size_t policy_size,
@@ -155,8 +158,37 @@ using alphazero::selfplay::SelfPlayManager;
         sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim));
 }
 
-[[nodiscard]] py::tuple replay_buffer_export_numpy(
+[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(
     const alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const std::size_t batch_size,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size,
+    const std::size_t value_dim) {
+    return replay_buffer_sample_batch_numpy_impl(
+        replay_buffer,
+        batch_size,
+        encoded_state_size,
+        policy_size,
+        value_dim);
+}
+
+[[nodiscard]] py::tuple compact_replay_buffer_sample_batch_numpy(
+    const CompactReplayBuffer& replay_buffer,
+    const std::size_t batch_size,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size,
+    const std::size_t value_dim) {
+    return replay_buffer_sample_batch_numpy_impl(
+        replay_buffer,
+        batch_size,
+        encoded_state_size,
+        policy_size,
+        value_dim);
+}
+
+template <typename ReplayBufferType>
+[[nodiscard]] py::tuple replay_buffer_export_numpy_impl(
+    const ReplayBufferType& replay_buffer,
     const std::size_t encoded_state_size,
     const std::size_t policy_size) {
     const std::size_t n = replay_buffer.size();
@@ -196,8 +228,23 @@ using alphazero::selfplay::SelfPlayManager;
     return py::make_tuple(states, policies, values_wdl, game_ids, move_numbers);
 }
 
-void replay_buffer_import_numpy(
-    alphazero::selfplay::ReplayBuffer& replay_buffer,
+[[nodiscard]] py::tuple replay_buffer_export_numpy(
+    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    return replay_buffer_export_numpy_impl(replay_buffer, encoded_state_size, policy_size);
+}
+
+[[nodiscard]] py::tuple compact_replay_buffer_export_numpy(
+    const CompactReplayBuffer& replay_buffer,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    return replay_buffer_export_numpy_impl(replay_buffer, encoded_state_size, policy_size);
+}
+
+template <typename ReplayBufferType>
+void replay_buffer_import_numpy_impl(
+    ReplayBufferType& replay_buffer,
     const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
     const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
     const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
@@ -224,6 +271,46 @@ void replay_buffer_import_numpy(
         states.data(), policies.data(), values_wdl.data(),
         game_ids.data(), move_numbers.data(),
         n, encoded_state_size, policy_size);
+}
+
+void replay_buffer_import_numpy(
+    alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
+    const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
+    const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    replay_buffer_import_numpy_impl(
+        replay_buffer,
+        states,
+        policies,
+        values_wdl,
+        game_ids,
+        move_numbers,
+        encoded_state_size,
+        policy_size);
+}
+
+void compact_replay_buffer_import_numpy(
+    CompactReplayBuffer& replay_buffer,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
+    const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
+    const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    replay_buffer_import_numpy_impl(
+        replay_buffer,
+        states,
+        policies,
+        values_wdl,
+        game_ids,
+        move_numbers,
+        encoded_state_size,
+        policy_size);
 }
 
 template <typename StateType>
@@ -1038,6 +1125,43 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def(
             "import_buffer",
             &replay_buffer_import_numpy,
+            py::arg("states"),
+            py::arg("policies"),
+            py::arg("values_wdl"),
+            py::arg("game_ids"),
+            py::arg("move_numbers"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"));
+
+    py::class_<CompactReplayBuffer>(module, "CompactReplayBuffer")
+        .def(
+            py::init<std::size_t, std::size_t, std::size_t, std::vector<std::size_t>, std::size_t, std::uint64_t>(),
+            py::arg("capacity"),
+            py::arg("num_binary_planes"),
+            py::arg("num_float_planes"),
+            py::arg("float_plane_indices"),
+            py::arg("full_policy_size"),
+            py::arg("random_seed") = 0x9E3779B97F4A7C15ULL)
+        .def("add_game", &CompactReplayBuffer::add_game, py::arg("positions"))
+        .def("sample", &CompactReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "sample_batch",
+            &compact_replay_buffer_sample_batch_numpy,
+            py::arg("batch_size"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"),
+            py::arg("value_dim"))
+        .def("size", &CompactReplayBuffer::size)
+        .def("capacity", &CompactReplayBuffer::capacity)
+        .def("write_head", &CompactReplayBuffer::write_head)
+        .def(
+            "export_buffer",
+            &compact_replay_buffer_export_numpy,
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"))
+        .def(
+            "import_buffer",
+            &compact_replay_buffer_import_numpy,
             py::arg("states"),
             py::arg("policies"),
             py::arg("values_wdl"),

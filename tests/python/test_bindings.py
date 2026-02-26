@@ -186,6 +186,68 @@ class PythonBindingsTests(unittest.TestCase):
             expected = wdl_for(scalar_for(game_id, move_number))
             npt.assert_allclose(wdl_values[row], expected, rtol=1e-6)
 
+    def test_compact_replay_buffer_binding_matches_dense_buffer_contract(self) -> None:
+        """Validates that Python can drive the compact buffer with the same add/sample/export/import API surface."""
+        bindings = _require_bindings()
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=4321,
+        )
+
+        import numpy.testing as npt
+
+        binary_plane = [1.0 if (square % 2) == 0 else 0.0 for square in range(64)]
+        float_plane = [0.25] * 64
+        encoded_state = binary_plane + float_plane
+        policy = [0.7, 0.0, 0.0, 0.3, 0.0]
+        value_wdl = [1.0, 0.0, 0.0]
+        position = bindings.ReplayPosition.make(
+            encoded_state=encoded_state,
+            policy=policy,
+            value=1.0,
+            value_wdl=value_wdl,
+            game_id=77,
+            move_number=9,
+        )
+        compact_buffer.add_game([position])
+
+        sampled = compact_buffer.sample(1)
+        self.assertEqual(len(sampled), 1)
+        self.assertEqual(sampled[0].game_id, 77)
+        self.assertEqual(sampled[0].move_number, 9)
+
+        states, policies, values_wdl = compact_buffer.sample_batch(
+            batch_size=1,
+            encoded_state_size=128,
+            policy_size=5,
+            value_dim=3,
+        )
+        npt.assert_allclose(states[0, :64], binary_plane, rtol=1e-6)
+        expected_quantized_float = round(float_plane[0] * 255.0) / 255.0
+        npt.assert_allclose(states[0, 64:], [expected_quantized_float] * 64, rtol=1e-6, atol=1e-6)
+        self.assertAlmostEqual(float(policies[0, 0]), 0.7, places=3)
+        self.assertAlmostEqual(float(policies[0, 3]), 0.3, places=3)
+        npt.assert_allclose(values_wdl[0], value_wdl, rtol=1e-6)
+
+        exported = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
+        restored = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=9876,
+        )
+        restored.import_buffer(*exported, encoded_state_size=128, policy_size=5)
+        self.assertEqual(restored.size(), 1)
+        restored_sample = restored.sample(1)[0]
+        self.assertEqual(restored_sample.game_id, 77)
+        self.assertEqual(restored_sample.move_number, 9)
+
     def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
         """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""
         bindings = _require_bindings()

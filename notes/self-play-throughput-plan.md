@@ -253,6 +253,12 @@ target_sources(alphazero_engine PRIVATE
 
 ### 1.5 Python bindings
 
+Status (2026-02-26): Completed. Added `CompactReplayBuffer` pybind11 bindings in
+`src/bindings/python_bindings.cpp` with parity APIs for `add_game`, `sample`,
+`sample_batch`, `size`, `capacity`, `write_head`, `export_buffer`, and
+`import_buffer`; added coverage in `tests/python/test_bindings.py` via
+`PythonBindingsTests.test_compact_replay_buffer_binding_matches_dense_buffer_contract`.
+
 In `src/bindings/python_bindings.cpp`, add `CompactReplayBuffer` binding with the same Python API as `ReplayBuffer`. The `sample_batch` binding already returns numpy arrays via `SampledBatch` — no downstream changes needed.
 
 Constructor takes additional game-specific args:
