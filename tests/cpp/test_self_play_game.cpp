@@ -302,6 +302,46 @@ TEST(SelfPlayGameTest, RejectsPlayoutProbabilityOutsideUnitInterval) {
     EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, over_one_prob), std::invalid_argument);
 }
 
+// WHY: Dirichlet-randomization bounds come from YAML and must be validated up front to avoid launching games with
+// invalid per-game noise schedules.
+TEST(SelfPlayGameTest, RejectsInvalidDirichletRandomizationBounds) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model, /*max_game_length=*/8);
+    ReplayBuffer replay_buffer(4U, 53U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayGameConfig bad_order = default_test_selfplay_config();
+    bad_order.randomize_dirichlet_epsilon = true;
+    bad_order.dirichlet_epsilon_min = 0.4F;
+    bad_order.dirichlet_epsilon_max = 0.2F;
+    EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, bad_order), std::invalid_argument);
+
+    SelfPlayGameConfig out_of_range = default_test_selfplay_config();
+    out_of_range.randomize_dirichlet_epsilon = true;
+    out_of_range.dirichlet_epsilon_min = -0.01F;
+    out_of_range.dirichlet_epsilon_max = 0.3F;
+    EXPECT_THROW((void)SelfPlayGame(game_config, replay_buffer, evaluator, out_of_range), std::invalid_argument);
+}
+
 // WHY: When playout-cap mode always selects the reduced simulation budget, replay samples must carry a reduced
 // training weight so loss scaling matches search effort for those positions.
 TEST(SelfPlayGameTest, PlayoutCapUsesReducedWeightWhenFullBudgetIsNeverSelected) {

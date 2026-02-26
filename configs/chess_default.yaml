@@ -15,6 +15,9 @@ mcts:
   c_fpu: 0.25
   dirichlet_alpha: 0.3
   dirichlet_epsilon: 0.25
+  randomize_dirichlet_epsilon: true
+  dirichlet_epsilon_min: 0.15
+  dirichlet_epsilon_max: 0.35
   temperature_moves: 40
   concurrent_games: 384       # higher parallelism keeps eval queue full and smooths GPU utilization
   threads_per_game: 1         # 1 thread/game — eval latency dominates; saves CPU for more games

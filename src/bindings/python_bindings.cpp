@@ -1208,6 +1208,15 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("c_fpu", &alphazero::selfplay::SelfPlayGameConfig::c_fpu)
         .def_readwrite("enable_dirichlet_noise", &alphazero::selfplay::SelfPlayGameConfig::enable_dirichlet_noise)
         .def_readwrite("dirichlet_epsilon", &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon)
+        .def_readwrite(
+            "randomize_dirichlet_epsilon",
+            &alphazero::selfplay::SelfPlayGameConfig::randomize_dirichlet_epsilon)
+        .def_readwrite(
+            "dirichlet_epsilon_min",
+            &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon_min)
+        .def_readwrite(
+            "dirichlet_epsilon_max",
+            &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon_max)
         .def_readwrite("dirichlet_alpha_override", &alphazero::selfplay::SelfPlayGameConfig::dirichlet_alpha_override)
         .def_readwrite("temperature", &alphazero::selfplay::SelfPlayGameConfig::temperature)
         .def_readwrite("temperature_moves", &alphazero::selfplay::SelfPlayGameConfig::temperature_moves)

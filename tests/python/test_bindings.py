@@ -419,17 +419,23 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertFalse(search.should_resign())
 
     def test_self_play_game_config_exposes_playout_cap_fields(self) -> None:
-        """Ensures Python can configure playout-cap randomization knobs before launching C++ self-play workers."""
+        """Ensures Python can configure playout-cap and Dirichlet-randomization knobs before launching workers."""
         bindings = _require_bindings()
         game_config = bindings.SelfPlayGameConfig()
 
         game_config.enable_playout_cap = True
         game_config.reduced_simulations = 37
         game_config.full_playout_probability = 0.2
+        game_config.randomize_dirichlet_epsilon = True
+        game_config.dirichlet_epsilon_min = 0.15
+        game_config.dirichlet_epsilon_max = 0.35
 
         self.assertTrue(game_config.enable_playout_cap)
         self.assertEqual(game_config.reduced_simulations, 37)
         self.assertAlmostEqual(game_config.full_playout_probability, 0.2)
+        self.assertTrue(game_config.randomize_dirichlet_epsilon)
+        self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
+        self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
 
     def test_eval_queue_processes_requests_with_python_batch_callback(self) -> None:
         """Protects the CPU↔Python batching bridge so each submitter gets the correct per-request result."""

@@ -393,6 +393,104 @@ TEST(SelfPlayManagerTest, CountsDisabledResignationFalsePositives) {
     EXPECT_EQ(replay_buffer.size(), 2U);
 }
 
+// WHY: Per-game Dirichlet epsilon randomization must override the base epsilon so workers can run controlled
+// low-noise/high-noise mixes from a single config.
+TEST(SelfPlayManagerTest, RandomizedDirichletEpsilonOverridesPerGameConfig) {
+    const auto model = make_model(
+        2,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0, 1},
+                .transitions = {{0, 1}, {1, 2}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {-1.0F, 1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model);
+    ReplayBuffer replay_buffer(64U, 37U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F, 0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayManagerConfig config = default_manager_config(/*concurrent_games=*/1U, /*max_games_per_slot=*/24U, 1U, 1U);
+    config.game_config.enable_dirichlet_noise = true;
+    config.game_config.dirichlet_epsilon = 1.0F;
+    config.game_config.randomize_dirichlet_epsilon = true;
+    config.game_config.dirichlet_epsilon_min = 0.0F;
+    config.game_config.dirichlet_epsilon_max = 0.0F;
+    config.game_config.temperature = 0.0F;
+    config.game_config.temperature_moves = 0;
+
+    std::mutex callback_mutex;
+    std::vector<int> first_actions;
+    auto completion_callback =
+        [&callback_mutex, &first_actions](const std::size_t /*slot_index*/, const alphazero::selfplay::SelfPlayGameResult& result) {
+            std::lock_guard lock(callback_mutex);
+            if (!result.action_history.empty()) {
+                first_actions.push_back(result.action_history.front());
+            }
+        };
+
+    SelfPlayManager manager(game_config, replay_buffer, evaluator, config, completion_callback);
+    manager.start();
+    const bool completed =
+        wait_until([&manager] { return manager.metrics().games_completed >= 24U; }, std::chrono::seconds(2));
+    manager.stop();
+
+    ASSERT_TRUE(completed);
+    ASSERT_EQ(first_actions.size(), 24U);
+    EXPECT_TRUE(std::all_of(first_actions.begin(), first_actions.end(), [](const int action) { return action == 0; }));
+}
+
+// WHY: Invalid randomized Dirichlet bounds should fail at manager construction before any worker threads launch.
+TEST(SelfPlayManagerTest, RejectsInvalidRandomizedDirichletBounds) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model);
+    ReplayBuffer replay_buffer(16U, 39U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayManagerConfig config = default_manager_config(/*concurrent_games=*/1U, /*max_games_per_slot=*/1U, 1U, 1U);
+    config.game_config.randomize_dirichlet_epsilon = true;
+    config.game_config.dirichlet_epsilon_min = 0.4F;
+    config.game_config.dirichlet_epsilon_max = 0.3F;
+
+    EXPECT_THROW((void)SelfPlayManager(game_config, replay_buffer, evaluator, config), std::invalid_argument);
+}
+
 // WHY: All configured slots should become active at startup; this is the root-parallelism requirement that drives
 // batched inference utilization in the larger pipeline.
 TEST(SelfPlayManagerTest, ActivatesAllConfiguredSlots) {

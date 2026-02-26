@@ -450,6 +450,18 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
         "mcts.dirichlet_epsilon",
         float(mcts.get("dirichlet_epsilon", game_config.dirichlet_epsilon)),
     )
+    game_config.randomize_dirichlet_epsilon = _coerce_bool(
+        "mcts.randomize_dirichlet_epsilon",
+        mcts.get("randomize_dirichlet_epsilon", game_config.randomize_dirichlet_epsilon),
+    )
+    game_config.dirichlet_epsilon_min = _coerce_numeric(
+        "mcts.dirichlet_epsilon_min",
+        float(mcts.get("dirichlet_epsilon_min", game_config.dirichlet_epsilon_min)),
+    )
+    game_config.dirichlet_epsilon_max = _coerce_numeric(
+        "mcts.dirichlet_epsilon_max",
+        float(mcts.get("dirichlet_epsilon_max", game_config.dirichlet_epsilon_max)),
+    )
     if "dirichlet_alpha" in mcts:
         game_config.dirichlet_alpha_override = _coerce_positive_float(
             "mcts.dirichlet_alpha",
@@ -491,6 +503,20 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
             or game_config.full_playout_probability > 1.0
         ):
             raise ValueError("mcts.full_playout_probability must be finite and in [0, 1]")
+    if game_config.randomize_dirichlet_epsilon:
+        if (
+            not math.isfinite(game_config.dirichlet_epsilon_min)
+            or not math.isfinite(game_config.dirichlet_epsilon_max)
+            or game_config.dirichlet_epsilon_min < 0.0
+            or game_config.dirichlet_epsilon_min > 1.0
+            or game_config.dirichlet_epsilon_max < 0.0
+            or game_config.dirichlet_epsilon_max > 1.0
+        ):
+            raise ValueError(
+                "mcts.dirichlet_epsilon_min and mcts.dirichlet_epsilon_max must be finite and in [0, 1]"
+            )
+        if game_config.dirichlet_epsilon_min > game_config.dirichlet_epsilon_max:
+            raise ValueError("mcts.dirichlet_epsilon_min must be <= mcts.dirichlet_epsilon_max")
     return manager_config
 
 

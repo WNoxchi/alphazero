@@ -458,6 +458,32 @@ In `configs/chess.yaml`, change `temperature_moves: 30` to `temperature_moves: 4
 
 ### 3.2 Per-game Dirichlet noise variation
 
+Status (2026-02-26): Completed. Added `randomize_dirichlet_epsilon`, `dirichlet_epsilon_min`, and
+`dirichlet_epsilon_max` to `SelfPlayGameConfig` in `src/selfplay/self_play_game.h`; added bounds validation in
+`src/selfplay/self_play_game.cpp` and `src/selfplay/self_play_manager.cpp`; and updated
+`SelfPlayManager::worker_loop()` in `src/selfplay/self_play_manager.cpp` to instantiate a per-game config, sample
+epsilon uniformly from `[min, max]` when enabled, and apply it before each `SelfPlayGame` launch. Exposed the new
+fields in `src/bindings/python_bindings.cpp`, wired YAML parsing/validation in
+`scripts/train.py` `_build_selfplay_manager_config()`, and enabled range randomization defaults in
+`configs/chess.yaml` and `configs/chess_default.yaml`. Added regression coverage in
+`tests/cpp/test_self_play_game.cpp` (`SelfPlayGameTest.RejectsInvalidDirichletRandomizationBounds`),
+`tests/cpp/test_self_play_manager.cpp`
+(`SelfPlayManagerTest.RandomizedDirichletEpsilonOverridesPerGameConfig`,
+`SelfPlayManagerTest.RejectsInvalidRandomizedDirichletBounds`),
+`tests/python/test_train_script.py`
+(`test_build_selfplay_manager_config_maps_randomized_dirichlet_fields`,
+`test_build_selfplay_manager_config_rejects_invalid_randomized_dirichlet_bounds`), and
+`tests/python/test_bindings.py`
+(`PythonBindingsTests.test_self_play_game_config_exposes_playout_cap_fields`).
+Validation note: `cmake --build build -j$(nproc)`, `ctest --test-dir build -R "SelfPlay(Game|Manager)Test" --output-on-failure`,
+`/home/hakan/miniconda3/envs/alphazero/bin/python -m unittest tests/python/test_train_script.py`,
+`PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m unittest tests.python.test_bindings.PythonBindingsTests.test_self_play_game_config_exposes_playout_cap_fields`,
+`/home/hakan/miniconda3/envs/alphazero/bin/python -m unittest tests/python/test_config.py`,
+and `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix` passed.
+`python3 -m mypy scripts/train.py tests/python/test_train_script.py tests/python/test_bindings.py` reports existing
+environment/stub issues (`torch`, `numpy`) and pre-existing type errors outside this task; `ruff` is unavailable in
+this sandbox, so static validation additionally used `python3 -m compileall`.
+
 Add to `SelfPlayGameConfig` (`src/selfplay/self_play_game.h`):
 ```cpp
 bool randomize_dirichlet_epsilon = false;

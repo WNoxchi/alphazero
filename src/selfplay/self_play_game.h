@@ -32,6 +32,9 @@ struct SelfPlayGameConfig {
 
     bool enable_dirichlet_noise = true;
     float dirichlet_epsilon = 0.25F;
+    bool randomize_dirichlet_epsilon = false;
+    float dirichlet_epsilon_min = 0.15F;
+    float dirichlet_epsilon_max = 0.35F;
     float dirichlet_alpha_override = 0.0F;
 
     float temperature = 1.0F;

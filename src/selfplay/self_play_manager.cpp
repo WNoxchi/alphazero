@@ -1,5 +1,7 @@
 #include "selfplay/self_play_manager.h"
 
+#include <cmath>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -35,6 +37,22 @@ SelfPlayManager::SelfPlayManager(
     }
     if (config_.game_config.simulations_per_move == 0U) {
         throw std::invalid_argument("SelfPlayManager simulations-per-move must be greater than zero");
+    }
+    if (config_.game_config.randomize_dirichlet_epsilon) {
+        const float epsilon_min = config_.game_config.dirichlet_epsilon_min;
+        const float epsilon_max = config_.game_config.dirichlet_epsilon_max;
+        if (!std::isfinite(epsilon_min) || !std::isfinite(epsilon_max)) {
+            throw std::invalid_argument(
+                "SelfPlayManager dirichlet epsilon randomization bounds must be finite");
+        }
+        if (epsilon_min < 0.0F || epsilon_min > 1.0F || epsilon_max < 0.0F || epsilon_max > 1.0F) {
+            throw std::invalid_argument(
+                "SelfPlayManager dirichlet epsilon randomization bounds must be in [0, 1]");
+        }
+        if (epsilon_min > epsilon_max) {
+            throw std::invalid_argument(
+                "SelfPlayManager dirichlet_epsilon_min must not exceed dirichlet_epsilon_max");
+        }
     }
 }
 
@@ -179,7 +197,7 @@ void SelfPlayManager::worker_loop(const std::size_t slot_index, SelfPlayGameConf
     active_slots_.fetch_add(1U, std::memory_order_acq_rel);
 
     try {
-        SelfPlayGame game(game_config_, replay_buffer_, evaluator_, slot_game_config);
+        std::mt19937_64 slot_rng(slot_game_config.random_seed);
         std::size_t games_played_in_slot = 0U;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -187,6 +205,16 @@ void SelfPlayManager::worker_loop(const std::size_t slot_index, SelfPlayGameConf
                 break;
             }
 
+            SelfPlayGameConfig game_config = slot_game_config;
+            game_config.random_seed = slot_rng();
+            if (game_config.randomize_dirichlet_epsilon) {
+                std::uniform_real_distribution<float> epsilon_distribution(
+                    game_config.dirichlet_epsilon_min,
+                    game_config.dirichlet_epsilon_max);
+                game_config.dirichlet_epsilon = epsilon_distribution(slot_rng);
+            }
+
+            SelfPlayGame game(game_config_, replay_buffer_, evaluator_, game_config);
             const std::uint32_t game_id = next_game_id_.fetch_add(1U, std::memory_order_acq_rel);
             const SelfPlayGameResult result = game.play(game_id);
             record_completed_game(slot_index, result);

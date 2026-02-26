@@ -68,6 +68,21 @@ SelfPlayGame::SelfPlayGame(
             throw std::invalid_argument("SelfPlayGame full_playout_probability must be finite and in [0, 1]");
         }
     }
+    if (config_.randomize_dirichlet_epsilon) {
+        if (!std::isfinite(config_.dirichlet_epsilon_min) || !std::isfinite(config_.dirichlet_epsilon_max)) {
+            throw std::invalid_argument(
+                "SelfPlayGame dirichlet epsilon randomization bounds must be finite");
+        }
+        if (config_.dirichlet_epsilon_min < 0.0F || config_.dirichlet_epsilon_min > 1.0F ||
+            config_.dirichlet_epsilon_max < 0.0F || config_.dirichlet_epsilon_max > 1.0F) {
+            throw std::invalid_argument(
+                "SelfPlayGame dirichlet epsilon randomization bounds must be in [0, 1]");
+        }
+        if (config_.dirichlet_epsilon_min > config_.dirichlet_epsilon_max) {
+            throw std::invalid_argument(
+                "SelfPlayGame dirichlet_epsilon_min must not exceed dirichlet_epsilon_max");
+        }
+    }
     if (config_.mcts_threads == 0U) {
         throw std::invalid_argument("SelfPlayGame mcts_threads must be greater than zero");
     }

@@ -118,6 +118,9 @@ class _FakeSelfPlayGameConfig:
         self.c_fpu = 0.25
         self.enable_dirichlet_noise = True
         self.dirichlet_epsilon = 0.25
+        self.randomize_dirichlet_epsilon = False
+        self.dirichlet_epsilon_min = 0.15
+        self.dirichlet_epsilon_max = 0.35
         self.dirichlet_alpha_override = 0.0
         self.temperature = 1.0
         self.temperature_moves = 30
@@ -251,6 +254,9 @@ def _minimal_config() -> dict[str, object]:
             "c_fpu": 0.25,
             "dirichlet_alpha": 0.3,
             "dirichlet_epsilon": 0.25,
+            "randomize_dirichlet_epsilon": False,
+            "dirichlet_epsilon_min": 0.15,
+            "dirichlet_epsilon_max": 0.35,
             "enable_playout_cap": False,
             "reduced_simulations": 16,
             "full_playout_probability": 0.25,
@@ -484,6 +490,40 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError,
             "mcts.full_playout_probability must be finite and in \\[0, 1\\]",
+        ):
+            train_script._build_selfplay_manager_config(dependencies.cpp, config)
+
+    def test_build_selfplay_manager_config_maps_randomized_dirichlet_fields(self) -> None:
+        """WHY: per-game root-noise randomization only works when YAML epsilon bounds reach the C++ game config."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        mcts = dict(config["mcts"])
+        mcts["randomize_dirichlet_epsilon"] = True
+        mcts["dirichlet_epsilon_min"] = 0.2
+        mcts["dirichlet_epsilon_max"] = 0.4
+        config["mcts"] = mcts
+
+        manager_config = train_script._build_selfplay_manager_config(dependencies.cpp, config)
+
+        self.assertTrue(manager_config.game_config.randomize_dirichlet_epsilon)
+        self.assertAlmostEqual(manager_config.game_config.dirichlet_epsilon_min, 0.2)
+        self.assertAlmostEqual(manager_config.game_config.dirichlet_epsilon_max, 0.4)
+
+    def test_build_selfplay_manager_config_rejects_invalid_randomized_dirichlet_bounds(self) -> None:
+        """WHY: invalid epsilon bounds should fail fast so workers do not start with undefined noise schedules."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        mcts = dict(config["mcts"])
+        mcts["randomize_dirichlet_epsilon"] = True
+        mcts["dirichlet_epsilon_min"] = 0.4
+        mcts["dirichlet_epsilon_max"] = 0.3
+        config["mcts"] = mcts
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "mcts.dirichlet_epsilon_min must be <= mcts.dirichlet_epsilon_max",
         ):
             train_script._build_selfplay_manager_config(dependencies.cpp, config)
 
