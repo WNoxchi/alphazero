@@ -15,6 +15,7 @@
 namespace {
 
 using alphazero::selfplay::ReplayBuffer;
+using alphazero::selfplay::CompactReplayPosition;
 using alphazero::selfplay::ReplayPosition;
 
 constexpr std::size_t kStateSize = 4U;
@@ -95,6 +96,46 @@ void expect_position_is_consistent(const ReplayPosition& position) {
 }
 
 }  // namespace
+
+// WHY: Phase-1 replay compression depends on a fixed-size compact record with deterministic zero defaults so the
+// compression path can safely populate only touched fields.
+TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefaults) {
+    CompactReplayPosition position{};
+
+    EXPECT_EQ(CompactReplayPosition::kMaxBinaryPlanes, 117U);
+    EXPECT_EQ(CompactReplayPosition::kMaxFloatPlanes, 2U);
+    EXPECT_EQ(CompactReplayPosition::kMaxSparsePolicy, 64U);
+    EXPECT_EQ(CompactReplayPosition::kWdlSize, ReplayPosition::kWdlSize);
+
+    EXPECT_TRUE(std::all_of(position.bitpacked_planes.begin(), position.bitpacked_planes.end(), [](std::uint64_t v) {
+        return v == 0U;
+    }));
+    EXPECT_TRUE(std::all_of(
+        position.quantized_float_planes.begin(),
+        position.quantized_float_planes.end(),
+        [](std::uint8_t v) { return v == 0U; }));
+    EXPECT_TRUE(std::all_of(position.policy_actions.begin(), position.policy_actions.end(), [](std::uint16_t v) {
+        return v == 0U;
+    }));
+    EXPECT_TRUE(std::all_of(position.policy_probs_fp16.begin(), position.policy_probs_fp16.end(), [](std::uint16_t v) {
+        return v == 0U;
+    }));
+    EXPECT_EQ(position.num_policy_entries, 0U);
+
+    EXPECT_FLOAT_EQ(position.value, 0.0F);
+    EXPECT_EQ(position.value_wdl, (std::array<float, ReplayPosition::kWdlSize>{0.0F, 0.0F, 0.0F}));
+    EXPECT_EQ(position.game_id, 0U);
+    EXPECT_EQ(position.move_number, 0U);
+    EXPECT_EQ(position.num_binary_planes, 0U);
+    EXPECT_EQ(position.num_float_planes, 0U);
+    EXPECT_EQ(position.policy_size, 0U);
+}
+
+// WHY: Replay-capacity scaling assumes compact records are far smaller than dense ReplayPosition entries.
+TEST(ReplayBufferTest, CompactReplayPositionIsSubstantiallySmallerThanDenseReplayPosition) {
+    EXPECT_LE(sizeof(CompactReplayPosition), 1300U);
+    EXPECT_GT(sizeof(ReplayPosition), sizeof(CompactReplayPosition));
+}
 
 // WHY: Construction and input-shape guards prevent silent corruption from invalid capacity or malformed replay entries.
 TEST(ReplayBufferTest, ValidatesCapacityAndPositionShapes) {

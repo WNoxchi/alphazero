@@ -37,6 +37,32 @@ struct ReplayPosition {
         std::uint16_t move_number);
 };
 
+struct CompactReplayPosition {
+    static constexpr std::size_t kMaxBinaryPlanes = 117U;
+    static constexpr std::size_t kMaxFloatPlanes = 2U;
+    static constexpr std::size_t kMaxSparsePolicy = 64U;
+    static constexpr std::size_t kWdlSize = 3U;
+
+    // Binary state planes bitpacked as one 64-bit word per plane.
+    std::array<std::uint64_t, kMaxBinaryPlanes> bitpacked_planes{};
+    // Constant-valued float planes quantized to [0, 255].
+    std::array<std::uint8_t, kMaxFloatPlanes> quantized_float_planes{};
+
+    // Sparse policy representation (action index + FP16 probability).
+    std::array<std::uint16_t, kMaxSparsePolicy> policy_actions{};
+    std::array<std::uint16_t, kMaxSparsePolicy> policy_probs_fp16{};
+    std::uint8_t num_policy_entries = 0U;
+
+    // Metadata and value targets matching ReplayPosition semantics.
+    float value = 0.0F;
+    std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
+    std::uint32_t game_id = 0U;
+    std::uint16_t move_number = 0U;
+    std::uint16_t num_binary_planes = 0U;
+    std::uint16_t num_float_planes = 0U;
+    std::uint16_t policy_size = 0U;
+};
+
 struct SampledBatch {
     std::vector<float> states;
     std::vector<float> policies;
