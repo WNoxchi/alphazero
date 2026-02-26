@@ -501,6 +501,20 @@ In `SelfPlayManager` worker loop (`src/selfplay/self_play_manager.cpp`), when st
 
 ### 4.1 Runtime sim count update
 
+Status (2026-02-26): Completed. Added `update_simulations_per_move(std::size_t)` to
+`SelfPlayManager` in `src/selfplay/self_play_manager.{h,cpp}` with atomic runtime storage and
+validation for non-zero budgets, and updated `SelfPlayManager::worker_loop()` to read the current
+simulation budget at each new-game boundary. To keep throughput metrics accurate under changing
+budgets, `SelfPlayGameResult` in `src/selfplay/self_play_game.h` now carries
+`total_simulations`, populated in `src/selfplay/self_play_game.cpp`, and manager metrics now
+accumulate from that field. Added C++ coverage in `tests/cpp/test_self_play_manager.cpp` via
+`SelfPlayManagerTest.RejectsZeroSimulationBudgetUpdate` and
+`SelfPlayManagerTest.AppliesUpdatedSimulationBudgetToSubsequentGames`.
+Validation note: `cmake --build build -j$(nproc)` and
+`ctest --test-dir build -R "SelfPlay(Game|Manager)Test" --output-on-failure` passed; `ruff` is
+unavailable in this sandbox interpreter, so static validation used `python3 -m compileall`, and
+`mypy` reports existing environment/type-stub issues for `torch`/`numpy`.
+
 Add to `SelfPlayManager` (`src/selfplay/self_play_manager.h`):
 ```cpp
 void update_simulations_per_move(std::size_t new_sims);

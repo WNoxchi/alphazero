@@ -27,6 +27,7 @@ using alphazero::selfplay::GameTerminationReason;
 using alphazero::selfplay::ReplayBuffer;
 using alphazero::selfplay::SelfPlayManager;
 using alphazero::selfplay::SelfPlayManagerConfig;
+using alphazero::selfplay::SelfPlayGameResult;
 using alphazero::selfplay::SelfPlayMetricsSnapshot;
 
 struct ToyStateSpec {
@@ -391,6 +392,104 @@ TEST(SelfPlayManagerTest, CountsDisabledResignationFalsePositives) {
     EXPECT_EQ(snapshot.latest_game_length, 2U);
     EXPECT_EQ(snapshot.total_simulations, 2U);
     EXPECT_EQ(replay_buffer.size(), 2U);
+}
+
+// WHY: Runtime simulation updates must reject zero to preserve the core self-play invariant that every move runs at
+// least one search simulation.
+TEST(SelfPlayManagerTest, RejectsZeroSimulationBudgetUpdate) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {-1.0F, 1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model);
+    ReplayBuffer replay_buffer(16U, 59U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayManagerConfig config = default_manager_config(/*concurrent_games=*/1U, /*max_games_per_slot=*/1U, 1U, 1U);
+    SelfPlayManager manager(game_config, replay_buffer, evaluator, config);
+    EXPECT_THROW(manager.update_simulations_per_move(0U), std::invalid_argument);
+}
+
+// WHY: Dynamic simulation scheduling depends on updates taking effect at the next game boundary without perturbing
+// games that have already started.
+TEST(SelfPlayManagerTest, AppliesUpdatedSimulationBudgetToSubsequentGames) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {-1.0F, 1.0F},
+                .legal_actions = {},
+                .transitions = {},
+            },
+        });
+    ToyGameConfig game_config(model);
+    ReplayBuffer replay_buffer(64U, 61U);
+    const auto evaluator = make_evaluator({
+        {0, EvaluationResult{.policy = {0.0F}, .value = 0.0F, .policy_is_logits = true}},
+    });
+
+    SelfPlayManagerConfig config = default_manager_config(/*concurrent_games=*/1U, /*max_games_per_slot=*/3U, 1U, 1U);
+
+    std::atomic<bool> updated{false};
+    std::mutex callback_mutex;
+    std::vector<std::size_t> simulations_per_game;
+    SelfPlayManager* manager_ptr = nullptr;
+    auto completion_callback =
+        [&](const std::size_t /*slot_index*/, const SelfPlayGameResult& result) {
+            {
+                std::lock_guard lock(callback_mutex);
+                simulations_per_game.push_back(result.total_simulations);
+            }
+            bool expected = false;
+            if (updated.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                if (manager_ptr != nullptr) {
+                    manager_ptr->update_simulations_per_move(4U);
+                }
+            }
+        };
+
+    SelfPlayManager manager(game_config, replay_buffer, evaluator, config, completion_callback);
+    manager_ptr = &manager;
+    manager.start();
+    const bool completed =
+        wait_until([&manager] { return manager.metrics().games_completed >= 3U && !manager.is_running(); }, std::chrono::seconds(2));
+    manager.stop();
+
+    ASSERT_TRUE(completed);
+    const SelfPlayMetricsSnapshot snapshot = manager.metrics();
+    EXPECT_EQ(snapshot.games_completed, 3U);
+    EXPECT_EQ(snapshot.total_simulations, 9U);
+
+    std::lock_guard lock(callback_mutex);
+    ASSERT_EQ(simulations_per_game.size(), 3U);
+    EXPECT_EQ(simulations_per_game[0], 1U);
+    EXPECT_EQ(simulations_per_game[1], 4U);
+    EXPECT_EQ(simulations_per_game[2], 4U);
 }
 
 // WHY: Per-game Dirichlet epsilon randomization must override the base epsilon so workers can run controlled

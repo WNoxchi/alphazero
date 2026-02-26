@@ -25,7 +25,8 @@ SelfPlayManager::SelfPlayManager(
       evaluator_(std::move(evaluator)),
       config_(config),
       completion_callback_(std::move(completion_callback)),
-      next_game_id_(config_.initial_game_id) {
+      next_game_id_(config_.initial_game_id),
+      simulations_per_move_(config_.game_config.simulations_per_move) {
     if (!evaluator_) {
         throw std::invalid_argument("SelfPlayManager requires a non-null evaluator callback");
     }
@@ -132,6 +133,13 @@ void SelfPlayManager::stop() {
     }
 }
 
+void SelfPlayManager::update_simulations_per_move(const std::size_t new_sims) {
+    if (new_sims == 0U) {
+        throw std::invalid_argument("SelfPlayManager simulations-per-move update must be greater than zero");
+    }
+    simulations_per_move_.store(new_sims, std::memory_order_release);
+}
+
 bool SelfPlayManager::is_running() const noexcept { return running_.load(std::memory_order_acquire); }
 
 SelfPlayMetricsSnapshot SelfPlayManager::metrics() const {
@@ -206,6 +214,7 @@ void SelfPlayManager::worker_loop(const std::size_t slot_index, SelfPlayGameConf
             }
 
             SelfPlayGameConfig game_config = slot_game_config;
+            game_config.simulations_per_move = simulations_per_move_.load(std::memory_order_acquire);
             game_config.random_seed = slot_rng();
             if (game_config.randomize_dirichlet_epsilon) {
                 std::uniform_real_distribution<float> epsilon_distribution(
@@ -249,7 +258,7 @@ void SelfPlayManager::record_completed_game(const std::size_t slot_index, const 
         ++games_completed_;
         replay_positions_written_ += result.replay_positions_written;
         total_moves_ += result.move_count;
-        total_simulations_ += result.simulation_batches_executed * config_.game_config.simulations_per_move;
+        total_simulations_ += result.total_simulations;
         cumulative_game_length_ += static_cast<double>(result.move_count);
         cumulative_outcome_player0_ += static_cast<double>(result.outcome_player0);
 

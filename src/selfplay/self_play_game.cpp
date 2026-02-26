@@ -150,6 +150,7 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
 
         run_simulation_batch(simulations_this_move);
         ++result.simulation_batches_executed;
+        result.total_simulations += simulations_this_move;
 
         if (config_.enable_resignation && search_.should_resign()) {
             result.resignation_would_have_triggered = true;
