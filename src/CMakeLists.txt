@@ -13,6 +13,7 @@ set(ALPHAZERO_ENGINE_SOURCES
     selfplay/self_play_manager.cpp
     selfplay/self_play_game.cpp
     selfplay/replay_buffer.cpp
+    selfplay/compact_replay_buffer.cpp
     selfplay/replay_compression.cpp
     nn/libtorch_inference.cpp
 )

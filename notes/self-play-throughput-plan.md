@@ -176,6 +176,13 @@ Output: float policy[4672]
 
 ### 1.3 New `CompactReplayBuffer` class
 
+Status (2026-02-26): Completed. Added `CompactReplayBuffer` in
+`src/selfplay/compact_replay_buffer.{h,cpp}` with compression-on-write and
+decompression-on-read for `add_game`, `sample`, `sample_batch`,
+`export_positions`, and `import_positions`, including ring-buffer and
+thread-safety behavior matching `ReplayBuffer`. Wired compilation in
+`src/CMakeLists.txt` and added coverage in `tests/cpp/test_compact_replay_buffer.cpp`.
+
 Create new files: `src/selfplay/compact_replay_buffer.h` and `src/selfplay/compact_replay_buffer.cpp`.
 
 ```cpp
