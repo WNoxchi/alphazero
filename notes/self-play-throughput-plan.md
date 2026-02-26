@@ -336,7 +336,9 @@ Status (2026-02-26): Completed. Added playout-cap controls to `SelfPlayGameConfi
 playout-cap mode is enabled. Added coverage in `tests/cpp/test_self_play_game.cpp` via
 `SelfPlayGameTest.RejectsZeroReducedSimulations`,
 `SelfPlayGameTest.RejectsReducedSimulationsAboveFullBudget`, and
-`SelfPlayGameTest.RejectsPlayoutProbabilityOutsideUnitInterval`.
+`SelfPlayGameTest.RejectsPlayoutProbabilityOutsideUnitInterval`. Validation note: `mypy`
+reports existing environment/type-stub issues for `torch`/`numpy` imports in Python modules,
+and `ruff` is not installed in this sandbox interpreter.
 
 Add to `SelfPlayGameConfig` in `src/selfplay/self_play_game.h`:
 ```cpp
