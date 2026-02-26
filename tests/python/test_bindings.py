@@ -6,12 +6,16 @@ import pathlib
 import sys
 import threading
 import time
+import tempfile
 import types
 import unittest
 from typing import Any
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+PYTHON_SRC = ROOT / "python"
+if str(PYTHON_SRC) not in sys.path:
+    sys.path.insert(0, str(PYTHON_SRC))
 
 
 def _import_bindings() -> tuple[types.ModuleType | None, str]:
@@ -247,6 +251,84 @@ class PythonBindingsTests(unittest.TestCase):
         restored_sample = restored.sample(1)[0]
         self.assertEqual(restored_sample.game_id, 77)
         self.assertEqual(restored_sample.move_number, 9)
+
+    def test_compact_buffer_loads_dense_replay_checkpoint_without_format_changes(self) -> None:
+        """WHY: dense replay checkpoints must stay loadable after switching training to compact replay storage."""
+        bindings = _require_bindings()
+        from alphazero.utils.checkpoint import load_replay_buffer_state, save_replay_buffer_state
+
+        dense_buffer = bindings.ReplayBuffer(capacity=8, random_seed=1337)
+
+        binary_even = [1.0 if (square % 2) == 0 else 0.0 for square in range(64)]
+        binary_odd = [1.0 if (square % 2) == 1 else 0.0 for square in range(64)]
+        encoded_a = binary_even + ([1.0] * 64)
+        encoded_b = binary_odd + ([0.0] * 64)
+        dense_buffer.add_game(
+            [
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_a,
+                    policy=[0.0, 0.6, 0.0, 0.4, 0.0],
+                    value=1.0,
+                    value_wdl=[1.0, 0.0, 0.0],
+                    game_id=11,
+                    move_number=3,
+                ),
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_b,
+                    policy=[0.125, 0.0, 0.875, 0.0, 0.0],
+                    value=-1.0,
+                    value_wdl=[0.0, 0.0, 1.0],
+                    game_id=12,
+                    move_number=4,
+                ),
+            ]
+        )
+
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=2024,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = pathlib.Path(temp_dir) / "checkpoint_00000042.pt"
+            checkpoint_path.write_text("placeholder", encoding="utf-8")
+
+            replay_path = save_replay_buffer_state(
+                dense_buffer,
+                checkpoint_path,
+                encoded_state_size=128,
+                policy_size=5,
+            )
+            self.assertIsNotNone(replay_path)
+            assert replay_path is not None
+            self.assertTrue(replay_path.exists())
+
+            loaded = load_replay_buffer_state(
+                compact_buffer,
+                checkpoint_path,
+                encoded_state_size=128,
+                policy_size=5,
+            )
+            self.assertEqual(loaded, 2)
+
+        import numpy.testing as npt
+
+        dense_export = dense_buffer.export_buffer(encoded_state_size=128, policy_size=5)
+        compact_export = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
+
+        dense_states, dense_policies, dense_values_wdl, dense_game_ids, dense_move_numbers = dense_export
+        compact_states, compact_policies, compact_values_wdl, compact_game_ids, compact_move_numbers = compact_export
+
+        npt.assert_allclose(compact_states[:, :64], dense_states[:, :64], rtol=0.0, atol=0.0)
+        npt.assert_allclose(compact_states[:, 64:], dense_states[:, 64:], rtol=0.0, atol=(1.0 / 255.0) + 1e-7)
+        npt.assert_allclose(compact_policies, dense_policies, rtol=0.0, atol=1e-3)
+        npt.assert_allclose(compact_values_wdl, dense_values_wdl, rtol=0.0, atol=0.0)
+        npt.assert_array_equal(compact_game_ids, dense_game_ids)
+        npt.assert_array_equal(compact_move_numbers, dense_move_numbers)
 
     def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
         """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""

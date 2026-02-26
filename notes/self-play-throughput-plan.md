@@ -286,6 +286,12 @@ The `GameConfig` struct already has `input_channels` (119), `board_shape` (8,8),
 
 ### 1.7 Checkpoint backward compatibility
 
+Status (2026-02-26): Completed. Confirmed `python/alphazero/utils/checkpoint.py` replay save/load helpers remain
+format-compatible across dense and compact buffers, and added
+`PythonBindingsTests.test_compact_buffer_loads_dense_replay_checkpoint_without_format_changes` in
+`tests/python/test_bindings.py` to verify dense `.replay.npz` artifacts restore into `CompactReplayBuffer`
+without schema changes.
+
 In `python/alphazero/utils/checkpoint.py`:
 - `export_buffer()` on `CompactReplayBuffer` decompresses to the same flat numpy arrays (`states`, `policies`, `values_wdl`, `game_ids`, `move_numbers`). Same `.replay.npz` format.
 - `import_buffer()` on `CompactReplayBuffer` accepts the same flat numpy arrays and compresses on import.
