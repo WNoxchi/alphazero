@@ -82,6 +82,12 @@ class GameConfigTests(unittest.TestCase):
         )
         self.assertEqual(load_game_config_from_yaml(ROOT / "configs" / "go_default.yaml"), GO_CONFIG)
 
+    def test_chess_runtime_config_uses_expanded_replay_capacity(self) -> None:
+        """WHY: throughput scaling relies on a larger replay buffer cap to retain far more compact positions."""
+        chess_runtime_config = (ROOT / "configs" / "chess.yaml").read_text(encoding="utf-8")
+        self.assertIn("replay_buffer:", chess_runtime_config)
+        self.assertIn("capacity: 5000000", chess_runtime_config)
+
     def test_get_game_config_is_case_insensitive_and_strips_whitespace(self) -> None:
         """Prevents fragile CLI/config plumbing from failing due to harmless casing or spacing."""
         self.assertEqual(get_game_config(" Chess "), CHESS_CONFIG)

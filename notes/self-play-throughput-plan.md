@@ -300,6 +300,9 @@ In `python/alphazero/utils/checkpoint.py`:
 
 ### 1.8 Config change
 
+Status (2026-02-26): Completed. Updated `configs/chess.yaml` replay buffer capacity to `5000000` to
+activate higher self-play position retention with the compact replay buffer path.
+
 In `configs/chess.yaml`, increase buffer capacity:
 ```yaml
 replay_buffer:

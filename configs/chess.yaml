@@ -39,7 +39,7 @@ pipeline:
   training_steps_per_cycle: 1
 
 replay_buffer:
-  capacity: 750000
+  capacity: 5000000
 
 evaluation:
   interval_steps: 5000
