@@ -22,6 +22,7 @@ struct ReplayPosition {
     std::array<float, kMaxEncodedStateSize> encoded_state{};
     std::array<float, kMaxPolicySize> policy{};
     float value = 0.0F;
+    float training_weight = 1.0F;
     std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
     std::uint32_t game_id = 0U;
     std::uint16_t move_number = 0U;
@@ -34,13 +35,42 @@ struct ReplayPosition {
         float value,
         const std::array<float, kWdlSize>& value_wdl,
         std::uint32_t game_id,
-        std::uint16_t move_number);
+        std::uint16_t move_number,
+        float training_weight = 1.0F);
+};
+
+struct CompactReplayPosition {
+    static constexpr std::size_t kMaxBinaryPlanes = 117U;
+    static constexpr std::size_t kMaxFloatPlanes = 2U;
+    static constexpr std::size_t kMaxSparsePolicy = 64U;
+    static constexpr std::size_t kWdlSize = 3U;
+
+    // Binary state planes bitpacked as one 64-bit word per plane.
+    std::array<std::uint64_t, kMaxBinaryPlanes> bitpacked_planes{};
+    // Constant-valued float planes quantized to [0, 255].
+    std::array<std::uint8_t, kMaxFloatPlanes> quantized_float_planes{};
+
+    // Sparse policy representation (action index + FP16 probability).
+    std::array<std::uint16_t, kMaxSparsePolicy> policy_actions{};
+    std::array<std::uint16_t, kMaxSparsePolicy> policy_probs_fp16{};
+    std::uint8_t num_policy_entries = 0U;
+
+    // Metadata and value targets matching ReplayPosition semantics.
+    float value = 0.0F;
+    float training_weight = 1.0F;
+    std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
+    std::uint32_t game_id = 0U;
+    std::uint16_t move_number = 0U;
+    std::uint16_t num_binary_planes = 0U;
+    std::uint16_t num_float_planes = 0U;
+    std::uint16_t policy_size = 0U;
 };
 
 struct SampledBatch {
     std::vector<float> states;
     std::vector<float> policies;
     std::vector<float> values;
+    std::vector<float> weights;
     std::size_t batch_size = 0U;
 };
 
@@ -66,6 +96,30 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] std::size_t capacity() const noexcept;
     [[nodiscard]] std::size_t write_head() const noexcept;
+
+    /// Export all valid positions into pre-allocated flat arrays (logical order).
+    /// Returns the number of positions exported.  Caller must allocate arrays
+    /// of at least size() * field_width elements.
+    std::size_t export_positions(
+        float* out_states,
+        float* out_policies,
+        float* out_values_wdl,
+        std::uint32_t* out_game_ids,
+        std::uint16_t* out_move_numbers,
+        std::size_t encoded_state_size,
+        std::size_t policy_size) const;
+
+    /// Import positions from flat arrays into the buffer.
+    /// Appends to the current buffer (does not clear existing data).
+    void import_positions(
+        const float* states,
+        const float* policies,
+        const float* values_wdl,
+        const std::uint32_t* game_ids,
+        const std::uint16_t* move_numbers,
+        std::size_t count,
+        std::size_t encoded_state_size,
+        std::size_t policy_size);
 
 private:
     [[nodiscard]] static bool has_valid_shape(const ReplayPosition& position) noexcept;

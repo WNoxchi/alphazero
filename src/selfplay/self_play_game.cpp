@@ -37,8 +37,21 @@ SelfPlayGame::SelfPlayGame(
     ReplayBuffer& replay_buffer,
     const EvaluateFn& evaluator,
     SelfPlayGameConfig config)
+    : SelfPlayGame(
+          game_config,
+          [&replay_buffer](const std::vector<ReplayPosition>& positions) {
+              replay_buffer.add_game(positions);
+          },
+          evaluator,
+          config) {}
+
+SelfPlayGame::SelfPlayGame(
+    const GameConfig& game_config,
+    AddGameFn add_game_fn,
+    const EvaluateFn& evaluator,
+    SelfPlayGameConfig config)
     : game_config_(game_config),
-      replay_buffer_(replay_buffer),
+      add_game_fn_(std::move(add_game_fn)),
       evaluator_(evaluator),
       config_(config),
       search_config_(make_search_config(config_)),
@@ -55,6 +68,33 @@ SelfPlayGame::SelfPlayGame(
     }
     if (config_.simulations_per_move == 0U) {
         throw std::invalid_argument("SelfPlayGame simulations_per_move must be greater than zero");
+    }
+    if (config_.enable_playout_cap) {
+        if (config_.reduced_simulations == 0U) {
+            throw std::invalid_argument("SelfPlayGame reduced_simulations must be greater than zero");
+        }
+        if (config_.reduced_simulations > config_.simulations_per_move) {
+            throw std::invalid_argument("SelfPlayGame reduced_simulations must not exceed simulations_per_move");
+        }
+        if (!std::isfinite(config_.full_playout_probability) || config_.full_playout_probability < 0.0F ||
+            config_.full_playout_probability > 1.0F) {
+            throw std::invalid_argument("SelfPlayGame full_playout_probability must be finite and in [0, 1]");
+        }
+    }
+    if (config_.randomize_dirichlet_epsilon) {
+        if (!std::isfinite(config_.dirichlet_epsilon_min) || !std::isfinite(config_.dirichlet_epsilon_max)) {
+            throw std::invalid_argument(
+                "SelfPlayGame dirichlet epsilon randomization bounds must be finite");
+        }
+        if (config_.dirichlet_epsilon_min < 0.0F || config_.dirichlet_epsilon_min > 1.0F ||
+            config_.dirichlet_epsilon_max < 0.0F || config_.dirichlet_epsilon_max > 1.0F) {
+            throw std::invalid_argument(
+                "SelfPlayGame dirichlet epsilon randomization bounds must be in [0, 1]");
+        }
+        if (config_.dirichlet_epsilon_min > config_.dirichlet_epsilon_max) {
+            throw std::invalid_argument(
+                "SelfPlayGame dirichlet_epsilon_min must not exceed dirichlet_epsilon_max");
+        }
     }
     if (config_.mcts_threads == 0U) {
         throw std::invalid_argument("SelfPlayGame mcts_threads must be greater than zero");
@@ -108,8 +148,22 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
             break;
         }
 
-        run_simulation_batch();
+        bool use_full_simulations = true;
+        std::size_t simulations_this_move = config_.simulations_per_move;
+        if (config_.enable_playout_cap) {
+            std::uniform_real_distribution<float> distribution(0.0F, 1.0F);
+            {
+                std::scoped_lock lock(rng_mutex_);
+                use_full_simulations = distribution(rng_) < config_.full_playout_probability;
+            }
+            if (!use_full_simulations) {
+                simulations_this_move = config_.reduced_simulations;
+            }
+        }
+
+        run_simulation_batch(simulations_this_move);
         ++result.simulation_batches_executed;
+        result.total_simulations += simulations_this_move;
 
         if (config_.enable_resignation && search_.should_resign()) {
             result.resignation_would_have_triggered = true;
@@ -130,6 +184,9 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
         sample.encoded_state.resize(encoded_state_size());
         pre_move_state.encode(sample.encoded_state.data());
         sample.policy = std::move(policy);
+        sample.training_weight = use_full_simulations
+            ? 1.0F
+            : static_cast<float>(config_.reduced_simulations) / static_cast<float>(config_.simulations_per_move);
         sample.player = pre_move_state.current_player();
         sample.move_number = static_cast<std::uint16_t>(
             std::min<std::size_t>(result.move_count, std::numeric_limits<std::uint16_t>::max()));
@@ -176,23 +233,28 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
             scalar_value,
             wdl_target(scalar_value),
             game_id,
-            sample.move_number));
+            sample.move_number,
+            sample.training_weight));
     }
 
-    replay_buffer_.add_game(replay_positions);
+    add_game_fn_(replay_positions);
     result.replay_positions_written = replay_positions.size();
     return result;
 }
 
-void SelfPlayGame::run_simulation_batch() {
-    if (config_.mcts_threads <= 1U || config_.simulations_per_move <= 1U) {
-        search_.run_simulations(config_.simulations_per_move, evaluator_);
+void SelfPlayGame::run_simulation_batch(const std::size_t simulations) {
+    if (simulations == 0U) {
+        throw std::invalid_argument("SelfPlayGame simulation batch size must be greater than zero");
+    }
+
+    if (config_.mcts_threads <= 1U || simulations <= 1U) {
+        search_.run_simulations(simulations, evaluator_);
         return;
     }
 
-    const std::size_t worker_count = std::min(config_.mcts_threads, config_.simulations_per_move);
-    const std::size_t base = config_.simulations_per_move / worker_count;
-    const std::size_t remainder = config_.simulations_per_move % worker_count;
+    const std::size_t worker_count = std::min(config_.mcts_threads, simulations);
+    const std::size_t base = simulations / worker_count;
+    const std::size_t remainder = simulations % worker_count;
 
     std::vector<std::thread> workers;
     workers.reserve(worker_count);

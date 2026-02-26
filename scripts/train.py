@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+import math
 from pathlib import Path
 import signal
 import sys
@@ -103,6 +104,7 @@ class TrainingRuntime:
     optimizer: Any
     logger: Any
     start_step: int
+    elo_evaluator: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,17 @@ class TrainingRunSummary:
     interrupted: bool
     games_completed: int
     final_checkpoint_path: Path | None
+
+
+_DYNAMIC_SIM_SCHEDULE_SWITCH_STEP = 10_000
+_DYNAMIC_SIM_EARLY_BUDGET = 100
+_DYNAMIC_SIM_LATE_BUDGET = 200
+
+
+def _scheduled_simulations_per_move(step: int) -> int:
+    if step < _DYNAMIC_SIM_SCHEDULE_SWITCH_STEP:
+        return _DYNAMIC_SIM_EARLY_BUDGET
+    return _DYNAMIC_SIM_LATE_BUDGET
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -346,7 +359,35 @@ def _build_cpp_game_config(cpp: Any, game_name: str) -> Any:
     raise ValueError(f"Unsupported game {game_name!r}")
 
 
-def _build_replay_buffer(cpp: Any, config: Mapping[str, Any]) -> Any:
+def _resolve_replay_sampling_strategy(cpp: Any, replay: Mapping[str, Any]) -> Any | None:
+    raw_strategy = replay.get("sampling_strategy", "uniform")
+    if not isinstance(raw_strategy, str) or not raw_strategy.strip():
+        raise ValueError("replay_buffer.sampling_strategy must be a non-empty string")
+
+    normalized = raw_strategy.strip().lower()
+    if normalized == "uniform":
+        enum_member = "UNIFORM"
+    elif normalized in {"recency_weighted", "recency-weighted"}:
+        enum_member = "RECENCY_WEIGHTED"
+    else:
+        raise ValueError(
+            "replay_buffer.sampling_strategy must be 'uniform' or 'recency_weighted'"
+        )
+
+    strategy_enum = getattr(cpp, "ReplaySamplingStrategy", None)
+    if strategy_enum is None:
+        if enum_member != "UNIFORM":
+            raise ValueError(
+                "replay_buffer.sampling_strategy='recency_weighted' requires "
+                "alphazero_cpp ReplaySamplingStrategy support"
+            )
+        return None
+    if not hasattr(strategy_enum, enum_member):
+        raise ValueError("alphazero_cpp.ReplaySamplingStrategy is missing expected enum members")
+    return getattr(strategy_enum, enum_member)
+
+
+def _build_replay_buffer(cpp: Any, config: Mapping[str, Any], game_config: GameConfig) -> Any:
     replay = _section(config, "replay_buffer")
     capacity = _coerce_positive_int(
         "replay_buffer.capacity",
@@ -356,7 +397,33 @@ def _build_replay_buffer(cpp: Any, config: Mapping[str, Any]) -> Any:
         "replay_buffer.random_seed",
         int(replay.get("random_seed", 0x9E3779B97F4A7C15)),
     )
-    return cpp.ReplayBuffer(capacity=capacity, random_seed=random_seed)
+    sampling_strategy = _resolve_replay_sampling_strategy(cpp, replay)
+    recency_weight_lambda = _coerce_numeric(
+        "replay_buffer.recency_weight_lambda",
+        float(replay.get("recency_weight_lambda", 1.0)),
+    )
+    if not math.isfinite(recency_weight_lambda) or recency_weight_lambda < 0.0:
+        raise ValueError(
+            "replay_buffer.recency_weight_lambda must be finite and non-negative"
+        )
+
+    rows, cols = game_config.board_shape
+    if rows * cols != 64 or not hasattr(cpp, "CompactReplayBuffer"):
+        return cpp.ReplayBuffer(capacity=capacity, random_seed=random_seed)
+
+    compact_kwargs: dict[str, Any] = {
+        "capacity": capacity,
+        "num_binary_planes": game_config.num_binary_planes,
+        "num_float_planes": game_config.num_float_planes,
+        "float_plane_indices": list(game_config.float_plane_indices),
+        "full_policy_size": game_config.action_space_size,
+        "random_seed": random_seed,
+    }
+    if sampling_strategy is not None:
+        compact_kwargs["sampling_strategy"] = sampling_strategy
+        compact_kwargs["recency_weight_lambda"] = recency_weight_lambda
+
+    return cpp.CompactReplayBuffer(**compact_kwargs)
 
 
 def _build_eval_queue_config(cpp: Any, config: Mapping[str, Any]) -> Any:
@@ -408,6 +475,18 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
         "mcts.node_arena_capacity",
         int(mcts.get("node_arena_capacity", game_config.node_arena_capacity)),
     )
+    game_config.enable_playout_cap = _coerce_bool(
+        "mcts.enable_playout_cap",
+        mcts.get("enable_playout_cap", game_config.enable_playout_cap),
+    )
+    game_config.reduced_simulations = _coerce_positive_int(
+        "mcts.reduced_simulations",
+        int(mcts.get("reduced_simulations", game_config.reduced_simulations)),
+    )
+    game_config.full_playout_probability = _coerce_numeric(
+        "mcts.full_playout_probability",
+        float(mcts.get("full_playout_probability", game_config.full_playout_probability)),
+    )
     game_config.c_puct = _coerce_positive_float(
         "mcts.c_puct",
         float(mcts.get("c_puct", game_config.c_puct)),
@@ -423,6 +502,18 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
     game_config.dirichlet_epsilon = _coerce_numeric(
         "mcts.dirichlet_epsilon",
         float(mcts.get("dirichlet_epsilon", game_config.dirichlet_epsilon)),
+    )
+    game_config.randomize_dirichlet_epsilon = _coerce_bool(
+        "mcts.randomize_dirichlet_epsilon",
+        mcts.get("randomize_dirichlet_epsilon", game_config.randomize_dirichlet_epsilon),
+    )
+    game_config.dirichlet_epsilon_min = _coerce_numeric(
+        "mcts.dirichlet_epsilon_min",
+        float(mcts.get("dirichlet_epsilon_min", game_config.dirichlet_epsilon_min)),
+    )
+    game_config.dirichlet_epsilon_max = _coerce_numeric(
+        "mcts.dirichlet_epsilon_max",
+        float(mcts.get("dirichlet_epsilon_max", game_config.dirichlet_epsilon_max)),
     )
     if "dirichlet_alpha" in mcts:
         game_config.dirichlet_alpha_override = _coerce_positive_float(
@@ -456,6 +547,29 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
 
     if game_config.resign_disable_fraction < 0.0 or game_config.resign_disable_fraction > 1.0:
         raise ValueError("mcts.resign_disable_fraction must be in [0, 1]")
+    if game_config.enable_playout_cap:
+        if game_config.reduced_simulations > game_config.simulations_per_move:
+            raise ValueError("mcts.reduced_simulations must not exceed mcts.simulations_per_move")
+        if (
+            not math.isfinite(game_config.full_playout_probability)
+            or game_config.full_playout_probability < 0.0
+            or game_config.full_playout_probability > 1.0
+        ):
+            raise ValueError("mcts.full_playout_probability must be finite and in [0, 1]")
+    if game_config.randomize_dirichlet_epsilon:
+        if (
+            not math.isfinite(game_config.dirichlet_epsilon_min)
+            or not math.isfinite(game_config.dirichlet_epsilon_max)
+            or game_config.dirichlet_epsilon_min < 0.0
+            or game_config.dirichlet_epsilon_min > 1.0
+            or game_config.dirichlet_epsilon_max < 0.0
+            or game_config.dirichlet_epsilon_max > 1.0
+        ):
+            raise ValueError(
+                "mcts.dirichlet_epsilon_min and mcts.dirichlet_epsilon_max must be finite and in [0, 1]"
+            )
+        if game_config.dirichlet_epsilon_min > game_config.dirichlet_epsilon_max:
+            raise ValueError("mcts.dirichlet_epsilon_min must be <= mcts.dirichlet_epsilon_max")
     return manager_config
 
 
@@ -500,7 +614,22 @@ def build_training_runtime(
         )
 
     cpp = active_dependencies.cpp
-    replay_buffer = _build_replay_buffer(cpp, config)
+    replay_buffer = _build_replay_buffer(cpp, config, game_config)
+
+    if resume_path is not None:
+        from alphazero.utils.checkpoint import load_replay_buffer_state
+
+        rows, cols = game_config.board_shape
+        encoded_state_size = game_config.input_channels * rows * cols
+        loaded = load_replay_buffer_state(
+            replay_buffer,
+            resolved_resume,
+            encoded_state_size=encoded_state_size,
+            policy_size=game_config.action_space_size,
+        )
+        if loaded > 0:
+            print(f"Restored {loaded:,} positions to replay buffer from checkpoint.")
+
     eval_queue_config = _build_eval_queue_config(cpp, config)
     selfplay_manager_config = _build_selfplay_manager_config(cpp, config)
 
@@ -547,6 +676,48 @@ def build_training_runtime(
     run_name = _resolve_run_name(active_dependencies, config, game_config.name)
     logger = active_dependencies.create_metrics_logger(run_name=run_name, config=config)
 
+    # --- Elo evaluator (optional) ---
+    elo_evaluator = None
+    from alphazero.pipeline.evaluation import (
+        EvaluationConfig,
+        create_mcts_match_runner,
+        load_evaluation_config_from_config,
+    )
+
+    try:
+        eval_config = load_evaluation_config_from_config(config)
+    except (TypeError, ValueError):
+        eval_config = EvaluationConfig()
+
+    checkpoint_dir = training_config.checkpoint_dir
+    if checkpoint_dir is not None:
+        eval_config = EvaluationConfig(
+            interval_steps=eval_config.interval_steps,
+            num_games=eval_config.num_games,
+            simulations_per_move=eval_config.simulations_per_move,
+            checkpoint_dir=Path(checkpoint_dir),
+        )
+
+    def _network_factory() -> Any:
+        return _build_model(active_dependencies, config, game_config)
+
+    match_runner = create_mcts_match_runner(
+        game_config=game_config,
+        network_factory=_network_factory,
+        cpp_game_config=_build_cpp_game_config(cpp, game_config.name),
+        device=None,
+        use_mixed_precision=bool(training_config.use_mixed_precision),
+    )
+
+    from alphazero.pipeline.evaluation import PeriodicEloEvaluator
+
+    elo_evaluator = PeriodicEloEvaluator(
+        eval_config,
+        match_runner=match_runner,
+        scalar_logger=logger.log_scalar,
+        start_step=start_step,
+    )
+
     return TrainingRuntime(
         config_path=resolved_config_path,
         config=config,
@@ -561,6 +732,7 @@ def build_training_runtime(
         optimizer=optimizer,
         logger=logger,
         start_step=start_step,
+        elo_evaluator=elo_evaluator,
     )
 
 
@@ -605,6 +777,7 @@ def _maybe_save_final_checkpoint(
         keep_last=int(runtime.training_config.checkpoint_keep_last),
         is_milestone=False,
         export_folded_weights=bool(runtime.training_config.export_folded_checkpoints),
+        game_config=runtime.game_config,
     )
     return Path(saved.checkpoint_path)
 
@@ -616,6 +789,10 @@ def run_training_session(
 ) -> TrainingRunSummary:
     """Execute one training session and ensure graceful finalization."""
 
+    from datetime import datetime, timedelta
+
+    from tqdm import tqdm
+
     active_dependencies = dependencies or load_runtime_dependencies()
 
     latest_step = runtime.start_step
@@ -624,19 +801,72 @@ def run_training_session(
     final_checkpoint_path: Path | None = None
     pipeline_error: BaseException | None = None
 
+    max_steps = int(runtime.training_config.max_steps)
+    start_step = runtime.start_step
+    session_start = datetime.now()
+
+    # Persistent progress bar pinned to the bottom of the terminal.
+    # leave=False ensures the bar is cleared on close (no trailing artifacts).
+    pbar = tqdm(
+        total=max_steps,
+        initial=start_step,
+        unit="step",
+        bar_format=(
+            "{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+            "[{elapsed}<{remaining}, {rate_fmt}]{postfix}"
+        ),
+        desc="Training",
+        dynamic_ncols=True,
+        leave=False,
+        smoothing=0.05,
+    )
+    pbar.set_postfix_str(f" Start {session_start:%H:%M}")
+
+    # Route console summaries through tqdm.write() so the progress bar stays
+    # pinned at the bottom while step logs scroll above it.
+    if runtime.elo_evaluator is not None:
+        runtime.elo_evaluator._console_writer = tqdm.write
+    console_interval = runtime.logger._console_summary_interval_steps
+
+    def _update_bar(step: int) -> None:
+        pbar.n = step
+        elapsed = (datetime.now() - session_start).total_seconds()
+        progress = step - start_step
+        if progress > 0 and elapsed > 0:
+            remaining_steps = max_steps - step
+            remaining_secs = remaining_steps * elapsed / progress
+            end_time = datetime.now() + timedelta(seconds=remaining_secs)
+            pbar.set_postfix_str(
+                f" Start {session_start:%H:%M} | End ~{end_time:%H:%M}"
+            )
+        pbar.refresh()
+
     def games_total_getter() -> int:
         snapshot = runtime.self_play_manager.metrics()
         return int(snapshot.games_completed)
 
+    def _apply_simulation_schedule(step: int) -> None:
+        runtime.self_play_manager.update_simulations_per_move(
+            _scheduled_simulations_per_move(step)
+        )
+
     base_step_logger = runtime.logger.make_training_step_logger(
         games_total_getter=games_total_getter,
-        emit_console=True,
+        emit_console=False,
     )
 
     def step_logger(step: int, metrics: Mapping[str, float]) -> None:
         nonlocal latest_step
         latest_step = max(latest_step, int(step))
+        _apply_simulation_schedule(latest_step)
         base_step_logger(step, metrics)
+        _update_bar(step)
+        if step % console_interval == 0:
+            try:
+                summary = runtime.logger.render_console_summary(step)
+                tqdm.write(summary)
+            except RuntimeError:
+                pass
 
     def cycle_logger(_cycle: int, metrics: Mapping[str, float]) -> None:
         nonlocal latest_step
@@ -645,6 +875,9 @@ def run_training_session(
         runtime.logger.log_selfplay_snapshot(latest_step, runtime.self_play_manager.metrics())
         for tag, value in metrics.items():
             runtime.logger.log_scalar(tag, value, latest_step)
+        _update_bar(latest_step)
+
+    _apply_simulation_schedule(latest_step)
 
     try:
         with _raise_keyboard_interrupt_on_signal():
@@ -661,12 +894,14 @@ def run_training_session(
                 step_logger=step_logger,
                 cycle_logger=cycle_logger,
                 start_step=runtime.start_step,
+                elo_evaluator=runtime.elo_evaluator,
             )
     except KeyboardInterrupt:
         interrupted = True
     except BaseException as exc:  # pragma: no cover - exercised in runtime failure conditions.
         pipeline_error = exc
     finally:
+        pbar.close()
         if pipeline_result is not None:
             latest_step = max(latest_step, int(pipeline_result.final_step))
 

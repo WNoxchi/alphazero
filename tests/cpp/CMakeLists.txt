@@ -26,6 +26,8 @@ if(ALPHAZERO_HAS_GTEST)
         test_mcts.cpp
         test_eval_queue.cpp
         test_replay_buffer.cpp
+        test_compact_replay_buffer.cpp
+        test_replay_compression.cpp
         test_arena.cpp
         test_self_play_game.cpp
         test_self_play_manager.cpp

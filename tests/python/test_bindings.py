@@ -6,12 +6,16 @@ import pathlib
 import sys
 import threading
 import time
+import tempfile
 import types
 import unittest
 from typing import Any
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+PYTHON_SRC = ROOT / "python"
+if str(PYTHON_SRC) not in sys.path:
+    sys.path.insert(0, str(PYTHON_SRC))
 
 
 def _import_bindings() -> tuple[types.ModuleType | None, str]:
@@ -94,6 +98,7 @@ class PythonBindingsTests(unittest.TestCase):
             value_wdl=value_wdl,
             game_id=7,
             move_number=3,
+            training_weight=0.625,
         )
 
         replay_buffer.add_game([position])
@@ -104,6 +109,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(sample.encoded_state_size, len(encoded_state))
         self.assertEqual(sample.policy_size, len(policy))
         self.assertAlmostEqual(sample.value, 1.0)
+        self.assertAlmostEqual(sample.training_weight, 0.625)
         self.assertEqual(sample.game_id, 7)
         self.assertEqual(sample.move_number, 3)
         import numpy.testing as npt
@@ -131,6 +137,9 @@ class PythonBindingsTests(unittest.TestCase):
                 return [0.0, 0.0, 1.0]
             return [0.0, 1.0, 0.0]
 
+        def weight_for(game_id: int, move_number: int) -> float:
+            return 0.5 + ((game_id + move_number) % 4) * 0.125
+
         positions = []
         for game_id, move_number in ((11, 1), (12, 2), (13, 3)):
             signature = float(game_id * 1000 + move_number)
@@ -143,6 +152,7 @@ class PythonBindingsTests(unittest.TestCase):
                     value_wdl=wdl_for(scalar_value),
                     game_id=game_id,
                     move_number=move_number,
+                    training_weight=weight_for(game_id, move_number),
                 )
             )
         replay_buffer.add_game(positions)
@@ -150,7 +160,7 @@ class PythonBindingsTests(unittest.TestCase):
         import numpy as np
         import numpy.testing as npt
 
-        states, policies, scalar_values = replay_buffer.sample_batch(
+        states, policies, scalar_values, scalar_weights = replay_buffer.sample_batch(
             batch_size=8,
             encoded_state_size=4,
             policy_size=3,
@@ -162,6 +172,8 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(states.dtype, np.float32)
         self.assertEqual(policies.dtype, np.float32)
         self.assertEqual(scalar_values.dtype, np.float32)
+        self.assertEqual(scalar_weights.shape, (8,))
+        self.assertEqual(scalar_weights.dtype, np.float32)
 
         for row in range(8):
             game_id = int(round(float(policies[row, 1])))
@@ -171,8 +183,9 @@ class PythonBindingsTests(unittest.TestCase):
             self.assertAlmostEqual(float(states[row, 1]), float(move_number))
             self.assertAlmostEqual(float(policies[row, 0]), expected_signature + 0.5)
             self.assertAlmostEqual(float(scalar_values[row, 0]), scalar_for(game_id, move_number))
+            self.assertAlmostEqual(float(scalar_weights[row]), weight_for(game_id, move_number))
 
-        _, wdl_policies, wdl_values = replay_buffer.sample_batch(
+        _, wdl_policies, wdl_values, wdl_weights = replay_buffer.sample_batch(
             batch_size=8,
             encoded_state_size=4,
             policy_size=3,
@@ -180,11 +193,200 @@ class PythonBindingsTests(unittest.TestCase):
         )
         self.assertEqual(wdl_policies.shape, (8, 3))
         self.assertEqual(wdl_values.shape, (8, 3))
+        self.assertEqual(wdl_weights.shape, (8,))
         for row in range(8):
             game_id = int(round(float(wdl_policies[row, 1])))
             move_number = int(round(float(wdl_policies[row, 2])))
             expected = wdl_for(scalar_for(game_id, move_number))
             npt.assert_allclose(wdl_values[row], expected, rtol=1e-6)
+            self.assertAlmostEqual(float(wdl_weights[row]), weight_for(game_id, move_number))
+
+    def test_compact_replay_buffer_binding_matches_dense_buffer_contract(self) -> None:
+        """Validates that Python can drive the compact buffer with the same add/sample/export/import API surface."""
+        bindings = _require_bindings()
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=4321,
+        )
+
+        import numpy.testing as npt
+
+        binary_plane = [1.0 if (square % 2) == 0 else 0.0 for square in range(64)]
+        float_plane = [0.25] * 64
+        encoded_state = binary_plane + float_plane
+        policy = [0.7, 0.0, 0.0, 0.3, 0.0]
+        value_wdl = [1.0, 0.0, 0.0]
+        position = bindings.ReplayPosition.make(
+            encoded_state=encoded_state,
+            policy=policy,
+            value=1.0,
+            value_wdl=value_wdl,
+            game_id=77,
+            move_number=9,
+        )
+        compact_buffer.add_game([position])
+
+        sampled = compact_buffer.sample(1)
+        self.assertEqual(len(sampled), 1)
+        self.assertEqual(sampled[0].game_id, 77)
+        self.assertEqual(sampled[0].move_number, 9)
+
+        states, policies, values_wdl, weights = compact_buffer.sample_batch(
+            batch_size=1,
+            encoded_state_size=128,
+            policy_size=5,
+            value_dim=3,
+        )
+        npt.assert_allclose(states[0, :64], binary_plane, rtol=1e-6)
+        expected_quantized_float = round(float_plane[0] * 255.0) / 255.0
+        npt.assert_allclose(states[0, 64:], [expected_quantized_float] * 64, rtol=1e-6, atol=1e-6)
+        self.assertAlmostEqual(float(policies[0, 0]), 0.7, places=3)
+        self.assertAlmostEqual(float(policies[0, 3]), 0.3, places=3)
+        npt.assert_allclose(values_wdl[0], value_wdl, rtol=1e-6)
+        npt.assert_allclose(weights, [1.0], rtol=1e-6)
+
+        exported = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
+        restored = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=9876,
+        )
+        restored.import_buffer(*exported, encoded_state_size=128, policy_size=5)
+        self.assertEqual(restored.size(), 1)
+        restored_sample = restored.sample(1)[0]
+        self.assertEqual(restored_sample.game_id, 77)
+        self.assertEqual(restored_sample.move_number, 9)
+
+    def test_compact_replay_buffer_binding_exposes_recency_sampling_controls(self) -> None:
+        """WHY: Python training entrypoints must be able to select recency-weighted replay sampling when configured."""
+        bindings = _require_bindings()
+        self.assertTrue(hasattr(bindings, "ReplaySamplingStrategy"))
+        strategy = bindings.ReplaySamplingStrategy.RECENCY_WEIGHTED
+
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=16,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=2026,
+            sampling_strategy=strategy,
+            recency_weight_lambda=2.0,
+        )
+
+        binary_plane = [1.0 if (square % 2) == 0 else 0.0 for square in range(64)]
+        float_plane = [0.5] * 64
+        encoded_state = binary_plane + float_plane
+        compact_buffer.add_game(
+            [
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_state,
+                    policy=[1.0, 0.0, 0.0, 0.0, 0.0],
+                    value=1.0,
+                    value_wdl=[1.0, 0.0, 0.0],
+                    game_id=1,
+                    move_number=0,
+                ),
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_state,
+                    policy=[0.0, 1.0, 0.0, 0.0, 0.0],
+                    value=-1.0,
+                    value_wdl=[0.0, 0.0, 1.0],
+                    game_id=2,
+                    move_number=0,
+                ),
+            ]
+        )
+
+        sampled = compact_buffer.sample(4)
+        self.assertEqual(len(sampled), 4)
+        for position in sampled:
+            self.assertIn(position.game_id, {1, 2})
+
+    def test_compact_buffer_loads_dense_replay_checkpoint_without_format_changes(self) -> None:
+        """WHY: dense replay checkpoints must stay loadable after switching training to compact replay storage."""
+        bindings = _require_bindings()
+        from alphazero.utils.checkpoint import load_replay_buffer_state, save_replay_buffer_state
+
+        dense_buffer = bindings.ReplayBuffer(capacity=8, random_seed=1337)
+
+        binary_even = [1.0 if (square % 2) == 0 else 0.0 for square in range(64)]
+        binary_odd = [1.0 if (square % 2) == 1 else 0.0 for square in range(64)]
+        encoded_a = binary_even + ([1.0] * 64)
+        encoded_b = binary_odd + ([0.0] * 64)
+        dense_buffer.add_game(
+            [
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_a,
+                    policy=[0.0, 0.6, 0.0, 0.4, 0.0],
+                    value=1.0,
+                    value_wdl=[1.0, 0.0, 0.0],
+                    game_id=11,
+                    move_number=3,
+                ),
+                bindings.ReplayPosition.make(
+                    encoded_state=encoded_b,
+                    policy=[0.125, 0.0, 0.875, 0.0, 0.0],
+                    value=-1.0,
+                    value_wdl=[0.0, 0.0, 1.0],
+                    game_id=12,
+                    move_number=4,
+                ),
+            ]
+        )
+
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=1,
+            float_plane_indices=[1],
+            full_policy_size=5,
+            random_seed=2024,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = pathlib.Path(temp_dir) / "checkpoint_00000042.pt"
+            checkpoint_path.write_text("placeholder", encoding="utf-8")
+
+            replay_path = save_replay_buffer_state(
+                dense_buffer,
+                checkpoint_path,
+                encoded_state_size=128,
+                policy_size=5,
+            )
+            self.assertIsNotNone(replay_path)
+            assert replay_path is not None
+            self.assertTrue(replay_path.exists())
+
+            loaded = load_replay_buffer_state(
+                compact_buffer,
+                checkpoint_path,
+                encoded_state_size=128,
+                policy_size=5,
+            )
+            self.assertEqual(loaded, 2)
+
+        import numpy.testing as npt
+
+        dense_export = dense_buffer.export_buffer(encoded_state_size=128, policy_size=5)
+        compact_export = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
+
+        dense_states, dense_policies, dense_values_wdl, dense_game_ids, dense_move_numbers = dense_export
+        compact_states, compact_policies, compact_values_wdl, compact_game_ids, compact_move_numbers = compact_export
+
+        npt.assert_allclose(compact_states[:, :64], dense_states[:, :64], rtol=0.0, atol=0.0)
+        npt.assert_allclose(compact_states[:, 64:], dense_states[:, 64:], rtol=0.0, atol=(1.0 / 255.0) + 1e-7)
+        npt.assert_allclose(compact_policies, dense_policies, rtol=0.0, atol=1e-3)
+        npt.assert_allclose(compact_values_wdl, dense_values_wdl, rtol=0.0, atol=0.0)
+        npt.assert_array_equal(compact_game_ids, dense_game_ids)
+        npt.assert_array_equal(compact_move_numbers, dense_move_numbers)
 
     def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
         """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""
@@ -261,6 +463,51 @@ class PythonBindingsTests(unittest.TestCase):
 
         self.assertIn(selected_action, legal_actions)
         self.assertFalse(search.should_resign())
+
+    def test_self_play_game_config_exposes_playout_cap_fields(self) -> None:
+        """Ensures Python can configure playout-cap and Dirichlet-randomization knobs before launching workers."""
+        bindings = _require_bindings()
+        game_config = bindings.SelfPlayGameConfig()
+
+        game_config.enable_playout_cap = True
+        game_config.reduced_simulations = 37
+        game_config.full_playout_probability = 0.2
+        game_config.randomize_dirichlet_epsilon = True
+        game_config.dirichlet_epsilon_min = 0.15
+        game_config.dirichlet_epsilon_max = 0.35
+
+        self.assertTrue(game_config.enable_playout_cap)
+        self.assertEqual(game_config.reduced_simulations, 37)
+        self.assertAlmostEqual(game_config.full_playout_probability, 0.2)
+        self.assertTrue(game_config.randomize_dirichlet_epsilon)
+        self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
+        self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
+
+    def test_self_play_manager_exposes_simulation_budget_update_api(self) -> None:
+        """WHY: train.py must be able to retune self-play simulation budgets at runtime for phase-4 scheduling."""
+        bindings = _require_bindings()
+        go_config = bindings.go_game_config()
+        replay_buffer = bindings.ReplayBuffer(capacity=32, random_seed=123)
+
+        pass_favoring_policy = [-100.0] * go_config.action_space_size
+        pass_favoring_policy[-1] = 100.0
+
+        def evaluator(_state: object) -> dict[str, object]:
+            return {
+                "policy": pass_favoring_policy,
+                "value": 0.0,
+                "policy_is_logits": True,
+            }
+
+        manager_config = bindings.SelfPlayManagerConfig()
+        manager = bindings.SelfPlayManager(go_config, replay_buffer, evaluator, manager_config)
+
+        manager.update_simulations_per_move(5)
+        with self.assertRaisesRegex(
+            ValueError,
+            "SelfPlayManager simulations-per-move update must be greater than zero",
+        ):
+            manager.update_simulations_per_move(0)
 
     def test_eval_queue_processes_requests_with_python_batch_callback(self) -> None:
         """Protects the CPU↔Python batching bridge so each submitter gets the correct per-request result."""

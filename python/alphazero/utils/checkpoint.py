@@ -220,6 +220,82 @@ def find_latest_checkpoint(
     return checkpoints[-1]
 
 
+def replay_buffer_path_for_checkpoint(checkpoint_path: Path) -> Path:
+    """Derive the companion .replay.npz path for a given checkpoint."""
+    return checkpoint_path.with_suffix(".replay.npz")
+
+
+def save_replay_buffer_state(
+    replay_buffer: object,
+    checkpoint_path: str | Path,
+    *,
+    encoded_state_size: int,
+    policy_size: int,
+) -> Path | None:
+    """Save replay buffer contents as a companion .replay.npz alongside a checkpoint.
+
+    Returns the path written, or None if the buffer is empty or lacks export_buffer.
+    """
+    import numpy as np
+
+    export_fn = getattr(replay_buffer, "export_buffer", None)
+    if not callable(export_fn):
+        return None
+    buf_size = replay_buffer.size()
+    if buf_size == 0:
+        return None
+
+    states, policies, values_wdl, game_ids, move_numbers = export_fn(
+        encoded_state_size, policy_size,
+    )
+    replay_path = replay_buffer_path_for_checkpoint(Path(checkpoint_path))
+    np.savez(
+        replay_path,
+        states=states,
+        policies=policies,
+        values_wdl=values_wdl,
+        game_ids=game_ids,
+        move_numbers=move_numbers,
+        encoded_state_size=np.array(encoded_state_size, dtype=np.int64),
+        policy_size=np.array(policy_size, dtype=np.int64),
+    )
+    return replay_path
+
+
+def load_replay_buffer_state(
+    replay_buffer: object,
+    checkpoint_path: str | Path,
+    *,
+    encoded_state_size: int,
+    policy_size: int,
+) -> int:
+    """Load replay buffer state from a companion .replay.npz file.
+
+    Returns the number of positions loaded, or 0 if the file doesn't exist.
+    """
+    import numpy as np
+
+    replay_path = replay_buffer_path_for_checkpoint(Path(checkpoint_path))
+    if not replay_path.exists():
+        return 0
+
+    import_fn = getattr(replay_buffer, "import_buffer", None)
+    if not callable(import_fn):
+        return 0
+
+    data = np.load(replay_path)
+    import_fn(
+        data["states"],
+        data["policies"],
+        data["values_wdl"],
+        data["game_ids"],
+        data["move_numbers"],
+        encoded_state_size,
+        policy_size,
+    )
+    return int(data["states"].shape[0])
+
+
 def _prune_rolling_checkpoints(checkpoint_dir: Path, *, keep_last: int) -> None:
     regular_checkpoints = list(
         list_checkpoints(checkpoint_dir, include_milestones=False)
@@ -238,6 +314,9 @@ def _prune_rolling_checkpoints(checkpoint_dir: Path, *, keep_last: int) -> None:
         folded = checkpoint_dir / f"checkpoint_{step:08d}_folded.pt"
         if folded.exists():
             folded.unlink()
+        replay = checkpoint_dir / f"checkpoint_{step:08d}.replay.npz"
+        if replay.exists():
+            replay.unlink()
 
 
 def save_checkpoint(
@@ -390,7 +469,10 @@ __all__ = [
     "list_checkpoints",
     "load_checkpoint",
     "load_latest_checkpoint",
+    "load_replay_buffer_state",
     "normalize_lr_schedule_entries",
     "normalize_replay_buffer_metadata",
+    "replay_buffer_path_for_checkpoint",
     "save_checkpoint",
+    "save_replay_buffer_state",
 ]

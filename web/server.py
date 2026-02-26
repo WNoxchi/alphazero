@@ -33,12 +33,6 @@ _engine: ChessEngine | None = None
 _model_manager: ModelManager | None = None
 
 
-def get_engine() -> ChessEngine:
-    if _engine is None:
-        raise RuntimeError("Engine not initialized")
-    return _engine
-
-
 @app.get("/")
 async def index():
     return FileResponse(STATIC_DIR / "index.html")
@@ -72,12 +66,43 @@ async def list_models():
 @app.websocket("/ws/chess")
 async def chess_ws(websocket: WebSocket):
     await websocket.accept()
-    engine = get_engine()
     loop = asyncio.get_running_loop()
 
-    # Send initial board state
-    state = engine.reset()
-    await websocket.send_json({"type": "game_state", **state})
+    # Per-connection engine state
+    engine: ChessEngine | None = _engine  # fallback to global if --model was used
+
+    async def _ensure_engine(msg: dict) -> ChessEngine | None:
+        """Load or reuse an engine based on the model field in the message."""
+        nonlocal engine
+        model_name = msg.get("model")
+
+        if model_name and _model_manager is not None:
+            # Need a different model than current engine?
+            if engine is None or engine.model_name != model_name:
+                await websocket.send_json({"type": "loading"})
+                try:
+                    runtime = await loop.run_in_executor(
+                        None, _model_manager.get_runtime, model_name,
+                    )
+                    engine = ChessEngine.from_runtime(
+                        runtime, model_name=model_name,
+                    )
+                except Exception as exc:
+                    await websocket.send_json(
+                        {"type": "error", "message": f"Failed to load model: {exc}"}
+                    )
+                    return None
+        elif engine is None:
+            await websocket.send_json(
+                {"type": "error", "message": "No model loaded. Select a model to start."}
+            )
+            return None
+        return engine
+
+    # Send initial board state if a global engine is available
+    if engine is not None:
+        state = engine.reset()
+        await websocket.send_json({"type": "game_state", **state})
 
     try:
         while True:
@@ -91,6 +116,9 @@ async def chess_ws(websocket: WebSocket):
             msg_type = msg.get("type")
 
             if msg_type == "move":
+                if engine is None:
+                    await websocket.send_json({"type": "error", "message": "No model loaded"})
+                    continue
                 uci = msg.get("uci", "")
                 try:
                     state = engine.play_human_move(uci)
@@ -107,14 +135,20 @@ async def chess_ws(websocket: WebSocket):
                     await websocket.send_json({"type": "ai_move", **ai_state})
 
             elif msg_type == "new_game":
-                state = engine.reset()
+                eng = await _ensure_engine(msg)
+                if eng is None:
+                    continue
+                state = eng.reset()
                 await websocket.send_json({"type": "game_state", **state})
 
             elif msg_type == "new_game_as_black":
-                state = engine.reset()
+                eng = await _ensure_engine(msg)
+                if eng is None:
+                    continue
+                state = eng.reset()
                 # AI plays first move as white
                 await websocket.send_json({"type": "thinking"})
-                ai_state = await loop.run_in_executor(None, engine.get_ai_move)
+                ai_state = await loop.run_in_executor(None, eng.get_ai_move)
                 await websocket.send_json({"type": "game_state", **ai_state})
 
             elif msg_type == "resign":
@@ -127,10 +161,16 @@ async def chess_ws(websocket: WebSocket):
                 })
 
             elif msg_type == "undo":
+                if engine is None:
+                    await websocket.send_json({"type": "error", "message": "No model loaded"})
+                    continue
                 state = engine.undo()
                 await websocket.send_json({"type": "game_state", **state})
 
             elif msg_type == "pgn":
+                if engine is None:
+                    await websocket.send_json({"type": "error", "message": "No model loaded"})
+                    continue
                 pgn = engine.get_pgn()
                 await websocket.send_json({"type": "pgn", "pgn": pgn})
 
@@ -270,7 +310,7 @@ async def watch_ws(websocket: WebSocket):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AlphaZero Chess Web UI")
-    parser.add_argument("--model", required=True, help="Path to checkpoint (.pt)")
+    parser.add_argument("--model", default=None, help="Path to checkpoint (.pt)")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
     parser.add_argument("--simulations", type=int, default=800, help="MCTS simulations per move")
@@ -282,7 +322,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-dir",
         default=None,
-        help="Directory with checkpoints for watch mode model selection",
+        help="Directory with checkpoints for model selection dropdown",
     )
     return parser.parse_args(argv)
 
@@ -291,32 +331,37 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    logger.info("Loading AlphaZero model from %s ...", args.model)
 
-    # Auto-detect architecture from checkpoint if not explicitly provided
-    if args.num_blocks is None or args.num_filters is None or args.se_reduction is None:
-        arch = infer_architecture(args.model)
-        if args.num_blocks is None:
-            args.num_blocks = arch["num_blocks"]
-        if args.num_filters is None:
-            args.num_filters = arch["num_filters"]
-        if args.se_reduction is None:
-            args.se_reduction = arch["se_reduction"]
-        logger.info(
-            "Auto-detected architecture: %d blocks, %d filters, SE reduction %d",
-            args.num_blocks, args.num_filters, args.se_reduction,
-        )
+    if not args.model and not args.checkpoint_dir:
+        raise SystemExit("Error: provide --model and/or --checkpoint-dir")
 
     global _engine, _model_manager
-    _engine = ChessEngine(
-        model_path=args.model,
-        simulations=args.simulations,
-        num_blocks=args.num_blocks,
-        num_filters=args.num_filters,
-        se_reduction=args.se_reduction,
-        device=args.device,
-        fp32=args.fp32,
-    )
+
+    # Auto-detect architecture from checkpoint if not explicitly provided
+    if args.model:
+        logger.info("Loading AlphaZero model from %s ...", args.model)
+        if args.num_blocks is None or args.num_filters is None or args.se_reduction is None:
+            arch = infer_architecture(args.model)
+            if args.num_blocks is None:
+                args.num_blocks = arch["num_blocks"]
+            if args.num_filters is None:
+                args.num_filters = arch["num_filters"]
+            if args.se_reduction is None:
+                args.se_reduction = arch["se_reduction"]
+            logger.info(
+                "Auto-detected architecture: %d blocks, %d filters, SE reduction %d",
+                args.num_blocks, args.num_filters, args.se_reduction,
+            )
+
+        _engine = ChessEngine(
+            model_path=args.model,
+            simulations=args.simulations,
+            num_blocks=args.num_blocks,
+            num_filters=args.num_filters,
+            se_reduction=args.se_reduction,
+            device=args.device,
+            fp32=args.fp32,
+        )
 
     if args.checkpoint_dir:
         _model_manager = ModelManager(
@@ -328,7 +373,7 @@ def main(argv: list[str] | None = None) -> None:
             device=args.device,
             fp32=args.fp32,
         )
-        logger.info("Watch mode enabled with checkpoint dir: %s", args.checkpoint_dir)
+        logger.info("Model selection enabled with checkpoint dir: %s", args.checkpoint_dir)
 
     logger.info("Engine ready. Starting server on %s:%d", args.host, args.port)
 

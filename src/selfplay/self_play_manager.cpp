@@ -1,5 +1,7 @@
 #include "selfplay/self_play_manager.h"
 
+#include <cmath>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -18,12 +20,28 @@ SelfPlayManager::SelfPlayManager(
     EvaluateFn evaluator,
     SelfPlayManagerConfig config,
     CompletionCallback completion_callback)
+    : SelfPlayManager(
+          game_config,
+          [&replay_buffer](const std::vector<ReplayPosition>& positions) {
+              replay_buffer.add_game(positions);
+          },
+          std::move(evaluator),
+          config,
+          std::move(completion_callback)) {}
+
+SelfPlayManager::SelfPlayManager(
+    const GameConfig& game_config,
+    AddGameFn add_game_fn,
+    EvaluateFn evaluator,
+    SelfPlayManagerConfig config,
+    CompletionCallback completion_callback)
     : game_config_(game_config),
-      replay_buffer_(replay_buffer),
+      add_game_fn_(std::move(add_game_fn)),
       evaluator_(std::move(evaluator)),
       config_(config),
       completion_callback_(std::move(completion_callback)),
-      next_game_id_(config_.initial_game_id) {
+      next_game_id_(config_.initial_game_id),
+      simulations_per_move_(config_.game_config.simulations_per_move) {
     if (!evaluator_) {
         throw std::invalid_argument("SelfPlayManager requires a non-null evaluator callback");
     }
@@ -35,6 +53,22 @@ SelfPlayManager::SelfPlayManager(
     }
     if (config_.game_config.simulations_per_move == 0U) {
         throw std::invalid_argument("SelfPlayManager simulations-per-move must be greater than zero");
+    }
+    if (config_.game_config.randomize_dirichlet_epsilon) {
+        const float epsilon_min = config_.game_config.dirichlet_epsilon_min;
+        const float epsilon_max = config_.game_config.dirichlet_epsilon_max;
+        if (!std::isfinite(epsilon_min) || !std::isfinite(epsilon_max)) {
+            throw std::invalid_argument(
+                "SelfPlayManager dirichlet epsilon randomization bounds must be finite");
+        }
+        if (epsilon_min < 0.0F || epsilon_min > 1.0F || epsilon_max < 0.0F || epsilon_max > 1.0F) {
+            throw std::invalid_argument(
+                "SelfPlayManager dirichlet epsilon randomization bounds must be in [0, 1]");
+        }
+        if (epsilon_min > epsilon_max) {
+            throw std::invalid_argument(
+                "SelfPlayManager dirichlet_epsilon_min must not exceed dirichlet_epsilon_max");
+        }
     }
 }
 
@@ -114,6 +148,13 @@ void SelfPlayManager::stop() {
     }
 }
 
+void SelfPlayManager::update_simulations_per_move(const std::size_t new_sims) {
+    if (new_sims == 0U) {
+        throw std::invalid_argument("SelfPlayManager simulations-per-move update must be greater than zero");
+    }
+    simulations_per_move_.store(new_sims, std::memory_order_release);
+}
+
 bool SelfPlayManager::is_running() const noexcept { return running_.load(std::memory_order_acquire); }
 
 SelfPlayMetricsSnapshot SelfPlayManager::metrics() const {
@@ -179,7 +220,7 @@ void SelfPlayManager::worker_loop(const std::size_t slot_index, SelfPlayGameConf
     active_slots_.fetch_add(1U, std::memory_order_acq_rel);
 
     try {
-        SelfPlayGame game(game_config_, replay_buffer_, evaluator_, slot_game_config);
+        std::mt19937_64 slot_rng(slot_game_config.random_seed);
         std::size_t games_played_in_slot = 0U;
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -187,6 +228,17 @@ void SelfPlayManager::worker_loop(const std::size_t slot_index, SelfPlayGameConf
                 break;
             }
 
+            SelfPlayGameConfig game_config = slot_game_config;
+            game_config.simulations_per_move = simulations_per_move_.load(std::memory_order_acquire);
+            game_config.random_seed = slot_rng();
+            if (game_config.randomize_dirichlet_epsilon) {
+                std::uniform_real_distribution<float> epsilon_distribution(
+                    game_config.dirichlet_epsilon_min,
+                    game_config.dirichlet_epsilon_max);
+                game_config.dirichlet_epsilon = epsilon_distribution(slot_rng);
+            }
+
+            SelfPlayGame game(game_config_, add_game_fn_, evaluator_, game_config);
             const std::uint32_t game_id = next_game_id_.fetch_add(1U, std::memory_order_acq_rel);
             const SelfPlayGameResult result = game.play(game_id);
             record_completed_game(slot_index, result);
@@ -221,7 +273,7 @@ void SelfPlayManager::record_completed_game(const std::size_t slot_index, const 
         ++games_completed_;
         replay_positions_written_ += result.replay_positions_written;
         total_moves_ += result.move_count;
-        total_simulations_ += result.simulation_batches_executed * config_.game_config.simulations_per_move;
+        total_simulations_ += result.total_simulations;
         cumulative_game_length_ += static_cast<double>(result.move_count);
         cumulative_outcome_player0_ += static_cast<double>(result.outcome_player0);
 

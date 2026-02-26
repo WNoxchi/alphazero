@@ -62,11 +62,19 @@ struct SelfPlayMetricsSnapshot {
 class SelfPlayManager {
 public:
     using EvaluateFn = SelfPlayGame::EvaluateFn;
+    using AddGameFn = SelfPlayGame::AddGameFn;
     using CompletionCallback = std::function<void(std::size_t slot_index, const SelfPlayGameResult& result)>;
 
     SelfPlayManager(
         const GameConfig& game_config,
         ReplayBuffer& replay_buffer,
+        EvaluateFn evaluator,
+        SelfPlayManagerConfig config = {},
+        CompletionCallback completion_callback = {});
+
+    SelfPlayManager(
+        const GameConfig& game_config,
+        AddGameFn add_game_fn,
         EvaluateFn evaluator,
         SelfPlayManagerConfig config = {},
         CompletionCallback completion_callback = {});
@@ -79,6 +87,7 @@ public:
 
     void start();
     void stop();
+    void update_simulations_per_move(std::size_t new_sims);
 
     [[nodiscard]] bool is_running() const noexcept;
     [[nodiscard]] SelfPlayMetricsSnapshot metrics() const;
@@ -93,7 +102,7 @@ private:
     [[nodiscard]] std::chrono::steady_clock::duration elapsed_time() const;
 
     const GameConfig& game_config_;
-    ReplayBuffer& replay_buffer_;
+    AddGameFn add_game_fn_;
     EvaluateFn evaluator_;
     SelfPlayManagerConfig config_;
     CompletionCallback completion_callback_;
@@ -104,6 +113,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::size_t> active_slots_{0U};
     std::atomic<std::uint32_t> next_game_id_{1U};
+    std::atomic<std::size_t> simulations_per_move_{0U};
     std::chrono::steady_clock::time_point start_time_{};
     std::chrono::steady_clock::time_point end_time_{};
     bool has_start_time_ = false;

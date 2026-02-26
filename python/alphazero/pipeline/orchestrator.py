@@ -464,6 +464,7 @@ def run_parallel_pipeline(
     cycle_logger: CycleLogger | None = None,
     start_step: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
+    elo_evaluator: object | None = None,
 ) -> PipelineRunResult:
     """Run the full self-play/training pipeline with concurrent inference and training workers."""
 
@@ -580,7 +581,7 @@ def run_parallel_pipeline(
                 continue
 
             try:
-                states, target_policy, target_value = sample_replay_batch_tensors(
+                states, target_policy, target_value, sample_weights = sample_replay_batch_tensors(
                     replay_buffer,
                     game_config,
                     batch_size=training_config.batch_size,
@@ -590,22 +591,28 @@ def run_parallel_pipeline(
                     states, target_policy = apply_random_go_symmetry(states, target_policy)
 
                 step_start = time.perf_counter()
+                next_step = step_to_train + 1
+                is_log_step = (
+                    step_logger is not None
+                    and next_step % training_config.log_interval == 0
+                )
                 step_metrics = train_one_step(
                     model,
                     active_optimizer,
                     states=states,
                     target_policy=target_policy,
                     target_value=target_value,
+                    sample_weights=sample_weights,
                     game_config=game_config,
                     lr_schedule=active_schedule,
                     global_step=step_to_train,
                     l2_reg=float(training_config.l2_reg),
                     scaler=scaler,
                     use_mixed_precision=bool(training_config.use_mixed_precision),
+                    compute_gradient_stats=is_log_step,
                 )
                 training_step_seconds = max(time.perf_counter() - step_start, 0.0)
 
-                next_step = step_to_train + 1
                 updated_metrics = TrainingStepMetrics(
                     step=next_step,
                     loss_total=step_metrics.loss_total,
@@ -634,6 +641,7 @@ def run_parallel_pipeline(
                             keep_last=int(training_config.checkpoint_keep_last),
                             is_milestone=False,
                             export_folded_weights=bool(training_config.export_folded_checkpoints),
+                            game_config=game_config,
                         )
                     )
                     if next_step % training_config.milestone_interval == 0:
@@ -648,7 +656,13 @@ def run_parallel_pipeline(
                                 keep_last=int(training_config.checkpoint_keep_last),
                                 is_milestone=True,
                                 export_folded_weights=bool(training_config.export_folded_checkpoints),
+                                game_config=game_config,
                             )
+                        )
+
+                    if elo_evaluator is not None:
+                        elo_evaluator.maybe_evaluate(
+                            step=next_step, current_network=model,
                         )
 
                 with progress_condition:
@@ -857,6 +871,7 @@ def run_interleaved_pipeline(
     cycle_logger: CycleLogger | None = None,
     start_step: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
+    elo_evaluator: object | None = None,
 ) -> PipelineRunResult:
     """Backward-compatible wrapper for the parallel pipeline runtime."""
 
@@ -874,6 +889,7 @@ def run_interleaved_pipeline(
         cycle_logger=cycle_logger,
         start_step=start_step,
         sleep_fn=sleep_fn,
+        elo_evaluator=elo_evaluator,
     )
 
 

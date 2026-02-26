@@ -29,6 +29,7 @@
 #include "mcts/arena_node_store.h"
 #include "mcts/eval_queue.h"
 #include "mcts/mcts_search.h"
+#include "selfplay/compact_replay_buffer.h"
 #include "selfplay/replay_buffer.h"
 #include "selfplay/self_play_game.h"
 #include "selfplay/self_play_manager.h"
@@ -43,7 +44,9 @@ using alphazero::chess::ChessState;
 using alphazero::go::GoState;
 using alphazero::mcts::EvaluationResult;
 using alphazero::mcts::EvalResult;
+using alphazero::selfplay::CompactReplayBuffer;
 using alphazero::selfplay::ReplayPosition;
+using alphazero::selfplay::SamplingStrategy;
 using alphazero::selfplay::SampledBatch;
 using alphazero::selfplay::SelfPlayManager;
 
@@ -83,7 +86,8 @@ using alphazero::selfplay::SelfPlayManager;
     const float value,
     const py::handle& value_wdl,
     const std::uint32_t game_id,
-    const std::uint16_t move_number) {
+    const std::uint16_t move_number,
+    const float training_weight) {
     const std::vector<float> encoded_state_values = cast_float_sequence(encoded_state, "encoded_state");
     const std::vector<float> policy_values = cast_float_sequence(policy, "policy");
     const std::array<float, ReplayPosition::kWdlSize> wdl = cast_wdl_sequence(value_wdl);
@@ -94,7 +98,8 @@ using alphazero::selfplay::SelfPlayManager;
         value,
         wdl,
         game_id,
-        move_number);
+        move_number,
+        training_weight);
 }
 
 [[nodiscard]] py::array_t<float> replay_position_encoded_state_view(const ReplayPosition& position) {
@@ -137,8 +142,22 @@ using alphazero::selfplay::SelfPlayManager;
     return py::array_t<float>(shape, strides, storage.data(), owner);
 }
 
-[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(
-    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+[[nodiscard]] py::array_t<float> sampled_batch_vector_view(
+    const std::shared_ptr<SampledBatch>& batch,
+    const std::vector<float>& storage,
+    const std::size_t size) {
+    py::capsule owner(
+        new std::shared_ptr<SampledBatch>(batch),
+        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    const std::array<py::ssize_t, 1> shape{to_py_ssize(size, "size")};
+    const std::array<py::ssize_t, 1> strides{
+        static_cast<py::ssize_t>(sizeof(float))};
+    return py::array_t<float>(shape, strides, storage.data(), owner);
+}
+
+template <typename ReplayBufferType>
+[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy_impl(
+    const ReplayBufferType& replay_buffer,
     const std::size_t batch_size,
     const std::size_t encoded_state_size,
     const std::size_t policy_size,
@@ -152,7 +171,163 @@ using alphazero::selfplay::SelfPlayManager;
     return py::make_tuple(
         sampled_batch_array_view(owned_batch, owned_batch->states, owned_batch->batch_size, encoded_state_size),
         sampled_batch_array_view(owned_batch, owned_batch->policies, owned_batch->batch_size, policy_size),
-        sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim));
+        sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim),
+        sampled_batch_vector_view(owned_batch, owned_batch->weights, owned_batch->batch_size));
+}
+
+[[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(
+    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const std::size_t batch_size,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size,
+    const std::size_t value_dim) {
+    return replay_buffer_sample_batch_numpy_impl(
+        replay_buffer,
+        batch_size,
+        encoded_state_size,
+        policy_size,
+        value_dim);
+}
+
+[[nodiscard]] py::tuple compact_replay_buffer_sample_batch_numpy(
+    const CompactReplayBuffer& replay_buffer,
+    const std::size_t batch_size,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size,
+    const std::size_t value_dim) {
+    return replay_buffer_sample_batch_numpy_impl(
+        replay_buffer,
+        batch_size,
+        encoded_state_size,
+        policy_size,
+        value_dim);
+}
+
+template <typename ReplayBufferType>
+[[nodiscard]] py::tuple replay_buffer_export_numpy_impl(
+    const ReplayBufferType& replay_buffer,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    const std::size_t n = replay_buffer.size();
+    if (n == 0U) {
+        return py::make_tuple(
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(encoded_state_size)}),
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(policy_size)}),
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(ReplayPosition::kWdlSize)}),
+            py::array_t<std::uint32_t>(std::vector<py::ssize_t>{py::ssize_t(0)}),
+            py::array_t<std::uint16_t>(std::vector<py::ssize_t>{py::ssize_t(0)}));
+    }
+
+    py::array_t<float> states({to_py_ssize(n, "rows"), to_py_ssize(encoded_state_size, "encoded_state_size")});
+    py::array_t<float> policies({to_py_ssize(n, "rows"), to_py_ssize(policy_size, "policy_size")});
+    py::array_t<float> values_wdl({to_py_ssize(n, "rows"), to_py_ssize(ReplayPosition::kWdlSize, "wdl")});
+    py::array_t<std::uint32_t> game_ids({to_py_ssize(n, "rows")});
+    py::array_t<std::uint16_t> move_numbers({to_py_ssize(n, "rows")});
+
+    std::size_t exported;
+    {
+        py::gil_scoped_release release_gil;
+        exported = replay_buffer.export_positions(
+            states.mutable_data(), policies.mutable_data(), values_wdl.mutable_data(),
+            game_ids.mutable_data(), move_numbers.mutable_data(),
+            encoded_state_size, policy_size);
+    }
+    // Trim if fewer positions were exported than expected (shouldn't happen, but be safe).
+    if (exported < n) {
+        auto sl = py::slice(0, static_cast<py::ssize_t>(exported), 1);
+        auto sl2d = py::make_tuple(sl, py::ellipsis());
+        states = py::array_t<float>(states[sl2d]);
+        policies = py::array_t<float>(policies[sl2d]);
+        values_wdl = py::array_t<float>(values_wdl[sl2d]);
+        game_ids = py::array_t<std::uint32_t>(game_ids[sl]);
+        move_numbers = py::array_t<std::uint16_t>(move_numbers[sl]);
+    }
+    return py::make_tuple(states, policies, values_wdl, game_ids, move_numbers);
+}
+
+[[nodiscard]] py::tuple replay_buffer_export_numpy(
+    const alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    return replay_buffer_export_numpy_impl(replay_buffer, encoded_state_size, policy_size);
+}
+
+[[nodiscard]] py::tuple compact_replay_buffer_export_numpy(
+    const CompactReplayBuffer& replay_buffer,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    return replay_buffer_export_numpy_impl(replay_buffer, encoded_state_size, policy_size);
+}
+
+template <typename ReplayBufferType>
+void replay_buffer_import_numpy_impl(
+    ReplayBufferType& replay_buffer,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
+    const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
+    const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    if (states.ndim() != 2 || policies.ndim() != 2 || values_wdl.ndim() != 2) {
+        throw std::invalid_argument("import_buffer: states, policies, values_wdl must be 2D arrays");
+    }
+    if (game_ids.ndim() != 1 || move_numbers.ndim() != 1) {
+        throw std::invalid_argument("import_buffer: game_ids, move_numbers must be 1D arrays");
+    }
+    const auto n = static_cast<std::size_t>(states.shape(0));
+    if (static_cast<std::size_t>(policies.shape(0)) != n ||
+        static_cast<std::size_t>(values_wdl.shape(0)) != n ||
+        static_cast<std::size_t>(game_ids.shape(0)) != n ||
+        static_cast<std::size_t>(move_numbers.shape(0)) != n) {
+        throw std::invalid_argument("import_buffer: all arrays must have the same first dimension");
+    }
+
+    py::gil_scoped_release release_gil;
+    replay_buffer.import_positions(
+        states.data(), policies.data(), values_wdl.data(),
+        game_ids.data(), move_numbers.data(),
+        n, encoded_state_size, policy_size);
+}
+
+void replay_buffer_import_numpy(
+    alphazero::selfplay::ReplayBuffer& replay_buffer,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
+    const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
+    const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    replay_buffer_import_numpy_impl(
+        replay_buffer,
+        states,
+        policies,
+        values_wdl,
+        game_ids,
+        move_numbers,
+        encoded_state_size,
+        policy_size);
+}
+
+void compact_replay_buffer_import_numpy(
+    CompactReplayBuffer& replay_buffer,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& states,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& policies,
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& values_wdl,
+    const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
+    const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
+    const std::size_t encoded_state_size,
+    const std::size_t policy_size) {
+    replay_buffer_import_numpy_impl(
+        replay_buffer,
+        states,
+        policies,
+        values_wdl,
+        game_ids,
+        move_numbers,
+        encoded_state_size,
+        policy_size);
 }
 
 template <typename StateType>
@@ -928,10 +1103,12 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("value"),
             py::arg("value_wdl"),
             py::arg("game_id"),
-            py::arg("move_number"))
+            py::arg("move_number"),
+            py::arg("training_weight") = 1.0F)
         .def_property_readonly("encoded_state", &replay_position_encoded_state_view)
         .def_property_readonly("policy", &replay_position_policy_view)
         .def_readwrite("value", &ReplayPosition::value)
+        .def_readwrite("training_weight", &ReplayPosition::training_weight)
         .def_property_readonly("value_wdl", &replay_position_wdl_view)
         .def_readwrite("game_id", &ReplayPosition::game_id)
         .def_readwrite("move_number", &ReplayPosition::move_number)
@@ -958,7 +1135,74 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("value_dim"))
         .def("size", &alphazero::selfplay::ReplayBuffer::size)
         .def("capacity", &alphazero::selfplay::ReplayBuffer::capacity)
-        .def("write_head", &alphazero::selfplay::ReplayBuffer::write_head);
+        .def("write_head", &alphazero::selfplay::ReplayBuffer::write_head)
+        .def(
+            "export_buffer",
+            &replay_buffer_export_numpy,
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"))
+        .def(
+            "import_buffer",
+            &replay_buffer_import_numpy,
+            py::arg("states"),
+            py::arg("policies"),
+            py::arg("values_wdl"),
+            py::arg("game_ids"),
+            py::arg("move_numbers"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"));
+
+    py::enum_<SamplingStrategy>(module, "ReplaySamplingStrategy")
+        .value("UNIFORM", SamplingStrategy::kUniform)
+        .value("RECENCY_WEIGHTED", SamplingStrategy::kRecencyWeighted)
+        .export_values();
+
+    py::class_<CompactReplayBuffer>(module, "CompactReplayBuffer")
+        .def(
+            py::init<
+                std::size_t,
+                std::size_t,
+                std::size_t,
+                std::vector<std::size_t>,
+                std::size_t,
+                std::uint64_t,
+                SamplingStrategy,
+                float>(),
+            py::arg("capacity"),
+            py::arg("num_binary_planes"),
+            py::arg("num_float_planes"),
+            py::arg("float_plane_indices"),
+            py::arg("full_policy_size"),
+            py::arg("random_seed") = 0x9E3779B97F4A7C15ULL,
+            py::arg("sampling_strategy") = SamplingStrategy::kUniform,
+            py::arg("recency_weight_lambda") = 1.0F)
+        .def("add_game", &CompactReplayBuffer::add_game, py::arg("positions"))
+        .def("sample", &CompactReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "sample_batch",
+            &compact_replay_buffer_sample_batch_numpy,
+            py::arg("batch_size"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"),
+            py::arg("value_dim"))
+        .def("size", &CompactReplayBuffer::size)
+        .def("capacity", &CompactReplayBuffer::capacity)
+        .def("write_head", &CompactReplayBuffer::write_head)
+        .def(
+            "export_buffer",
+            &compact_replay_buffer_export_numpy,
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"))
+        .def(
+            "import_buffer",
+            &compact_replay_buffer_import_numpy,
+            py::arg("states"),
+            py::arg("policies"),
+            py::arg("values_wdl"),
+            py::arg("game_ids"),
+            py::arg("move_numbers"),
+            py::arg("encoded_state_size"),
+            py::arg("policy_size"));
 
     py::enum_<alphazero::selfplay::GameTerminationReason>(module, "GameTerminationReason")
         .value("NATURAL", alphazero::selfplay::GameTerminationReason::kNatural)
@@ -971,10 +1215,24 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("simulations_per_move", &alphazero::selfplay::SelfPlayGameConfig::simulations_per_move)
         .def_readwrite("mcts_threads", &alphazero::selfplay::SelfPlayGameConfig::mcts_threads)
         .def_readwrite("node_arena_capacity", &alphazero::selfplay::SelfPlayGameConfig::node_arena_capacity)
+        .def_readwrite("enable_playout_cap", &alphazero::selfplay::SelfPlayGameConfig::enable_playout_cap)
+        .def_readwrite("reduced_simulations", &alphazero::selfplay::SelfPlayGameConfig::reduced_simulations)
+        .def_readwrite(
+            "full_playout_probability",
+            &alphazero::selfplay::SelfPlayGameConfig::full_playout_probability)
         .def_readwrite("c_puct", &alphazero::selfplay::SelfPlayGameConfig::c_puct)
         .def_readwrite("c_fpu", &alphazero::selfplay::SelfPlayGameConfig::c_fpu)
         .def_readwrite("enable_dirichlet_noise", &alphazero::selfplay::SelfPlayGameConfig::enable_dirichlet_noise)
         .def_readwrite("dirichlet_epsilon", &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon)
+        .def_readwrite(
+            "randomize_dirichlet_epsilon",
+            &alphazero::selfplay::SelfPlayGameConfig::randomize_dirichlet_epsilon)
+        .def_readwrite(
+            "dirichlet_epsilon_min",
+            &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon_min)
+        .def_readwrite(
+            "dirichlet_epsilon_max",
+            &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon_max)
         .def_readwrite("dirichlet_alpha_override", &alphazero::selfplay::SelfPlayGameConfig::dirichlet_alpha_override)
         .def_readwrite("temperature", &alphazero::selfplay::SelfPlayGameConfig::temperature)
         .def_readwrite("temperature_moves", &alphazero::selfplay::SelfPlayGameConfig::temperature_moves)
@@ -1123,8 +1381,69 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::keep_alive<1, 3>(),
             py::keep_alive<1, 4>(),
             py::keep_alive<1, 6>())
+        .def(
+            py::init(
+                [](const GameConfig& game_config,
+                   CompactReplayBuffer& compact_buffer,
+                   py::function evaluator,
+                   alphazero::selfplay::SelfPlayManagerConfig config,
+                   py::object completion_callback) {
+                    SelfPlayManager::AddGameFn add_game_fn =
+                        [&compact_buffer](const std::vector<alphazero::selfplay::ReplayPosition>& positions) {
+                            compact_buffer.add_game(positions);
+                        };
+                    return std::make_unique<SelfPlayManager>(
+                        game_config,
+                        std::move(add_game_fn),
+                        make_selfplay_evaluator(std::move(evaluator), game_config.action_space_size),
+                        config,
+                        make_completion_callback(completion_callback));
+                }),
+            py::arg("game_config"),
+            py::arg("replay_buffer"),
+            py::arg("evaluator"),
+            py::arg("config") = alphazero::selfplay::SelfPlayManagerConfig{},
+            py::arg("completion_callback") = py::none(),
+            py::keep_alive<1, 2>(),
+            py::keep_alive<1, 3>(),
+            py::keep_alive<1, 4>(),
+            py::keep_alive<1, 6>())
+        .def(
+            py::init(
+                [](const GameConfig& game_config,
+                   CompactReplayBuffer& compact_buffer,
+                   PyEvalQueue& eval_queue,
+                   alphazero::selfplay::SelfPlayManagerConfig config,
+                   py::object completion_callback) {
+                    SelfPlayManager::AddGameFn add_game_fn =
+                        [&compact_buffer](const std::vector<alphazero::selfplay::ReplayPosition>& positions) {
+                            compact_buffer.add_game(positions);
+                        };
+                    return std::make_unique<SelfPlayManager>(
+                        game_config,
+                        std::move(add_game_fn),
+                        alphazero::mcts::make_eval_queue_evaluator(
+                            eval_queue.raw_queue(),
+                            encoded_state_size(game_config),
+                            game_config.action_space_size),
+                        config,
+                        make_completion_callback(completion_callback));
+                }),
+            py::arg("game_config"),
+            py::arg("replay_buffer"),
+            py::arg("eval_queue"),
+            py::arg("config") = alphazero::selfplay::SelfPlayManagerConfig{},
+            py::arg("completion_callback") = py::none(),
+            py::keep_alive<1, 2>(),
+            py::keep_alive<1, 3>(),
+            py::keep_alive<1, 4>(),
+            py::keep_alive<1, 6>())
         .def("start", &SelfPlayManager::start)
         .def("stop", &SelfPlayManager::stop, py::call_guard<py::gil_scoped_release>())
         .def("is_running", &SelfPlayManager::is_running)
+        .def(
+            "update_simulations_per_move",
+            &SelfPlayManager::update_simulations_per_move,
+            py::arg("new_sims"))
         .def("metrics", &SelfPlayManager::metrics);
 }

@@ -9,10 +9,15 @@ import time
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import torch
+import torch.nn.functional as functional
 from torch import nn
 
 from alphazero.config import GameConfig, load_yaml_config
-from alphazero.training.loss import DEFAULT_L2_WEIGHT, ValueHeadType, compute_loss_components
+from alphazero.training.loss import (
+    DEFAULT_L2_WEIGHT,
+    ValueHeadType,
+    l2_regularization_loss,
+)
 from alphazero.training.lr_schedule import (
     StepDecayLRSchedule,
     load_lr_schedule_from_config,
@@ -75,6 +80,7 @@ DEFAULT_LOG_INTERVAL = 100
 DEFAULT_MIN_BUFFER_SIZE = 10_000
 DEFAULT_WAIT_FOR_BUFFER_SECONDS = 1.0
 DEFAULT_CHECKPOINT_KEEP_LAST = DEFAULT_ROLLING_CHECKPOINT_KEEP_LAST
+_LOSS_EPSILON = 1.0e-8
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +196,13 @@ def _coerce_replay_float(name: str, value: object) -> float:
     return converted
 
 
+def _coerce_replay_weight(value: object) -> float:
+    converted = _coerce_replay_float("training_weight", value)
+    if converted < 0.0:
+        raise ValueError(f"Replay sample training_weight must be non-negative, got {converted}")
+    return converted
+
+
 def _as_float_tensor(values: object, *, device: torch.device) -> torch.Tensor:
     if isinstance(values, torch.Tensor):
         return values.to(device=device, dtype=torch.float32)
@@ -217,7 +230,7 @@ def _prepare_replay_batch_from_positions(
     game_config: GameConfig,
     *,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Convert replay samples into dense training tensors."""
 
     if not sampled_positions:
@@ -244,6 +257,7 @@ def _prepare_replay_batch_from_positions(
         target_value = torch.empty((batch_size,), dtype=torch.float32, device=device)
     else:
         target_value = torch.empty((batch_size, value_dim), dtype=torch.float32, device=device)
+    sample_weights = torch.ones((batch_size,), dtype=torch.float32, device=device)
 
     for sample_index, position in enumerate(sampled_positions):
         raw_state = _extract_position_field(position, "encoded_state")
@@ -308,28 +322,47 @@ def _prepare_replay_batch_from_positions(
                 raise ValueError("Replay sample value_wdl must contain at least three values")
             target_value[sample_index] = wdl_tensor[:value_dim]
 
-    return states, _normalize_policy_targets(target_policy), target_value
+        has_training_weight = (isinstance(position, Mapping) and "training_weight" in position) or hasattr(
+            position,
+            "training_weight",
+        )
+        sample_weights[sample_index] = (
+            _coerce_replay_weight(_extract_position_field(position, "training_weight"))
+            if has_training_weight
+            else 1.0
+        )
+
+    return states, _normalize_policy_targets(target_policy), target_value, sample_weights
 
 
-def _extract_packed_batch_fields(packed_batch: object) -> tuple[object, object, object]:
+def _extract_packed_batch_fields(packed_batch: object) -> tuple[object, object, object, object | None]:
     if isinstance(packed_batch, Mapping):
         required = ("states", "policies", "values")
         missing = [field for field in required if field not in packed_batch]
         if missing:
             raise KeyError(f"Replay packed batch is missing required fields: {', '.join(missing)}")
-        return packed_batch["states"], packed_batch["policies"], packed_batch["values"]
+        return (
+            packed_batch["states"],
+            packed_batch["policies"],
+            packed_batch["values"],
+            packed_batch.get("weights"),
+        )
 
     if isinstance(packed_batch, Sequence) and not isinstance(packed_batch, (str, bytes)):
+        if len(packed_batch) == 3:
+            return packed_batch[0], packed_batch[1], packed_batch[2], None
+        if len(packed_batch) == 4:
+            return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3]
         if len(packed_batch) != 3:
             raise ValueError(
-                "Replay packed batch sequence must contain exactly three entries: "
-                "(states, policies, values)"
+                "Replay packed batch sequence must contain exactly three or four entries: "
+                "(states, policies, values[, weights])"
             )
-        return packed_batch[0], packed_batch[1], packed_batch[2]
+        return packed_batch[0], packed_batch[1], packed_batch[2], None
 
     raise TypeError(
         "Replay packed batch must be either a mapping with keys "
-        "{'states', 'policies', 'values'} or a 3-tuple/list"
+        "{'states', 'policies', 'values'} or a 3/4-tuple/list"
     )
 
 
@@ -339,13 +372,13 @@ def _prepare_replay_batch_from_packed_arrays(
     *,
     batch_size: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     rows, cols = game_config.board_shape
     encoded_state_size = game_config.input_channels * rows * cols
     action_space_size = game_config.action_space_size
     value_dim = _value_dim_for_game_config(game_config)
 
-    raw_states, raw_policies, raw_values = _extract_packed_batch_fields(packed_batch)
+    raw_states, raw_policies, raw_values, raw_weights = _extract_packed_batch_fields(packed_batch)
     flat_states = _as_float_tensor(raw_states, device=device)
     flat_policy = _as_float_tensor(raw_policies, device=device)
     flat_values = _as_float_tensor(raw_values, device=device)
@@ -395,9 +428,37 @@ def _prepare_replay_batch_from_packed_arrays(
             )
         target_value = flat_values
 
+    if raw_weights is None:
+        sample_weights = torch.ones((batch_size,), dtype=torch.float32, device=device)
+    else:
+        sample_weights_tensor = _as_float_tensor(raw_weights, device=device)
+        if sample_weights_tensor.ndim == 1:
+            if tuple(sample_weights_tensor.shape) != (batch_size,):
+                raise ValueError(
+                    "Replay packed batch weights has incorrect shape: "
+                    f"expected {(batch_size,)}, got {tuple(sample_weights_tensor.shape)}"
+                )
+            sample_weights = sample_weights_tensor
+        elif sample_weights_tensor.ndim == 2:
+            if tuple(sample_weights_tensor.shape) != (batch_size, 1):
+                raise ValueError(
+                    "Replay packed batch weights has incorrect shape: "
+                    f"expected {(batch_size, 1)}, got {tuple(sample_weights_tensor.shape)}"
+                )
+            sample_weights = sample_weights_tensor.reshape(batch_size)
+        else:
+            raise ValueError(
+                "Replay packed batch weights must be rank 1 or 2, "
+                f"got rank {sample_weights_tensor.ndim}"
+            )
+        if not bool(torch.isfinite(sample_weights).all()):
+            raise ValueError("Replay packed batch weights must be finite")
+        if bool((sample_weights < 0.0).any()):
+            raise ValueError("Replay packed batch weights must be non-negative")
+
     states = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
     target_policy = _normalize_policy_targets(flat_policy)
-    return states, target_policy, target_value
+    return states, target_policy, target_value, sample_weights
 
 
 def prepare_replay_batch(
@@ -408,7 +469,12 @@ def prepare_replay_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Convert replay samples into dense training tensors."""
 
-    return _prepare_replay_batch_from_positions(sampled_positions, game_config, device=device)
+    states, target_policy, target_value, _sample_weights = _prepare_replay_batch_from_positions(
+        sampled_positions,
+        game_config,
+        device=device,
+    )
+    return states, target_policy, target_value
 
 
 def sample_replay_batch_tensors(
@@ -417,7 +483,7 @@ def sample_replay_batch_tensors(
     *,
     batch_size: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Sample one mini-batch from replay and convert it into dense training tensors."""
 
     rows, cols = game_config.board_shape
@@ -559,6 +625,42 @@ def _gradient_statistics(model: nn.Module) -> tuple[float, int]:
     return global_norm, nonzero_grad_parameters
 
 
+def _coerce_sample_weights(
+    sample_weights: torch.Tensor | None,
+    *,
+    batch_size: int,
+    device: torch.device,
+) -> torch.Tensor:
+    if sample_weights is None:
+        return torch.ones((batch_size,), dtype=torch.float32, device=device)
+
+    weights = _as_float_tensor(sample_weights, device=device)
+    if weights.ndim == 1:
+        if tuple(weights.shape) != (batch_size,):
+            raise ValueError(
+                "sample_weights must have shape (batch_size,), "
+                f"expected {(batch_size,)}, got {tuple(weights.shape)}"
+            )
+    elif weights.ndim == 2:
+        if tuple(weights.shape) != (batch_size, 1):
+            raise ValueError(
+                "sample_weights must have shape (batch_size, 1) when rank 2, "
+                f"expected {(batch_size, 1)}, got {tuple(weights.shape)}"
+            )
+        weights = weights.reshape(batch_size)
+    else:
+        raise ValueError(
+            "sample_weights must be rank 1 or 2, "
+            f"got rank {weights.ndim}"
+        )
+
+    if not bool(torch.isfinite(weights).all()):
+        raise ValueError("sample_weights must be finite")
+    if bool((weights < 0.0).any()):
+        raise ValueError("sample_weights must be non-negative")
+    return weights
+
+
 def train_one_step(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -566,12 +668,14 @@ def train_one_step(
     states: torch.Tensor,
     target_policy: torch.Tensor,
     target_value: torch.Tensor,
+    sample_weights: torch.Tensor | None = None,
     game_config: GameConfig,
     lr_schedule: StepDecayLRSchedule,
     global_step: int,
     l2_reg: float,
     scaler: Any,
     use_mixed_precision: bool,
+    compute_gradient_stats: bool = True,
 ) -> TrainingStepMetrics:
     """Run one optimization step and return decomposed metrics."""
 
@@ -581,6 +685,15 @@ def train_one_step(
 
     optimizer.zero_grad(set_to_none=True)
     device_type = states.device.type
+    if states.ndim < 1:
+        raise ValueError("states must include a batch dimension")
+    batch_size = int(states.shape[0])
+    weights = _coerce_sample_weights(
+        sample_weights,
+        batch_size=batch_size,
+        device=states.device,
+    )
+
     value_type: ValueHeadType
     if game_config.value_head_type == "scalar":
         value_type = "scalar"
@@ -597,26 +710,94 @@ def train_one_step(
         enabled=use_mixed_precision,
     ):
         policy_logits, predicted_value = model(states)
-        loss_components = compute_loss_components(
-            policy_logits,
-            predicted_value,
-            target_policy,
-            target_value,
-            value_type=value_type,
-            l2_weight=l2_reg,
-            model=model,
-        )
+        if policy_logits.ndim != 2:
+            raise ValueError(
+                "policy_logits must have shape (batch, action_space_size), "
+                f"got {tuple(policy_logits.shape)}"
+            )
+        if target_policy.shape != policy_logits.shape:
+            raise ValueError(
+                "target_policy must match policy_logits shape; "
+                f"got {tuple(target_policy.shape)} vs {tuple(policy_logits.shape)}"
+            )
+        policy_log_probabilities = functional.log_softmax(policy_logits.to(dtype=torch.float32), dim=-1)
+        policy_targets = target_policy.to(dtype=torch.float32, device=policy_log_probabilities.device)
+        policy_per_sample = -(policy_targets * policy_log_probabilities).sum(dim=-1)
+        if tuple(policy_per_sample.shape) != (batch_size,):
+            raise ValueError(
+                "policy loss must produce one value per sample; "
+                f"expected {(batch_size,)}, got {tuple(policy_per_sample.shape)}"
+            )
+        policy_loss = (policy_per_sample * weights).mean()
 
-    if not torch.isfinite(loss_components.total_loss):
+        if value_type == "scalar":
+            if predicted_value.ndim == 2 and predicted_value.shape[1] == 1:
+                predicted_values = predicted_value.squeeze(dim=1).to(dtype=torch.float32)
+            elif predicted_value.ndim == 1:
+                predicted_values = predicted_value.to(dtype=torch.float32)
+            else:
+                raise ValueError(
+                    "value must have shape (batch,) or (batch, 1) for scalar heads, "
+                    f"got {tuple(predicted_value.shape)}"
+                )
+
+            if target_value.ndim == 2 and target_value.shape[1] == 1:
+                target_values = target_value.squeeze(dim=1).to(dtype=torch.float32, device=predicted_values.device)
+            elif target_value.ndim == 1:
+                target_values = target_value.to(dtype=torch.float32, device=predicted_values.device)
+            else:
+                raise ValueError(
+                    "target_value must have shape (batch,) or (batch, 1) for scalar heads, "
+                    f"got {tuple(target_value.shape)}"
+                )
+
+            if predicted_values.shape != target_values.shape:
+                raise ValueError(
+                    "scalar value and target shapes must match, "
+                    f"got {tuple(predicted_values.shape)} and {tuple(target_values.shape)}"
+                )
+            value_per_sample = (predicted_values - target_values).pow(2)
+        else:
+            if predicted_value.ndim != 2 or predicted_value.shape[1] != 3:
+                raise ValueError(
+                    "value must have shape (batch, 3) for WDL heads, "
+                    f"got {tuple(predicted_value.shape)}"
+                )
+            if target_value.shape != predicted_value.shape:
+                raise ValueError(
+                    "target_value must match WDL value shape; "
+                    f"got {tuple(target_value.shape)} vs {tuple(predicted_value.shape)}"
+                )
+            predicted_probabilities = predicted_value.to(dtype=torch.float32).clamp_min(_LOSS_EPSILON)
+            target_probabilities = target_value.to(dtype=torch.float32, device=predicted_probabilities.device)
+            value_per_sample = -(target_probabilities * torch.log(predicted_probabilities)).sum(dim=-1)
+
+        if tuple(value_per_sample.shape) != (batch_size,):
+            raise ValueError(
+                "value loss must produce one value per sample; "
+                f"expected {(batch_size,)}, got {tuple(value_per_sample.shape)}"
+            )
+        value_loss = (value_per_sample * weights).mean()
+
+        l2_loss = l2_regularization_loss(model)
+        if l2_loss.device != policy_loss.device:
+            l2_loss = l2_loss.to(device=policy_loss.device)
+        total_loss = policy_loss + value_loss + (float(l2_reg) * l2_loss)
+
+    if not torch.isfinite(total_loss):
         raise FloatingPointError("Encountered non-finite total loss")
-    if not torch.isfinite(loss_components.policy_loss):
+    if not torch.isfinite(policy_loss):
         raise FloatingPointError("Encountered non-finite policy loss")
-    if not torch.isfinite(loss_components.value_loss):
+    if not torch.isfinite(value_loss):
         raise FloatingPointError("Encountered non-finite value loss")
 
-    scaler.scale(loss_components.total_loss).backward()
+    scaler.scale(total_loss).backward()
     scaler.unscale_(optimizer)
-    grad_global_norm, nonzero_grad_parameters = _gradient_statistics(model)
+    if compute_gradient_stats:
+        grad_global_norm, nonzero_grad_parameters = _gradient_statistics(model)
+    else:
+        grad_global_norm = 0.0
+        nonzero_grad_parameters = 0
     scaler.step(optimizer)
     scaler.update()
 
@@ -625,10 +806,10 @@ def train_one_step(
     # multiple GPU->CPU synchronization points from repeated `.item()` calls.
     loss_values = torch.stack(
         [
-            loss_components.total_loss.detach(),
-            loss_components.policy_loss.detach(),
-            loss_components.value_loss.detach(),
-            loss_components.l2_loss.detach(),
+            total_loss.detach(),
+            policy_loss.detach(),
+            value_loss.detach(),
+            l2_loss.detach(),
         ]
     ).cpu().tolist()
     return TrainingStepMetrics(
@@ -656,11 +837,12 @@ def save_training_checkpoint(
     keep_last: int = DEFAULT_CHECKPOINT_KEEP_LAST,
     is_milestone: bool = False,
     export_folded_weights: bool = True,
+    game_config: Any | None = None,
 ) -> CheckpointPaths:
-    """Persist model/optimizer/schedule state with replay metadata."""
+    """Persist model/optimizer/schedule state with replay metadata and buffer contents."""
 
     replay_metadata = extract_replay_buffer_metadata(replay_buffer)
-    return save_checkpoint(
+    result = save_checkpoint(
         model,
         optimizer,
         step=step,
@@ -671,6 +853,20 @@ def save_training_checkpoint(
         export_folded_weights=export_folded_weights,
         keep_last=keep_last,
     )
+
+    if replay_buffer is not None and game_config is not None:
+        from alphazero.utils.checkpoint import save_replay_buffer_state
+
+        rows, cols = game_config.board_shape
+        encoded_state_size = game_config.input_channels * rows * cols
+        save_replay_buffer_state(
+            replay_buffer,
+            result.checkpoint_path,
+            encoded_state_size=encoded_state_size,
+            policy_size=game_config.action_space_size,
+        )
+
+    return result
 
 
 def load_training_checkpoint(
@@ -804,7 +1000,7 @@ def training_loop(
             sleep_fn(training_config.wait_for_buffer_seconds)
             continue
 
-        states, target_policy, target_value = sample_replay_batch_tensors(
+        states, target_policy, target_value, sample_weights = sample_replay_batch_tensors(
             replay_buffer,
             game_config,
             batch_size=training_config.batch_size,
@@ -820,6 +1016,7 @@ def training_loop(
             states=states,
             target_policy=target_policy,
             target_value=target_value,
+            sample_weights=sample_weights,
             game_config=game_config,
             lr_schedule=active_schedule,
             global_step=step,
