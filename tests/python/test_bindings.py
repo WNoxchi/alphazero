@@ -547,6 +547,48 @@ class PythonBindingsTests(unittest.TestCase):
             thread.join(timeout=2.0)
             self.assertFalse(thread.is_alive())
 
+    def test_eval_queue_stop_unblocks_waiting_submitters_without_consumer(self) -> None:
+        """WHY: shutdown may stop EvalQueue before a consumer drains pending requests, so waiting submitters must be released."""
+        bindings = _require_bindings()
+        eval_config = bindings.EvalQueueConfig()
+        eval_config.batch_size = 8
+        eval_config.flush_timeout_us = 10_000
+
+        def evaluator(_batch: object) -> tuple[object, object]:
+            raise AssertionError("consumer should not run in this regression test")
+
+        queue = bindings.EvalQueue(evaluator=evaluator, encoded_state_size=1, config=eval_config)
+        started = threading.Event()
+        results: dict[str, BaseException | None] = {"first": None, "second": None}
+
+        def submitter(slot: str, value: float) -> None:
+            started.set()
+            try:
+                queue.submit_and_wait([value])
+            except BaseException as exc:  # pragma: no cover - exercised by assertions below
+                results[slot] = exc
+
+        first = threading.Thread(target=submitter, args=("first", 1.0))
+        second = threading.Thread(target=submitter, args=("second", 2.0))
+        first.start()
+        second.start()
+
+        self.assertTrue(started.wait(timeout=1.0))
+        time.sleep(0.05)
+        queue.stop()
+
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertIsInstance(results["first"], RuntimeError)
+        self.assertIsInstance(results["second"], RuntimeError)
+
+        first_message = str(results["first"])
+        second_message = str(results["second"])
+        self.assertTrue("stopped" in first_message.lower())
+        self.assertTrue("stopped" in second_message.lower())
+
     def test_self_play_manager_starts_and_stops_from_python(self) -> None:
         """Validates that Python can control C++ self-play lifecycle and collect resulting replay data."""
         bindings = _require_bindings()

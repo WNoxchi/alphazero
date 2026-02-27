@@ -13,3 +13,4 @@ You may use tmux to spawn a tmux session for scraping logs and checking your wor
   `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py`
 - If `pytest` is unavailable in the current interpreter, run Python tests with `python3 -m unittest` for task-level validation.
 - `ruff` may be unavailable in sandbox interpreters; when missing, run available static checks (for example `mypy` and `python3 -m compileall`) and note the missing linter in the task log.
+- `mypy` may also be unavailable in sandbox interpreters; if either `mypy` or `ruff` is missing, run `python3 -m compileall` on modified Python modules and note the unavailable tooling in the task log.

@@ -35,7 +35,7 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
 ### TASK-001: Add GIL release to `PyEvalQueue::stop()` binding
 
 - **File**: `src/bindings/python_bindings.cpp`
-- **Current state**: Bug — `stop()` holds the GIL while potentially blocking.
+- **Current state**: COMPLETE (2026-02-27) — `stop()` now releases the GIL before stopping the queue.
 - **Priority**: HIGH — deadlock risk under specific shutdown sequences.
 - **Rationale**: `PyEvalQueue::process_batch()` (line 744) and `submit_and_wait()` (line 734)
   both correctly use `py::gil_scoped_release` before calling into C++. However `stop()`
@@ -65,6 +65,15 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
   2. Existing tests pass (build with `cmake --build build --target alphazero_cpp -j$(nproc)`)
   3. Manual verification: the training pipeline (`scripts/train.py`) shuts down cleanly
      without hanging
+- **Implementation notes (2026-02-27)**:
+  - Updated `PyEvalQueue::stop()` to use `py::gil_scoped_release` before `queue_.stop()`.
+  - Added Python regression coverage: `test_eval_queue_stop_unblocks_waiting_submitters_without_consumer`.
+- **Validation (2026-02-27)**:
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` ✅
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` ✅ (15 passed)
+  - `python3 -m compileall -q python tests/python/test_bindings.py` ✅
+  - `mypy` and `ruff` are not installed in this sandbox session; used compile-time/build checks plus `compileall` fallback.
+  - `scripts/train.py --config configs/chess_test.yaml` startup/shutdown smoke run exited cleanly when interrupted (`Training interrupted at step 0`), with no shutdown hang observed.
 
 ---
 

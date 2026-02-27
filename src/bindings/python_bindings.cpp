@@ -746,7 +746,10 @@ public:
         queue_.process_batch();
     }
 
-    void stop() { queue_.stop(); }
+    void stop() {
+        py::gil_scoped_release release_gil;
+        queue_.stop();
+    }
 
     [[nodiscard]] std::size_t encoded_state_size() const noexcept { return encoded_state_size_; }
     [[nodiscard]] alphazero::mcts::EvalQueue& raw_queue() noexcept { return queue_; }
