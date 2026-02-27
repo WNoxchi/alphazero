@@ -127,14 +127,21 @@ using alphazero::selfplay::SelfPlayManager;
     return static_cast<py::ssize_t>(value);
 }
 
+[[nodiscard]] py::capsule sampled_batch_owner_capsule(const std::shared_ptr<SampledBatch>& batch) {
+    auto owner_guard = std::make_unique<std::shared_ptr<SampledBatch>>(batch);
+    py::capsule owner(
+        owner_guard.get(),
+        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    owner_guard.release();
+    return owner;
+}
+
 [[nodiscard]] py::array_t<float> sampled_batch_array_view(
     const std::shared_ptr<SampledBatch>& batch,
     const std::vector<float>& storage,
     const std::size_t rows,
     const std::size_t cols) {
-    py::capsule owner(
-        new std::shared_ptr<SampledBatch>(batch),
-        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    py::capsule owner = sampled_batch_owner_capsule(batch);
     const std::array<py::ssize_t, 2> shape{to_py_ssize(rows, "rows"), to_py_ssize(cols, "cols")};
     const std::array<py::ssize_t, 2> strides{
         to_py_ssize(cols * sizeof(float), "row stride"),
@@ -146,9 +153,7 @@ using alphazero::selfplay::SelfPlayManager;
     const std::shared_ptr<SampledBatch>& batch,
     const std::vector<float>& storage,
     const std::size_t size) {
-    py::capsule owner(
-        new std::shared_ptr<SampledBatch>(batch),
-        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    py::capsule owner = sampled_batch_owner_capsule(batch);
     const std::array<py::ssize_t, 1> shape{to_py_ssize(size, "size")};
     const std::array<py::ssize_t, 1> strides{
         static_cast<py::ssize_t>(sizeof(float))};

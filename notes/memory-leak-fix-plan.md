@@ -210,7 +210,8 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
 ### TASK-004: Improve exception safety in capsule-based numpy views
 
 - **File**: `src/bindings/python_bindings.cpp`
-- **Current state**: Style issue — raw `new` in capsule constructor is exception-unsafe.
+- **Current state**: COMPLETE (2026-02-27) — capsule owner handoff now uses exception-safe
+  `std::unique_ptr` transfer in sampled-batch NumPy view helpers.
 - **Priority**: LOW — extremely unlikely to trigger in practice, but easy to fix.
 - **Rationale**: `sampled_batch_array_view()` (lines 130-143) and
   `sampled_batch_vector_view()` (lines 145-156) use raw `new` to heap-allocate a
@@ -238,3 +239,20 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
   1. Both functions use exception-safe allocation pattern
   2. Numpy array views still work correctly (test via `ReplayBuffer.sample()` in Python)
   3. Existing tests pass
+- **Implementation notes (2026-02-27)**:
+  - Added `sampled_batch_owner_capsule(...)` helper that allocates
+    `std::shared_ptr<SampledBatch>` ownership via `std::make_unique` and transfers ownership
+    to `py::capsule` only after successful construction.
+  - Updated both `sampled_batch_array_view(...)` and `sampled_batch_vector_view(...)` to use
+    the helper, removing direct `new std::shared_ptr<SampledBatch>(batch)` allocations.
+  - Added regression test
+    `test_sample_batch_numpy_capsule_owner_transfer_is_exception_safe` to lock in the
+    exception-safe ownership transfer pattern.
+- **Validation (2026-02-27)**:
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` ✅
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` ✅ (17 passed)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix` ⚠️ failed due non-writable existing install; reran with `--ignore-installed`
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed` ✅
+  - `python3 -m ruff check tests/python/test_bindings.py` ❌ (`No module named ruff`)
+  - `python3 -m mypy tests/python/test_bindings.py` ❌ (`No module named mypy`)
+  - `python3 -m compileall -q python tests/python/test_bindings.py` ✅ (fallback static check)

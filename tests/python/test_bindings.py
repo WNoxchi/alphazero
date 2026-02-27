@@ -512,6 +512,15 @@ class PythonBindingsTests(unittest.TestCase):
             ),
         )
 
+    def test_sample_batch_numpy_capsule_owner_transfer_is_exception_safe(self) -> None:
+        """WHY: sample_batch NumPy views must transfer capsule ownership without raw-new leak windows."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        self.assertNotIn("new std::shared_ptr<SampledBatch>(batch)", bindings_source)
+        self.assertIn("std::make_unique<std::shared_ptr<SampledBatch>>(batch)", bindings_source)
+        self.assertIn("owner_guard.release()", bindings_source)
+        self.assertGreaterEqual(bindings_source.count("sampled_batch_owner_capsule(batch)"), 2)
+
     def test_self_play_manager_exposes_simulation_budget_update_api(self) -> None:
         """WHY: train.py must be able to retune self-play simulation budgets at runtime for phase-4 scheduling."""
         bindings = _require_bindings()
