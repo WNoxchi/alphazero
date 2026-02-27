@@ -9,7 +9,7 @@ fi
 
 N=$1
 BUILD_PROMPT='Read and execute `prompts/PROMPT_build.md`. Return "TASK COMPLETE" and HALT when done.'
-REVIEW_PROMPT='Read and execute `promptsPROMPT_review.md`. Return "REVIEW COMPLETE" and HALT when done.'
+REVIEW_PROMPT='Read and execute `prompts/PROMPT_review.md`. Return "REVIEW COMPLETE" and HALT when done.'
 OUTFILE=$(mktemp)
 
 for i in $(seq 1 "$N"); do
