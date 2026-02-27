@@ -778,6 +778,44 @@ TEST(MctsSearchTest, TreeReusePromotesChildToRootAndPreservesItsStatistics) {
     EXPECT_THROW(static_cast<void>(store.get(old_root)), std::out_of_range);
 }
 
+// WHY: Node mutexes should be materialized only when a node is first locked; root allocation/reset should not
+// pre-populate mutex entries.
+TEST(MctsSearchTest, RootAllocationKeepsNodeMutexMapEmptyUntilLockIsNeeded) {
+    const auto model = make_model(
+        1,
+        {
+            ToyStateSpec{
+                .current_player = 0,
+                .terminal = false,
+                .terminal_outcome = {0.0F, 0.0F},
+                .legal_actions = {0},
+                .transitions = {{0, 1}},
+            },
+            ToyStateSpec{
+                .current_player = 1,
+                .terminal = true,
+                .terminal_outcome = {1.0F, -1.0F},
+            },
+        });
+
+    ToyGameConfig config(model);
+    ArenaNodeStore store(64);
+    SearchConfig search_config{};
+    search_config.enable_dirichlet_noise = false;
+
+    MctsSearch search(store, config, search_config);
+    search.set_root_state(config.new_game());
+
+    EXPECT_EQ(search.cached_node_mutex_count(), 0U);
+
+    const std::vector<float> policy_before_expansion = search.root_policy_target(/*move_number=*/0);
+    EXPECT_EQ(policy_before_expansion.size(), static_cast<std::size_t>(config.action_space_size));
+    EXPECT_EQ(search.cached_node_mutex_count(), 1U);
+
+    search.set_root_state(config.new_game());
+    EXPECT_EQ(search.cached_node_mutex_count(), 0U);
+}
+
 // WHY: The search core is used with tree parallelism; under contention, visit accounting and virtual-loss cleanup must
 // remain consistent.
 TEST(MctsSearchTest, ConcurrentSimulationsAccumulateVisitsWithoutLeakingVirtualLoss) {

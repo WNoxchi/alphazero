@@ -141,8 +141,8 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
 ### TASK-003: Remove eager mutex creation in `allocate_node()`
 
 - **File**: `src/mcts/mcts_search.cpp`, `src/mcts/mcts_search.h`
-- **Current state**: Inefficiency — every allocated node eagerly creates a
-  `shared_ptr<mutex>` even if the node is never concurrently accessed.
+- **Current state**: COMPLETE (2026-02-27) — `allocate_node()` now only allocates
+  node storage, and mutexes remain lazily materialized by `node_mutex()`.
 - **Priority**: MEDIUM — reduces memory overhead and allocation pressure during MCTS search.
 - **Rationale**: `allocate_node()` (mcts_search.cpp lines 587-594) eagerly creates a mutex
   for every node:
@@ -189,6 +189,21 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
   3. Existing tests pass (C++ tests: `cmake --build build --target test_mcts -j$(nproc)`,
      then run the test binary)
   4. Self-play still functions correctly (MCTS search produces valid moves, no deadlocks)
+- **Implementation notes (2026-02-27)**:
+  - Removed eager `node_mutexes_.emplace(...)` from `MctsSearchT<NodeType>::allocate_node()`.
+  - Added `MctsSearchT<NodeType>::cached_node_mutex_count()` to expose current mutex-cache
+    size for diagnostics/regression coverage.
+  - Added regression test
+    `MctsSearchTest.RootAllocationKeepsNodeMutexMapEmptyUntilLockIsNeeded` to prove root
+    allocation/reset do not pre-populate mutex entries and that first lock access creates them.
+- **Validation (2026-02-27)**:
+  - `cmake --build build --target alphazero_cpp_tests -j$(nproc)` ✅
+  - `ctest --test-dir build --output-on-failure -R "MctsSearchTest\\."` ✅ (9 passed)
+  - `ctest --test-dir build --output-on-failure -R "SelfPlay"` ✅ (18 passed)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed` ✅
+    (rerun with `--ignore-installed` required in sandbox due non-writable existing install)
+  - `ruff` and `mypy` are not installed in this sandbox session; ran
+    `python3 -m compileall -q python tests/python/test_bindings.py` fallback ✅
 
 ---
 

@@ -87,6 +87,7 @@ public:
 
     void apply_dirichlet_noise_to_root();
     [[nodiscard]] std::optional<EdgeStats> root_edge_stats(int action) const;
+    [[nodiscard]] std::size_t cached_node_mutex_count() const;
 
 private:
     struct TraversedEdge {
