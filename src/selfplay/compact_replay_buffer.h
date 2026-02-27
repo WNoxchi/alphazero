@@ -6,9 +6,15 @@
 #include <mutex>
 #include <random>
 #include <shared_mutex>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #include "selfplay/replay_buffer.h"
+
+static_assert(
+    std::is_trivially_copyable_v<alphazero::selfplay::CompactReplayPosition>,
+    "CompactReplayPosition must be trivially copyable for binary serialization");
 
 namespace alphazero::selfplay {
 
@@ -64,6 +70,9 @@ public:
         std::size_t count,
         std::size_t encoded_state_size,
         std::size_t policy_size);
+
+    void save_to_file(const std::string& path) const;
+    std::size_t load_from_file(const std::string& path);
 
 private:
     [[nodiscard]] static bool has_valid_shape(const ReplayPosition& position) noexcept;

@@ -1202,7 +1202,9 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("game_ids"),
             py::arg("move_numbers"),
             py::arg("encoded_state_size"),
-            py::arg("policy_size"));
+            py::arg("policy_size"))
+        .def("save_to_file", &CompactReplayBuffer::save_to_file, py::arg("path"))
+        .def("load_from_file", &CompactReplayBuffer::load_from_file, py::arg("path"));
 
     py::enum_<alphazero::selfplay::GameTerminationReason>(module, "GameTerminationReason")
         .value("NATURAL", alphazero::selfplay::GameTerminationReason::kNatural)

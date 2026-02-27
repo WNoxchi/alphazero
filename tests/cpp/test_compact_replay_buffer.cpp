@@ -6,7 +6,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -482,4 +485,181 @@ TEST(CompactReplayBufferTest, ExportImportRoundtripPreservesLogicalContents) {
     }
     EXPECT_EQ(game_ids_again, game_ids);
     EXPECT_EQ(move_numbers_again, move_numbers);
+}
+
+// --- Binary file serialization (save_to_file / load_from_file) ---
+
+namespace {
+
+class TempFile {
+public:
+    TempFile() : path_(std::tmpnam(nullptr)) {}
+    ~TempFile() { std::remove(path_.c_str()); }
+    [[nodiscard]] const std::string& path() const { return path_; }
+private:
+    std::string path_;
+};
+
+}  // namespace
+
+// WHY: The primary use-case — save compact buffer to disk and restore it without decompressing to dense arrays.
+TEST(CompactReplayBufferTest, SaveAndLoadFileRoundtripPreservesContents) {
+    TempFile tmp;
+
+    CompactReplayBuffer source(
+        /*capacity=*/16U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/4242U);
+    source.add_game(make_game(50U, 3U));
+    source.add_game(make_game(51U, 4U));
+
+    const std::size_t original_count = source.size();
+    ASSERT_EQ(original_count, 7U);
+
+    source.save_to_file(tmp.path());
+
+    CompactReplayBuffer restored(
+        /*capacity=*/16U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/9999U);
+    const std::size_t loaded = restored.load_from_file(tmp.path());
+    ASSERT_EQ(loaded, original_count);
+    ASSERT_EQ(restored.size(), original_count);
+
+    // Export both and compare dense representations.
+    auto export_dense = [&](const CompactReplayBuffer& buf) {
+        const std::size_t n = buf.size();
+        std::vector<float> states(n * kStateSize);
+        std::vector<float> policies(n * kPolicySize);
+        std::vector<float> values_wdl(n * ReplayPosition::kWdlSize);
+        std::vector<std::uint32_t> game_ids(n);
+        std::vector<std::uint16_t> move_numbers(n);
+        buf.export_positions(
+            states.data(), policies.data(), values_wdl.data(),
+            game_ids.data(), move_numbers.data(), kStateSize, kPolicySize);
+        return std::make_tuple(states, policies, values_wdl, game_ids, move_numbers);
+    };
+
+    auto [s1, p1, v1, g1, m1] = export_dense(source);
+    auto [s2, p2, v2, g2, m2] = export_dense(restored);
+
+    EXPECT_EQ(s1, s2);
+    EXPECT_EQ(p1, p2);
+    EXPECT_EQ(v1, v2);
+    EXPECT_EQ(g1, g2);
+    EXPECT_EQ(m1, m2);
+}
+
+// WHY: When loading into a smaller buffer, only the newest positions should be kept.
+TEST(CompactReplayBufferTest, LoadFileTruncatesToCapacityKeepingNewest) {
+    TempFile tmp;
+
+    CompactReplayBuffer source(
+        /*capacity=*/16U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/1111U);
+    // Add 10 positions: games 60..69, 1 move each.
+    for (std::uint32_t game_id = 60U; game_id < 70U; ++game_id) {
+        source.add_game(make_game(game_id, 1U));
+    }
+    ASSERT_EQ(source.size(), 10U);
+    source.save_to_file(tmp.path());
+
+    // Load into a buffer with capacity 4 — should keep the newest 4 (games 66, 67, 68, 69).
+    CompactReplayBuffer small(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/2222U);
+    const std::size_t loaded = small.load_from_file(tmp.path());
+    ASSERT_EQ(loaded, 4U);
+    ASSERT_EQ(small.size(), 4U);
+
+    const std::vector<ReplayPosition> sampled = small.sample(4U);
+    std::unordered_set<std::uint32_t> game_ids;
+    for (const auto& pos : sampled) {
+        game_ids.insert(pos.game_id);
+    }
+    EXPECT_TRUE(game_ids.contains(66U));
+    EXPECT_TRUE(game_ids.contains(67U));
+    EXPECT_TRUE(game_ids.contains(68U));
+    EXPECT_TRUE(game_ids.contains(69U));
+}
+
+// WHY: Corrupt files must be detected early; loading garbage should not silently corrupt the buffer.
+TEST(CompactReplayBufferTest, LoadFileRejectsCorruptMagic) {
+    TempFile tmp;
+
+    // Write a file with bad magic bytes.
+    {
+        std::ofstream out(tmp.path(), std::ios::binary);
+        const char bad_magic[4] = {'B', 'A', 'D', '!'};
+        out.write(bad_magic, 4);
+    }
+
+    CompactReplayBuffer buf(
+        /*capacity=*/8U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/3333U);
+    EXPECT_THROW(buf.load_from_file(tmp.path()), std::runtime_error);
+}
+
+// WHY: A wrapped ring buffer serializes in logical order; this verifies the ordering survives a wrap + save + load.
+TEST(CompactReplayBufferTest, SaveAndLoadPreservesOrderAfterRingWrap) {
+    TempFile tmp;
+
+    CompactReplayBuffer source(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/5555U);
+
+    // Add 7 positions — wraps twice past capacity of 4.
+    for (std::uint32_t game_id = 0U; game_id < 7U; ++game_id) {
+        source.add_game(make_game(game_id, 1U));
+    }
+    ASSERT_EQ(source.size(), 4U);
+
+    source.save_to_file(tmp.path());
+
+    CompactReplayBuffer restored(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/6666U);
+    restored.load_from_file(tmp.path());
+
+    // Both should export the same dense data in the same logical order.
+    auto export_game_ids = [&](const CompactReplayBuffer& buf) {
+        const std::size_t n = buf.size();
+        std::vector<float> states(n * kStateSize);
+        std::vector<float> policies(n * kPolicySize);
+        std::vector<float> values_wdl(n * ReplayPosition::kWdlSize);
+        std::vector<std::uint32_t> game_ids(n);
+        std::vector<std::uint16_t> move_numbers(n);
+        buf.export_positions(
+            states.data(), policies.data(), values_wdl.data(),
+            game_ids.data(), move_numbers.data(), kStateSize, kPolicySize);
+        return game_ids;
+    };
+
+    EXPECT_EQ(export_game_ids(source), export_game_ids(restored));
 }
