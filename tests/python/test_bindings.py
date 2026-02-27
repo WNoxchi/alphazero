@@ -512,6 +512,46 @@ class PythonBindingsTests(unittest.TestCase):
             ),
         )
 
+    def test_replay_buffer_bindings_release_gil_for_hot_paths(self) -> None:
+        """WHY: replay hot paths should release the GIL either at the binding edge or around heavy native buffer operations."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        gil_guard = r"py::call_guard<py::gil_scoped_release>\(\)\s*"
+        required_patterns = (
+            r'\.def\(\s*"add_game"\s*,\s*&alphazero::selfplay::ReplayBuffer::add_game\s*,\s*'
+            r'py::arg\("positions"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"sample"\s*,\s*&alphazero::selfplay::ReplayBuffer::sample\s*,\s*'
+            r'py::arg\("batch_size"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"add_game"\s*,\s*&CompactReplayBuffer::add_game\s*,\s*'
+            r'py::arg\("positions"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"sample"\s*,\s*&CompactReplayBuffer::sample\s*,\s*'
+            r'py::arg\("batch_size"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"save_to_file"\s*,\s*&CompactReplayBuffer::save_to_file\s*,\s*'
+            r'py::arg\("path"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"load_from_file"\s*,\s*&CompactReplayBuffer::load_from_file\s*,\s*'
+            r'py::arg\("path"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+        )
+
+        for required_pattern in required_patterns:
+            self.assertRegex(bindings_source, re.compile(required_pattern))
+
+        self.assertIn("replay_buffer_sample_batch_numpy_impl", bindings_source)
+        self.assertIn("replay_buffer_export_numpy_impl", bindings_source)
+        self.assertIn("replay_buffer_import_numpy_impl", bindings_source)
+        self.assertGreaterEqual(bindings_source.count("py::gil_scoped_release release_gil;"), 3)
+
     def test_sample_batch_numpy_capsule_owner_transfer_is_exception_safe(self) -> None:
         """WHY: sample_batch NumPy views must transfer capsule ownership without raw-new leak windows."""
         bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")

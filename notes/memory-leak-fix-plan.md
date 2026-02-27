@@ -253,6 +253,54 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
   - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` ✅ (17 passed)
   - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix` ⚠️ failed due non-writable existing install; reran with `--ignore-installed`
   - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed` ✅
+- `python3 -m ruff check tests/python/test_bindings.py` ❌ (`No module named ruff`)
+- `python3 -m mypy tests/python/test_bindings.py` ❌ (`No module named mypy`)
+- `python3 -m compileall -q python tests/python/test_bindings.py` ✅ (fallback static check)
+
+---
+
+### TASK-005: Release GIL for replay-buffer binding hot paths
+
+- **File**: `src/bindings/python_bindings.cpp`
+- **Current state**: COMPLETE (2026-02-27) — direct replay-buffer hot-path bindings now
+  release the GIL, while NumPy-wrapper bindings keep scoped internal release windows.
+- **Priority**: HIGH — long replay-buffer calls can hold the GIL and stall Python threads.
+- **Rationale**: `ReplayBuffer` and `CompactReplayBuffer` bindings currently expose hot
+  paths without `py::call_guard<py::gil_scoped_release>()`, including direct methods like
+  `add_game`, `sample`, and compact checkpoint I/O (`save_to_file`, `load_from_file`).
+  Additionally, NumPy-wrapper bindings (`sample_batch`, `export_buffer`, `import_buffer`)
+  already perform internal `py::gil_scoped_release` around native buffer work and must keep
+  the GIL while constructing Python objects.
+- **Fix**:
+  - Add `py::call_guard<py::gil_scoped_release>()` to direct C++ methods that do not touch
+    Python objects: dense/compact `add_game`, dense/compact `sample`, and compact
+    `save_to_file` / `load_from_file`.
+  - Keep `sample_batch` / `export_buffer` / `import_buffer` on internal scoped-release
+    helpers to avoid releasing the GIL across Python array creation/conversion code.
+- **Acceptance criteria**:
+  1. Direct dense/compact replay-buffer hot-path bindings release the GIL
+  2. NumPy-wrapper replay bindings retain safe internal scoped GIL release behavior
+  3. Existing replay-buffer binding behavior remains unchanged
+  4. Binding tests pass
+- **Implementation notes (2026-02-27)**:
+  - Added `py::call_guard<py::gil_scoped_release>()` to:
+    - `ReplayBuffer.add_game(...)`
+    - `ReplayBuffer.sample(...)`
+    - `CompactReplayBuffer.add_game(...)`
+    - `CompactReplayBuffer.sample(...)`
+    - `CompactReplayBuffer.save_to_file(...)`
+    - `CompactReplayBuffer.load_from_file(...)`
+  - Preserved existing internal `py::gil_scoped_release` windows in:
+    `replay_buffer_sample_batch_numpy_impl(...)`,
+    `replay_buffer_export_numpy_impl(...)`, and
+    `replay_buffer_import_numpy_impl(...)`.
+  - Added regression test:
+    `test_replay_buffer_bindings_release_gil_for_hot_paths`.
+- **Validation (2026-02-27)**:
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` ✅
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` ✅ (18 passed)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix` ⚠️ failed due non-writable existing install; reran with `--ignore-installed`
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed` ✅
   - `python3 -m ruff check tests/python/test_bindings.py` ❌ (`No module named ruff`)
   - `python3 -m mypy tests/python/test_bindings.py` ❌ (`No module named mypy`)
   - `python3 -m compileall -q python tests/python/test_bindings.py` ✅ (fallback static check)

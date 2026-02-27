@@ -1132,8 +1132,16 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::init<std::size_t, std::uint64_t>(),
             py::arg("capacity") = alphazero::selfplay::ReplayBuffer::kDefaultCapacity,
             py::arg("random_seed") = 0x9E3779B97F4A7C15ULL)
-        .def("add_game", &alphazero::selfplay::ReplayBuffer::add_game, py::arg("positions"))
-        .def("sample", &alphazero::selfplay::ReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "add_game",
+            &alphazero::selfplay::ReplayBuffer::add_game,
+            py::arg("positions"),
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "sample",
+            &alphazero::selfplay::ReplayBuffer::sample,
+            py::arg("batch_size"),
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "sample_batch",
             &replay_buffer_sample_batch_numpy,
@@ -1184,8 +1192,16 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("random_seed") = 0x9E3779B97F4A7C15ULL,
             py::arg("sampling_strategy") = SamplingStrategy::kUniform,
             py::arg("recency_weight_lambda") = 1.0F)
-        .def("add_game", &CompactReplayBuffer::add_game, py::arg("positions"))
-        .def("sample", &CompactReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "add_game",
+            &CompactReplayBuffer::add_game,
+            py::arg("positions"),
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "sample",
+            &CompactReplayBuffer::sample,
+            py::arg("batch_size"),
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "sample_batch",
             &compact_replay_buffer_sample_batch_numpy,
@@ -1211,8 +1227,16 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("move_numbers"),
             py::arg("encoded_state_size"),
             py::arg("policy_size"))
-        .def("save_to_file", &CompactReplayBuffer::save_to_file, py::arg("path"))
-        .def("load_from_file", &CompactReplayBuffer::load_from_file, py::arg("path"));
+        .def(
+            "save_to_file",
+            &CompactReplayBuffer::save_to_file,
+            py::arg("path"),
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "load_from_file",
+            &CompactReplayBuffer::load_from_file,
+            py::arg("path"),
+            py::call_guard<py::gil_scoped_release>());
 
     py::enum_<alphazero::selfplay::GameTerminationReason>(module, "GameTerminationReason")
         .value("NATURAL", alphazero::selfplay::GameTerminationReason::kNatural)
