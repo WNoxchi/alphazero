@@ -386,7 +386,10 @@ template <typename StateType>
 [[nodiscard]] std::vector<float> encode_state_flat(const GameState& state) {
     const std::size_t value_count = encoded_state_size(state);
     std::vector<float> encoded(value_count, 0.0F);
-    state.encode(encoded.data());
+    {
+        py::gil_scoped_release release_gil;
+        state.encode(encoded.data());
+    }
     return encoded;
 }
 
@@ -533,7 +536,10 @@ template <typename StateType>
     const int cols) {
     py::array_t<float> encoded(
         {static_cast<py::ssize_t>(channels), static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(cols)});
-    state.encode(encoded.mutable_data());
+    {
+        py::gil_scoped_release release_gil;
+        state.encode(encoded.mutable_data());
+    }
     return encoded;
 }
 
@@ -865,8 +871,12 @@ PYBIND11_MODULE(alphazero_cpp, module) {
     module.doc() = "pybind11 bridge for the AlphaZero C++ engine";
 
     py::class_<GameState>(module, "GameState")
-        .def("apply_action", &GameState::apply_action, py::arg("action"))
-        .def("legal_actions", &GameState::legal_actions)
+        .def(
+            "apply_action",
+            &GameState::apply_action,
+            py::arg("action"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions", &GameState::legal_actions, py::call_guard<py::gil_scoped_release>())
         .def("is_terminal", &GameState::is_terminal)
         .def("outcome", &GameState::outcome, py::arg("player"))
         .def("current_player", &GameState::current_player)
@@ -874,7 +884,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "encode",
             [](const GameState& state) { return encode_state_flat(state); },
             "Encode the state into a flat float vector.")
-        .def("clone", &GameState::clone)
+        .def("clone", &GameState::clone, py::call_guard<py::gil_scoped_release>())
         .def("hash", &GameState::hash)
         .def("to_string", &GameState::to_string)
         .def("__repr__", [](const GameState& state) { return state.to_string(); })
@@ -882,21 +892,27 @@ PYBIND11_MODULE(alphazero_cpp, module) {
 
     py::class_<ChessState, GameState>(module, "ChessState")
         .def(py::init<>())
-        .def_static("from_fen", &ChessState::from_fen, py::arg("fen"))
-        .def("to_fen", &ChessState::to_fen)
+        .def_static(
+            "from_fen",
+            &ChessState::from_fen,
+            py::arg("fen"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("to_fen", &ChessState::to_fen, py::call_guard<py::gil_scoped_release>())
         .def_static(
             "actions_to_pgn",
             &ChessState::actions_to_pgn,
             py::arg("action_history"),
             py::arg("result"),
-            py::arg("starting_fen") = std::string{})
+            py::arg("starting_fen") = std::string{},
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "apply_action",
             [](const ChessState& state, const int action) {
                 return downcast_state_unique_ptr<ChessState>(state.apply_action(action), "ChessState.apply_action()");
             },
-            py::arg("action"))
-        .def("legal_actions", &ChessState::legal_actions)
+            py::arg("action"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions", &ChessState::legal_actions, py::call_guard<py::gil_scoped_release>())
         .def("is_terminal", &ChessState::is_terminal)
         .def("outcome", &ChessState::outcome, py::arg("player"))
         .def("current_player", &ChessState::current_player)
@@ -909,35 +925,43 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "clone",
             [](const ChessState& state) {
                 return downcast_state_unique_ptr<ChessState>(state.clone(), "ChessState.clone()");
-            })
+            },
+            py::call_guard<py::gil_scoped_release>())
         .def("hash", &ChessState::hash)
-        .def("action_to_uci", &chess_action_to_uci, py::arg("action"))
-        .def("uci_to_action", &chess_uci_to_action, py::arg("uci"))
-        .def("legal_actions_uci", &chess_legal_actions_uci)
+        .def("action_to_uci", &chess_action_to_uci, py::arg("action"), py::call_guard<py::gil_scoped_release>())
+        .def("uci_to_action", &chess_uci_to_action, py::arg("uci"), py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions_uci", &chess_legal_actions_uci, py::call_guard<py::gil_scoped_release>())
         .def("to_string", &ChessState::to_string)
         .def("__repr__", [](const ChessState& state) { return state.to_string(); })
         .def("__str__", [](const ChessState& state) { return state.to_string(); });
 
     py::class_<GoState, GameState>(module, "GoState")
         .def(py::init<>())
-        .def_static("from_sgf", &GoState::from_sgf, py::arg("sgf"))
+        .def_static(
+            "from_sgf",
+            &GoState::from_sgf,
+            py::arg("sgf"),
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "to_sgf",
             &GoState::to_sgf,
-            py::arg("result") = std::string{"?"})
+            py::arg("result") = std::string{"?"},
+            py::call_guard<py::gil_scoped_release>())
         .def_static(
             "actions_to_sgf",
             &GoState::actions_to_sgf,
             py::arg("action_history"),
             py::arg("result") = std::string{"?"},
-            py::arg("komi") = alphazero::go::kDefaultKomi)
+            py::arg("komi") = alphazero::go::kDefaultKomi,
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "apply_action",
             [](const GoState& state, const int action) {
                 return downcast_state_unique_ptr<GoState>(state.apply_action(action), "GoState.apply_action()");
             },
-            py::arg("action"))
-        .def("legal_actions", &GoState::legal_actions)
+            py::arg("action"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions", &GoState::legal_actions, py::call_guard<py::gil_scoped_release>())
         .def("is_terminal", &GoState::is_terminal)
         .def("outcome", &GoState::outcome, py::arg("player"))
         .def("current_player", &GoState::current_player)
@@ -948,7 +972,8 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "clone",
             [](const GoState& state) {
                 return downcast_state_unique_ptr<GoState>(state.clone(), "GoState.clone()");
-            })
+            },
+            py::call_guard<py::gil_scoped_release>())
         .def("hash", &GoState::hash)
         .def("to_string", &GoState::to_string)
         .def("__repr__", [](const GoState& state) { return state.to_string(); })

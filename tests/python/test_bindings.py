@@ -512,6 +512,48 @@ class PythonBindingsTests(unittest.TestCase):
             ),
         )
 
+    def test_game_state_bindings_release_gil_for_hot_paths(self) -> None:
+        """WHY: state transition/encoding helpers can be CPU-heavy and should not monopolize the Python GIL."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        required_patterns = (
+            r'\.def\(\s*"apply_action"\s*,\s*&GameState::apply_action\s*,\s*py::arg\("action"\)\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"legal_actions"\s*,\s*&GameState::legal_actions\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"clone"\s*,\s*&GameState::clone\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def_static\(\s*"from_fen"\s*,\s*&ChessState::from_fen\s*,\s*py::arg\("fen"\)\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"legal_actions_uci"\s*,\s*&chess_legal_actions_uci\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def_static\(\s*"from_sgf"\s*,\s*&GoState::from_sgf\s*,\s*py::arg\("sgf"\)\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"legal_actions"\s*,\s*&GoState::legal_actions\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+        )
+        for required_pattern in required_patterns:
+            self.assertRegex(bindings_source, re.compile(required_pattern))
+
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r"std::vector<float>\s+encode_state_flat\([^)]*\)\s*\{"
+                r".*?py::gil_scoped_release\s+release_gil;"
+                r".*?state\.encode\(encoded\.data\(\)\);",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r"py::array_t<float>\s+encode_state_tensor\([^)]*\)\s*\{"
+                r".*?py::gil_scoped_release\s+release_gil;"
+                r".*?state\.encode\(encoded\.mutable_data\(\)\);",
+                re.DOTALL,
+            ),
+        )
+
     def test_replay_buffer_bindings_release_gil_for_hot_paths(self) -> None:
         """WHY: replay hot paths should release the GIL either at the binding edge or around heavy native buffer operations."""
         bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")

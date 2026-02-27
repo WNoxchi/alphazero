@@ -304,3 +304,34 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
   - `python3 -m ruff check tests/python/test_bindings.py` ❌ (`No module named ruff`)
   - `python3 -m mypy tests/python/test_bindings.py` ❌ (`No module named mypy`)
   - `python3 -m compileall -q python tests/python/test_bindings.py` ✅ (fallback static check)
+
+---
+
+### TASK-006: Release GIL for game-state binding hot paths
+
+- **Files**: `src/bindings/python_bindings.cpp`, `tests/python/test_bindings.py`
+- **Current state**: COMPLETE (2026-02-27) — game-state transition/serialization hot paths now release the GIL, and state encoding releases the GIL around native encode work.
+- **Priority**: HIGH — these methods are often called in Python-driven loops and previously held the GIL across native move-generation/encoding work.
+- **Rationale**: Several `GameState`, `ChessState`, and `GoState` binding methods performed substantial native work while holding the Python GIL (for example: `apply_action`, `legal_actions`, `clone`, and SGF/FEN conversion helpers). The shared encode helpers also held the GIL during `state.encode(...)` buffer fills. This can stall unrelated Python threads even though the work is fully native C++.
+- **Fix**:
+  - Added `py::call_guard<py::gil_scoped_release>()` to state hot-path methods that do not touch Python objects during execution:
+    - `GameState`: `apply_action`, `legal_actions`, `clone`
+    - `ChessState`: `from_fen`, `to_fen`, `actions_to_pgn`, `apply_action`, `legal_actions`, `clone`, `action_to_uci`, `uci_to_action`, `legal_actions_uci`
+    - `GoState`: `from_sgf`, `to_sgf`, `actions_to_sgf`, `apply_action`, `legal_actions`, `clone`
+  - Updated encode helpers to release GIL only around native encode work while keeping Python object creation safe:
+    - `encode_state_flat(...)` now wraps `state.encode(...)` in `py::gil_scoped_release`
+    - `encode_state_tensor(...)` now allocates the NumPy array with GIL held, then releases the GIL only for `state.encode(...)`
+- **Acceptance criteria**:
+  1. Hot-path game-state bindings release GIL at the binding edge
+  2. Encode helpers release GIL around native encode work without releasing it across NumPy object construction
+  3. Binding tests pass
+  4. Editable packaging/static checks pass per sandbox guidance
+- **Implementation notes (2026-02-27)**:
+  - Added regression test `test_game_state_bindings_release_gil_for_hot_paths` to lock in binding call-guard coverage and encode-helper scoped-release patterns.
+- **Validation (2026-02-27)**:
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` ✅
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` ✅ (19 passed)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed` ✅
+  - `python3 -m ruff check tests/python/test_bindings.py` ❌ (`No module named ruff`)
+  - `python3 -m mypy tests/python/test_bindings.py` ❌ (`No module named mypy`)
+  - `python3 -m compileall -q python tests/python/test_bindings.py` ✅ (fallback static check)
