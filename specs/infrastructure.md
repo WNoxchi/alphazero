@@ -7,37 +7,43 @@ alphazero/
 ├── CMakeLists.txt                    # Top-level CMake build
 ├── pyproject.toml                    # Python package configuration
 ├── configs/
-│   ├── chess_default.yaml            # Default chess training config
-│   └── go_default.yaml              # Default Go training config
+│   ├── chess.yaml                   # Chess training config (production)
+│   ├── chess_default.yaml           # Chess training config (alias)
+│   ├── chess_test.yaml              # Chess test config (tiny, fast)
+│   ├── go.yaml                      # Go training config (production)
+│   ├── go_default.yaml              # Go training config (alias)
+│   └── go_test.yaml                 # Go test config (tiny, fast)
 │
 ├── src/                              # C++ source code
 │   ├── CMakeLists.txt
 │   ├── games/
 │   │   ├── game_state.h             # Abstract GameState interface
-│   │   ├── game_config.h            # GameConfig struct
+│   │   ├── game_config.h            # GameConfig base class
 │   │   ├── chess/
 │   │   │   ├── chess_state.h
 │   │   │   ├── chess_state.cpp
+│   │   │   ├── chess_config.h       # ChessGameConfig
+│   │   │   ├── chess_config.cpp
 │   │   │   ├── bitboard.h           # Bitboard utilities
 │   │   │   ├── bitboard.cpp
 │   │   │   ├── movegen.h            # Move generation
-│   │   │   ├── movegen.cpp
-│   │   │   └── chess_config.cpp     # Chess GameConfig
+│   │   │   └── movegen.cpp
 │   │   └── go/
 │   │       ├── go_state.h
 │   │       ├── go_state.cpp
+│   │       ├── go_config.h          # GoGameConfig
+│   │       ├── go_config.cpp
 │   │       ├── go_rules.h           # Liberty tracking, capture, ko
 │   │       ├── go_rules.cpp
 │   │       ├── scoring.h            # Tromp-Taylor scoring
-│   │       ├── scoring.cpp
-│   │       └── go_config.cpp        # Go GameConfig
+│   │       └── scoring.cpp
 │   │
 │   ├── mcts/
-│   │   ├── mcts_node.h              # MCTSNode struct (SoA layout)
-│   │   ├── node_store.h             # NodeStore interface
-│   │   ├── arena_node_store.h       # Arena allocator implementation
+│   │   ├── mcts_node.h              # MCTSNodeT<MaxActions> template (SoA layout)
+│   │   ├── node_store.h             # NodeStoreT<NodeType> interface
+│   │   ├── arena_node_store.h       # ArenaNodeStoreT<NodeType> implementation
 │   │   ├── arena_node_store.cpp
-│   │   ├── mcts_search.h            # MCTS simulation logic
+│   │   ├── mcts_search.h            # MctsSearchT<NodeType> + RuntimeMctsSearch
 │   │   ├── mcts_search.cpp
 │   │   ├── eval_queue.h             # Async evaluation queue
 │   │   └── eval_queue.cpp
@@ -45,10 +51,14 @@ alphazero/
 │   ├── selfplay/
 │   │   ├── self_play_manager.h      # Orchestrates concurrent games
 │   │   ├── self_play_manager.cpp
-│   │   ├── self_play_game.h         # Single game lifecycle
+│   │   ├── self_play_game.h         # Single game lifecycle + AddGameFn type erasure
 │   │   ├── self_play_game.cpp
-│   │   ├── replay_buffer.h          # Ring buffer in unified memory
-│   │   └── replay_buffer.cpp
+│   │   ├── replay_buffer.h          # Dense ReplayBuffer + ReplayPosition
+│   │   ├── replay_buffer.cpp
+│   │   ├── compact_replay_buffer.h  # CompactReplayBuffer (bitpacked + sparse policy)
+│   │   ├── compact_replay_buffer.cpp
+│   │   ├── replay_compression.h     # State compression/decompression utilities
+│   │   └── replay_compression.cpp
 │   │
 │   ├── nn/
 │   │   ├── nn_inference.h           # NeuralNetInference interface
@@ -61,7 +71,7 @@ alphazero/
 ├── python/                           # Python source code
 │   └── alphazero/
 │       ├── __init__.py
-│       ├── config.py                # Configuration loading (YAML)
+│       ├── config.py                # GameConfig + YAML loading
 │       ├── network/
 │       │   ├── __init__.py
 │       │   ├── base.py              # AlphaZeroNetwork base class
@@ -70,34 +80,58 @@ alphazero/
 │       │   └── bn_fold.py           # Batch norm folding utility
 │       ├── training/
 │       │   ├── __init__.py
-│       │   ├── trainer.py           # Training loop
+│       │   ├── trainer.py           # Training step + batch preparation
 │       │   ├── loss.py              # Loss function implementations
 │       │   └── lr_schedule.py       # Learning rate schedule
 │       ├── pipeline/
 │       │   ├── __init__.py
-│       │   ├── orchestrator.py      # GPU scheduling (S:T interleaving)
+│       │   ├── orchestrator.py      # Parallel pipeline (inference + training threads)
 │       │   └── evaluation.py        # Periodic Elo estimation
 │       └── utils/
 │           ├── __init__.py
-│           ├── logging.py           # TensorBoard logging
-│           └── checkpoint.py        # Checkpoint save/load
+│           ├── logging.py           # TensorBoard + console logging
+│           └── checkpoint.py        # Checkpoint save/load + replay buffer persistence
+│
+├── web/                              # Web UI for browser play
+│   ├── server.py                    # FastAPI application + WebSocket endpoints
+│   ├── engine.py                    # ChessEngine wrapper for human play
+│   ├── watch_engine.py              # WatchEngine for auto-play viewing
+│   ├── model_manager.py             # Checkpoint discovery and model loading
+│   ├── requirements.txt             # FastAPI, uvicorn, websockets
+│   └── static/                      # HTML/CSS/JS frontend
+│       ├── index.html
+│       └── watch.html
 │
 ├── tests/
 │   ├── cpp/
 │   │   ├── CMakeLists.txt
+│   │   ├── test_scaffold_smoke.cpp  # Minimal smoke test (always built)
+│   │   ├── test_game_interfaces.cpp # Game abstraction interface tests
+│   │   ├── test_chess_bitboard.cpp  # Bitboard operations
 │   │   ├── test_chess_movegen.cpp   # Chess move generation perft tests
+│   │   ├── test_chess_state.cpp     # Chess state logic
 │   │   ├── test_chess_encoding.cpp  # Chess input/output encoding
+│   │   ├── test_chess_serialization.cpp  # FEN/PGN round-trip
 │   │   ├── test_go_rules.cpp        # Go rules (capture, ko, scoring)
+│   │   ├── test_go_state.cpp        # Go state logic
 │   │   ├── test_go_encoding.cpp     # Go input/output encoding
+│   │   ├── test_go_serialization.cpp # SGF round-trip
 │   │   ├── test_mcts.cpp            # MCTS correctness
 │   │   ├── test_eval_queue.cpp      # Eval queue threading
-│   │   ├── test_replay_buffer.cpp   # Replay buffer concurrency
-│   │   └── test_arena.cpp           # Arena allocator
+│   │   ├── test_replay_buffer.cpp   # Dense replay buffer concurrency
+│   │   ├── test_compact_replay_buffer.cpp  # Compact replay buffer
+│   │   ├── test_replay_compression.cpp     # Compression round-trip
+│   │   ├── test_arena.cpp           # Arena allocator
+│   │   ├── test_self_play_game.cpp  # Single game lifecycle
+│   │   ├── test_self_play_manager.cpp  # Manager orchestration
+│   │   └── test_libtorch_inference.cpp # LibTorch integration
 │   └── python/
 │       ├── test_network.py          # Network forward pass shapes
 │       ├── test_loss.py             # Loss function computation
 │       ├── test_bn_fold.py          # BN folding correctness
-│       └── test_training.py         # End-to-end training step
+│       ├── test_training.py         # End-to-end training step
+│       ├── test_bindings.py         # C++ bindings integration tests
+│       └── test_train_script.py     # Training script logic tests
 │
 ├── scripts/
 │   ├── train.py                     # Main training entry point
@@ -113,54 +147,58 @@ alphazero/
 │   ├── pipeline.md
 │   └── infrastructure.md
 │
-└── .local/                           # Local development files (not committed)
-    └── refs/                         # Reference papers and links
+└── .claude/                          # Claude Code project settings
+    └── settings.json
 ```
 
 ## 2. Build System
 
 ### CMake (C++)
 
-The C++ code is built with CMake (minimum version 3.24 for CUDA support).
+The C++ code is built with CMake (minimum version 3.24).
 
 ```cmake
 cmake_minimum_required(VERSION 3.24)
-project(alphazero LANGUAGES CXX CUDA)
+project(alphazero VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find dependencies
-find_package(Torch REQUIRED)
-find_package(pybind11 REQUIRED)
-find_package(CUDAToolkit REQUIRED)
+# Optional build features (all default ON)
+option(ALPHAZERO_ENABLE_CUDA "Enable CUDA support" ON)
+option(ALPHAZERO_ENABLE_TORCH "Enable LibTorch" ON)
+option(ALPHAZERO_ENABLE_PYBIND "Build Python extension" ON)
+option(ALPHAZERO_ENABLE_CPP_TESTS "Build C++ tests" ON)
+
+# Dependencies (optional — build degrades gracefully)
+find_package(CUDAToolkit)    # warns if not found
+find_package(Torch)          # warns if not found
+find_package(pybind11)       # required for Python extension
+find_package(GTest)          # required for full test suite
 
 # Engine library
-add_library(alphazero_engine
+add_library(alphazero_engine STATIC
     src/games/chess/chess_state.cpp
     src/games/chess/bitboard.cpp
     src/games/chess/movegen.cpp
+    src/games/chess/chess_config.cpp
     src/games/go/go_state.cpp
     src/games/go/go_rules.cpp
     src/games/go/scoring.cpp
+    src/games/go/go_config.cpp
     src/mcts/arena_node_store.cpp
     src/mcts/mcts_search.cpp
     src/mcts/eval_queue.cpp
     src/selfplay/self_play_manager.cpp
     src/selfplay/self_play_game.cpp
     src/selfplay/replay_buffer.cpp
+    src/selfplay/compact_replay_buffer.cpp
+    src/selfplay/replay_compression.cpp
     src/nn/libtorch_inference.cpp
 )
-target_link_libraries(alphazero_engine
-    ${TORCH_LIBRARIES}
-    CUDA::cudart
-    pthread
-)
-target_compile_options(alphazero_engine PRIVATE
-    -O3 -march=armv9-a     # ARM optimization for DGX Spark
-    -Wall -Wextra
-    -fsanitize=thread      # Enable during development only
-)
+set_target_properties(alphazero_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(alphazero_engine Threads::Threads)
+# Link optional deps if found: Torch, CUDA::cudart
 
 # Python bindings
 pybind11_add_module(alphazero_cpp src/bindings/python_bindings.cpp)
@@ -170,6 +208,8 @@ target_link_libraries(alphazero_cpp PRIVATE alphazero_engine)
 enable_testing()
 add_subdirectory(tests/cpp)
 ```
+
+Note: `POSITION_INDEPENDENT_CODE ON` is required on the engine library for the pybind11 `.so` extension to link correctly.
 
 ### Python Package
 
@@ -212,7 +252,7 @@ dev = [
 |---|---|---|
 | GCC | 13+ | C++20 compiler (ARM) |
 | CMake | 3.24+ | Build system |
-| CUDA Toolkit | 12.x | GPU compute |
+| CUDA Toolkit | 13.0 | GPU compute |
 | cuDNN | 9.x | Optimized NN primitives |
 | Python | 3.11+ | Training code |
 
@@ -377,10 +417,8 @@ conda create -n alphazero python=3.11
 conda activate alphazero
 
 # Install PyTorch (ARM + CUDA for Grace Blackwell)
-# Use the appropriate PyTorch build for the DGX Spark platform.
-# As of 2025, NVIDIA provides optimized PyTorch wheels via the
-# DGX software stack or NGC containers.
-pip install torch  # or use NVIDIA's provided wheel
+# Default PyPI only ships CPU-only for aarch64; use the CUDA index:
+pip install torch --index-url https://download.pytorch.org/whl/cu130
 
 # Install project
 pip install -e ".[dev]"
@@ -459,17 +497,43 @@ The play script uses the same MCTS engine as self-play but with:
 - Pondering disabled (future feature)
 - Resignation enabled with calibrated threshold
 
-## 8. Future Optimizations (Not in v1)
+## 8. Web UI
 
-The following optimizations are identified but deferred to post-v1:
+A browser-based interface for playing against trained models and watching self-play games.
 
-| Optimization | Expected Impact | Complexity |
-|---|---|---|
-| FP8 inference via TensorRT | ~2× inference throughput | Medium |
-| Custom CUDA kernels for MCTS batching | Reduced CPU→GPU latency | High |
-| Replay buffer compression | ~100× memory reduction | Low |
-| Transposition table (chess) | ~10-20% fewer NN evals | Medium |
-| Pondering (background search) | Better time utilization during play | Low |
-| ONNX Runtime backend | Potentially faster inference | Low |
-| Multi-DGX Spark training (2-unit cluster) | 2× throughput | Medium |
-| Transformer network architecture | Better Elo/FLOP | Medium |
+### Dependencies
+
+```
+fastapi>=0.110
+uvicorn[standard]>=0.27
+websockets>=12.0
+```
+
+### Running
+
+```bash
+pip install -r web/requirements.txt
+python -m web.server --model checkpoints/checkpoint_00009000.pt --simulations 800 --port 8000
+```
+
+Then open `http://127.0.0.1:8000`.
+
+### Components
+
+- **`server.py`**: FastAPI application with WebSocket endpoints for real-time game communication
+- **`engine.py`**: ChessEngine wrapper for human vs. AI play
+- **`watch_engine.py`**: WatchEngine for automated AI vs. AI games with live viewing
+- **`model_manager.py`**: Checkpoint discovery, architecture inference from state_dict, and lazy model loading with caching
+
+## 9. Future Optimizations
+
+| Optimization | Status | Expected Impact | Complexity |
+|---|---|---|---|
+| Replay buffer compression | **Implemented** (`CompactReplayBuffer`) | ~100× memory reduction | Low |
+| FP8 inference via TensorRT | Deferred | ~2× inference throughput | Medium |
+| Custom CUDA kernels for MCTS batching | Deferred | Reduced CPU→GPU latency | High |
+| Transposition table (chess) | Deferred | ~10-20% fewer NN evals | Medium |
+| Pondering (background search) | Deferred | Better time utilization during play | Low |
+| ONNX Runtime backend | Deferred | Potentially faster inference | Low |
+| Multi-DGX Spark training (2-unit cluster) | Deferred | 2× throughput | Medium |
+| Transformer network architecture | Deferred | Better Elo/FLOP | Medium |

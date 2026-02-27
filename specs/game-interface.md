@@ -395,7 +395,7 @@ Support SGF (Smart Game Format) for game records. Useful for analysis and compat
 The Python training code needs game configuration to construct the neural network:
 
 ```python
-@dataclass
+@dataclass(frozen=True, slots=True)
 class GameConfig:
     name: str
     board_shape: tuple[int, int]       # (8, 8) or (19, 19)
@@ -404,6 +404,11 @@ class GameConfig:
     value_head_type: str                # "scalar" or "wdl"
     supports_symmetry: bool
     num_symmetries: int                 # 1 or 8
+    float_plane_indices: tuple[int, ...] = ()  # indices of non-binary planes (for CompactReplayBuffer compression)
+
+    # Derived properties:
+    # num_float_planes  = len(float_plane_indices)
+    # num_binary_planes = input_channels - num_float_planes
 
 CHESS_CONFIG = GameConfig(
     name="chess",
@@ -413,6 +418,7 @@ CHESS_CONFIG = GameConfig(
     value_head_type="wdl",
     supports_symmetry=False,
     num_symmetries=1,
+    float_plane_indices=(113, 118),  # total move count and no-progress count
 )
 
 GO_CONFIG = GameConfig(
@@ -423,6 +429,7 @@ GO_CONFIG = GameConfig(
     value_head_type="scalar",
     supports_symmetry=True,
     num_symmetries=8,
+    float_plane_indices=(),  # all planes are binary
 )
 ```
 

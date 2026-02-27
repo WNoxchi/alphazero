@@ -66,7 +66,7 @@ A single dual-headed network `(p, v) = f_θ(s)`:
 
 ### MCTS
 
-Each move selection runs 800 simulations of Monte-Carlo Tree Search:
+Each move selection runs MCTS simulations (budget configurable per game; defaults: 200 for chess, 400 for Go):
 1. **Select**: Traverse tree choosing actions by PUCT (Q + exploration bonus)
 2. **Expand**: Add leaf node to tree
 3. **Evaluate**: Neural network inference on leaf position
@@ -93,6 +93,7 @@ c        = 10^-4                             (L2 regularization)
 | Build system | CMake | Standard for C++ CUDA projects |
 | GPU compute | CUDA, cuDNN | Native Blackwell support |
 | Monitoring | TensorBoard | Standard; local logging to NVMe |
+| Web UI | FastAPI + WebSockets | Browser play against trained models, live game viewer |
 | Future: custom CUDA kernels | CUDA C++ | Natural extension of engine code |
 
 ## 5. High-Level Architecture
@@ -127,7 +128,7 @@ c        = 10^-4                             (L2 regularization)
 │       ┌─────────────────┐    └───────────────────────────────┘  │
 │       │  Replay Buffer  │                                       │
 │       │  (ring buffer,  │◄── written by self-play               │
-│       │   1-2M pos)     │──► read by training                   │
+│       │   up to 5M pos) │──► read by training                   │
 │       └─────────────────┘                                       │
 │                                                                 │
 │       ┌─────────────────┐                                       │
