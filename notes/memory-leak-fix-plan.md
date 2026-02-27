@@ -80,8 +80,8 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
 ### TASK-002: Add GIL release to `SelfPlayManager.start()` and other bindings
 
 - **File**: `src/bindings/python_bindings.cpp`
-- **Current state**: Inconsistent GIL management — `stop()` releases GIL but `start()` and
-  other methods do not.
+- **Current state**: COMPLETE (2026-02-27) — `start()`, `update_simulations_per_move()`, and
+  `metrics()` now release the GIL via `py::call_guard<py::gil_scoped_release>()`.
 - **Priority**: HIGH — GIL contention during thread spawning.
 - **Rationale**: The SelfPlayManager Python bindings (around lines 1443-1450) have
   inconsistent GIL handling:
@@ -122,6 +122,19 @@ lifecycle inefficiency and minor exception-safety gaps in capsule-based numpy vi
   2. `update_simulations_per_move()` and `metrics()` release GIL
   3. Existing tests pass
   4. The training pipeline starts and runs self-play without hanging
+- **Implementation notes (2026-02-27)**:
+  - Added `py::call_guard<py::gil_scoped_release>()` to `SelfPlayManager.start()`.
+  - Added `py::call_guard<py::gil_scoped_release>()` to
+    `SelfPlayManager.update_simulations_per_move(...)`.
+  - Added `py::call_guard<py::gil_scoped_release>()` to `SelfPlayManager.metrics()`.
+  - Added regression coverage:
+    `test_self_play_manager_bindings_release_gil_for_lifecycle_and_metrics_calls`.
+- **Validation (2026-02-27)**:
+  - `cmake --build build --target alphazero_cpp -j$(nproc)` ✅
+  - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py` ✅ (16 passed)
+  - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed` ✅
+  - `ruff` and `mypy` are not installed in this sandbox session; used `python3 -m compileall -q tests/python/test_bindings.py` fallback ✅
+  - `PYTHONPATH=python:build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python scripts/train.py --config configs/chess_test.yaml` startup/shutdown smoke run exited cleanly when interrupted (`Training interrupted at step 0`), with no shutdown hang observed.
 
 ---
 

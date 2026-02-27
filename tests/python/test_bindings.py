@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -482,6 +483,34 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertTrue(game_config.randomize_dirichlet_epsilon)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
+
+    def test_self_play_manager_bindings_release_gil_for_lifecycle_and_metrics_calls(self) -> None:
+        """WHY: removing these call guards can reintroduce Python-thread stalls during self-play startup and runtime control calls."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r'\.def\(\s*"start"\s*,\s*&SelfPlayManager::start\s*,\s*'
+                r"py::call_guard<py::gil_scoped_release>\(\)\s*\)"
+            ),
+        )
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r'\.def\(\s*"update_simulations_per_move"\s*,\s*'
+                r"&SelfPlayManager::update_simulations_per_move\s*,\s*"
+                r'py::arg\("new_sims"\)\s*,\s*'
+                r"py::call_guard<py::gil_scoped_release>\(\)\s*\)"
+            ),
+        )
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r'\.def\(\s*"metrics"\s*,\s*&SelfPlayManager::metrics\s*,\s*'
+                r"py::call_guard<py::gil_scoped_release>\(\)\s*\)"
+            ),
+        )
 
     def test_self_play_manager_exposes_simulation_budget_update_api(self) -> None:
         """WHY: train.py must be able to retune self-play simulation budgets at runtime for phase-4 scheduling."""
