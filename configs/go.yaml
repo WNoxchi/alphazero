@@ -64,5 +64,5 @@ system:
   precision: "bf16"
   compile: true
   num_gpu: 1
-  checkpoint_dir: "./checkpoints"
-  log_dir: "./logs"
+  checkpoint_dir: "./checkpoints_go"
+  log_dir: "./logs_go"
