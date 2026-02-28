@@ -53,7 +53,7 @@ pipeline:
   training_steps_per_cycle: 1
 
 replay_buffer:
-  capacity: 5000000                # compact replay ~6 GB at 19x19; restores long-horizon data retention
+  capacity: 20000000               # ~23 GB compact; ~80K games of history (KataGo-scale window)
 
 evaluation:
   interval_steps: 10000
