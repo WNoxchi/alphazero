@@ -214,6 +214,7 @@ class PythonBindingsTests(unittest.TestCase):
             float_plane_indices=[1],
             full_policy_size=5,
             random_seed=4321,
+            squares_per_plane=64,
         )
 
         import numpy.testing as npt
@@ -260,6 +261,7 @@ class PythonBindingsTests(unittest.TestCase):
             float_plane_indices=[1],
             full_policy_size=5,
             random_seed=9876,
+            squares_per_plane=64,
         )
         restored.import_buffer(*exported, encoded_state_size=128, policy_size=5)
         self.assertEqual(restored.size(), 1)

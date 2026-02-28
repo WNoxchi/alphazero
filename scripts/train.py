@@ -408,7 +408,7 @@ def _build_replay_buffer(cpp: Any, config: Mapping[str, Any], game_config: GameC
         )
 
     rows, cols = game_config.board_shape
-    if rows * cols != 64 or not hasattr(cpp, "CompactReplayBuffer"):
+    if not hasattr(cpp, "CompactReplayBuffer"):
         return cpp.ReplayBuffer(capacity=capacity, random_seed=random_seed)
 
     compact_kwargs: dict[str, Any] = {
@@ -417,6 +417,7 @@ def _build_replay_buffer(cpp: Any, config: Mapping[str, Any], game_config: GameC
         "num_float_planes": game_config.num_float_planes,
         "float_plane_indices": list(game_config.float_plane_indices),
         "full_policy_size": game_config.action_space_size,
+        "squares_per_plane": rows * cols,
         "random_seed": random_seed,
     }
     if sampling_strategy is not None:

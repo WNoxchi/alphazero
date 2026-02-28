@@ -24,6 +24,7 @@ using alphazero::selfplay::fp16_to_float;
 constexpr std::size_t kTotalPlanes = 119U;
 constexpr std::size_t kSquaresPerPlane = 64U;
 constexpr std::size_t kBinaryPlaneCount = 117U;
+constexpr std::size_t kBinaryWordCount = 117U;
 constexpr std::size_t kFloatPlaneCount = 2U;
 
 [[nodiscard]] bool is_float_plane(const std::size_t plane) {
@@ -71,13 +72,20 @@ TEST(ReplayCompressionTest, StateCompressionRoundtripPreservesBinaryAndQuantized
     const StateCompressionLayout layout = compress_state(
         dense_state,
         float_plane_indices,
+        kSquaresPerPlane,
         bitpacked_planes,
         quantized_float_planes);
+    EXPECT_EQ(layout.num_binary_words, kBinaryWordCount);
     EXPECT_EQ(layout.num_binary_planes, kBinaryPlaneCount);
     EXPECT_EQ(layout.num_float_planes, kFloatPlaneCount);
 
     std::vector<float> restored_state(kTotalPlanes * kSquaresPerPlane, -1.0F);
-    decompress_state(bitpacked_planes, quantized_float_planes, float_plane_indices, restored_state);
+    decompress_state(
+        bitpacked_planes,
+        quantized_float_planes,
+        float_plane_indices,
+        kSquaresPerPlane,
+        restored_state);
 
     for (std::size_t plane = 0U; plane < kTotalPlanes; ++plane) {
         const std::size_t base = plane * kSquaresPerPlane;
@@ -93,6 +101,68 @@ TEST(ReplayCompressionTest, StateCompressionRoundtripPreservesBinaryAndQuantized
             const float expected = dense_state[base + square] >= 0.5F ? 1.0F : 0.0F;
             EXPECT_FLOAT_EQ(restored_state[base + square], expected);
         }
+    }
+}
+
+// WHY: Go uses 19x19 inputs (361 squares), which require six 64-bit words per binary plane; this guards
+// multi-word packing/unpacking, including high-index bits in the sixth word.
+TEST(ReplayCompressionTest, StateCompressionSupportsMultiWordPlanesForNineteenByNineteenBoards) {
+    constexpr std::size_t kGoSquaresPerPlane = 361U;
+    constexpr std::size_t kGoPlanes = 3U;
+    constexpr std::size_t kGoWordsPerPlane = 6U;
+    constexpr std::size_t kGoBinaryWords = kGoPlanes * kGoWordsPerPlane;
+
+    std::vector<float> dense_state(kGoPlanes * kGoSquaresPerPlane, 0.0F);
+    for (std::size_t square = 0U; square < kGoSquaresPerPlane; ++square) {
+        if ((square % 2U) == 0U) {
+            dense_state[square] = 1.0F;
+        }
+    }
+    std::fill_n(
+        dense_state.data() + kGoSquaresPerPlane,
+        kGoSquaresPerPlane,
+        1.0F);
+    dense_state[(2U * kGoSquaresPerPlane) + 0U] = 1.0F;
+    dense_state[(2U * kGoSquaresPerPlane) + 320U] = 1.0F;
+    dense_state[(2U * kGoSquaresPerPlane) + 359U] = 1.0F;
+    dense_state[(2U * kGoSquaresPerPlane) + 360U] = 1.0F;
+
+    std::array<std::uint64_t, kGoBinaryWords> bitpacked_planes{};
+    std::array<std::uint8_t, 0U> quantized_float_planes{};
+
+    const StateCompressionLayout layout = compress_state(
+        dense_state,
+        std::span<const std::size_t>{},
+        kGoSquaresPerPlane,
+        bitpacked_planes,
+        quantized_float_planes);
+
+    EXPECT_EQ(layout.num_binary_words, kGoBinaryWords);
+    EXPECT_EQ(layout.num_binary_planes, kGoPlanes);
+    EXPECT_EQ(layout.num_float_planes, 0U);
+
+    EXPECT_EQ(bitpacked_planes[kGoWordsPerPlane + 4U], std::numeric_limits<std::uint64_t>::max());
+    EXPECT_EQ(
+        bitpacked_planes[kGoWordsPerPlane + 5U],
+        (std::uint64_t{1} << 41U) - std::uint64_t{1});
+    EXPECT_NE(bitpacked_planes[(2U * kGoWordsPerPlane) + 5U], 0U);
+
+    std::vector<float> restored_state(dense_state.size(), -1.0F);
+    decompress_state(
+        bitpacked_planes,
+        quantized_float_planes,
+        std::span<const std::size_t>{},
+        kGoSquaresPerPlane,
+        restored_state);
+
+    for (std::size_t square = 0U; square < kGoSquaresPerPlane; ++square) {
+        const float expected = (square % 2U) == 0U ? 1.0F : 0.0F;
+        EXPECT_FLOAT_EQ(restored_state[square], expected);
+        EXPECT_FLOAT_EQ(restored_state[kGoSquaresPerPlane + square], 1.0F);
+    }
+    for (std::size_t square = 0U; square < kGoSquaresPerPlane; ++square) {
+        const bool on_bit = square == 0U || square == 320U || square == 359U || square == 360U;
+        EXPECT_FLOAT_EQ(restored_state[(2U * kGoSquaresPerPlane) + square], on_bit ? 1.0F : 0.0F);
     }
 }
 

@@ -7,6 +7,7 @@
 namespace alphazero::selfplay {
 
 struct StateCompressionLayout {
+    std::size_t num_binary_words = 0U;
     std::size_t num_binary_planes = 0U;
     std::size_t num_float_planes = 0U;
 };
@@ -15,14 +16,16 @@ struct StateCompressionLayout {
 [[nodiscard]] StateCompressionLayout compress_state(
     std::span<const float> dense_state,
     std::span<const std::size_t> float_plane_indices,
+    std::size_t squares_per_plane,
     std::span<std::uint64_t> out_bitpacked_planes,
     std::span<std::uint8_t> out_quantized_float_planes);
 
-// Decompress bitpacked/quantized state back into dense [planes * 64] layout.
+// Decompress bitpacked/quantized state back into dense [planes * squares_per_plane] layout.
 void decompress_state(
     std::span<const std::uint64_t> bitpacked_planes,
     std::span<const std::uint8_t> quantized_float_planes,
     std::span<const std::size_t> float_plane_indices,
+    std::size_t squares_per_plane,
     std::span<float> out_dense_state);
 
 // IEEE-754 binary16 conversion helpers used for sparse policy storage.

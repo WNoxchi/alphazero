@@ -115,7 +115,7 @@ void expect_position_is_consistent(const ReplayPosition& position) {
 TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefaults) {
     CompactReplayPosition position{};
 
-    EXPECT_EQ(CompactReplayPosition::kMaxBinaryPlanes, 117U);
+    EXPECT_EQ(CompactReplayPosition::kMaxBinaryWords, 117U);
     EXPECT_EQ(CompactReplayPosition::kMaxFloatPlanes, 2U);
     EXPECT_EQ(CompactReplayPosition::kMaxSparsePolicy, 64U);
     EXPECT_EQ(CompactReplayPosition::kWdlSize, ReplayPosition::kWdlSize);
@@ -140,6 +140,7 @@ TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefau
     EXPECT_EQ(position.value_wdl, (std::array<float, ReplayPosition::kWdlSize>{0.0F, 0.0F, 0.0F}));
     EXPECT_EQ(position.game_id, 0U);
     EXPECT_EQ(position.move_number, 0U);
+    EXPECT_EQ(position.num_binary_words, 0U);
     EXPECT_EQ(position.num_binary_planes, 0U);
     EXPECT_EQ(position.num_float_planes, 0U);
     EXPECT_EQ(position.policy_size, 0U);
@@ -147,7 +148,7 @@ TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefau
 
 // WHY: Replay-capacity scaling assumes compact records are far smaller than dense ReplayPosition entries.
 TEST(ReplayBufferTest, CompactReplayPositionIsSubstantiallySmallerThanDenseReplayPosition) {
-    EXPECT_LE(sizeof(CompactReplayPosition), 1300U);
+    EXPECT_LE(sizeof(CompactReplayPosition), 1304U);
     EXPECT_GT(sizeof(ReplayPosition), sizeof(CompactReplayPosition));
 }
 

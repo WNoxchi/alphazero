@@ -227,6 +227,250 @@ This plan covers the remaining improvements that require code changes.
 
 ---
 
+### TASK-003: Extend CompactReplayBuffer to support 19×19 Go boards
+
+- **Files**: `src/selfplay/replay_buffer.h`, `src/selfplay/replay_compression.h`,
+  `src/selfplay/replay_compression.cpp`, `src/selfplay/compact_replay_buffer.h`,
+  `src/selfplay/compact_replay_buffer.cpp`, `src/bindings/python_bindings.cpp`,
+  `scripts/train.py`, `configs/go.yaml`, `tests/cpp/test_replay_buffer.cpp`,
+  `tests/cpp/test_replay_compression.cpp`, `tests/cpp/test_compact_replay_buffer.cpp`,
+  `tests/python/test_train_script.py`, `tests/python/test_bindings.py`
+- **Current state**: COMPLETE (2026-02-28)
+- **Priority**: HIGH — the uncompressed `ReplayBuffer` uses ~48 KB per position (fixed-size arrays
+  at chess maximums), so Go's 5M-position target requires ~229 GB and crashes with `std::bad_alloc`.
+  The compact buffer stores ~1.2 KB per position but currently only supports boards ≤ 64 squares
+  (8×8). Extending it to 19×19 reduces Go memory from 229 GB to ~6 GB.
+- **Rationale**: `CompactReplayPosition` bitpacks each binary plane into a single `uint64_t`,
+  which can hold 64 bits — one per square on an 8×8 board. A 19×19 board has 361 squares and
+  needs `ceil(361/64) = 6` uint64 words per plane. The existing `bitpacked_planes` array has
+  `kMaxBinaryPlanes = 117` slots. Go needs `16 binary planes × 6 words = 96 words`, which fits
+  within the existing 117-word array. The core change is reinterpreting the array as "words" rather
+  than "planes" and making the compression/decompression routines board-size-aware.
+
+  **Stopgap (resolved 2026-02-28)**: `configs/go.yaml` previously used
+  `replay_buffer.capacity: 1000000` with dense replay fallback (~46 GB). This task restored compact
+  replay support for 19×19 and reset Go capacity to 5,000,000.
+
+- **Problem analysis** — three blocking issues:
+
+  1. **`replay_compression.cpp` line 16**: `constexpr kSquaresPerPlane = 64U` is hardcoded.
+     Used in validation (`dense_state.size() % 64`), the binary packing loop (one `uint64_t` per
+     plane), and decompression (`fill_n` with stride 64). Must become a runtime parameter.
+
+  2. **`compact_replay_buffer.cpp` line 97**: `encoded_state_size_ = total_planes * 64U` assumes
+     64 squares per plane. Must use the actual board area.
+
+  3. **`scripts/train.py` line 411**: `if rows * cols != 64` guard explicitly rejects non-chess
+     boards from using the compact buffer.
+
+- **Fix**:
+
+  1. **Rename `kMaxBinaryPlanes` → `kMaxBinaryWords`** in `CompactReplayPosition`
+     (`src/selfplay/replay_buffer.h` line 43). Keep the value at 117. This is a semantic rename:
+     the array stores `words_per_plane × num_binary_planes` total words. For chess (117 planes ×
+     1 word) and Go (16 planes × 6 words = 96 words), both fit within 117.
+     ```cpp
+     static constexpr std::size_t kMaxBinaryWords = 117U;
+     // ...
+     std::array<std::uint64_t, kMaxBinaryWords> bitpacked_planes{};
+     ```
+
+  2. **Add `squares_per_plane` parameter** to `CompactReplayBuffer` constructor
+     (`src/selfplay/compact_replay_buffer.cpp`). Store it as `squares_per_plane_` member.
+     Compute `words_per_plane_ = (squares_per_plane_ + 63) / 64` (ceiling division).
+     Update constructor validation:
+     ```cpp
+     const std::size_t total_binary_words = num_binary_planes_ * words_per_plane_;
+     if (total_binary_words > CompactReplayPosition::kMaxBinaryWords) {
+         throw std::invalid_argument("binary planes exceed storage capacity");
+     }
+     encoded_state_size_ = (num_binary_planes_ + num_float_planes_) * squares_per_plane_;
+     ```
+
+  3. **Update `compress_state` and `decompress_state`** signatures in
+     `src/selfplay/replay_compression.h` to accept `std::size_t squares_per_plane`:
+     ```cpp
+     [[nodiscard]] StateCompressionLayout compress_state(
+         std::span<const float> dense_state,
+         std::span<const std::size_t> float_plane_indices,
+         std::size_t squares_per_plane,
+         std::span<std::uint64_t> out_bitpacked_planes,
+         std::span<std::uint8_t> out_quantized_float_planes);
+
+     void decompress_state(
+         std::span<const std::uint64_t> bitpacked_planes,
+         std::span<const std::uint8_t> quantized_float_planes,
+         std::span<const std::size_t> float_plane_indices,
+         std::size_t squares_per_plane,
+         std::span<float> out_dense_state);
+     ```
+
+  4. **Update `compress_state` implementation** (`replay_compression.cpp`):
+     - Remove `constexpr kSquaresPerPlane = 64U`.
+     - Use the `squares_per_plane` parameter throughout.
+     - Change validation to `dense_state.size() % squares_per_plane != 0`.
+     - Pack binary planes into `words_per_plane = (squares_per_plane + 63) / 64` words each:
+       ```cpp
+       const std::size_t words_per_plane = (squares_per_plane + 63U) / 64U;
+       // For each binary plane:
+       for (std::size_t w = 0; w < words_per_plane; ++w) {
+           std::uint64_t bits = 0U;
+           const std::size_t bit_start = w * 64U;
+           const std::size_t bit_end = std::min(bit_start + 64U, squares_per_plane);
+           for (std::size_t sq = bit_start; sq < bit_end; ++sq) {
+               if (dense_state[plane_offset + sq] >= 0.5F) {
+                   bits |= (std::uint64_t{1} << (sq - bit_start));
+               }
+           }
+           out_bitpacked_planes[binary_word_index++] = bits;
+       }
+       ```
+     - Float plane quantization: sample the first cell only (unchanged logic), but use
+       `squares_per_plane` for stride instead of 64.
+
+  5. **Update `decompress_state` implementation** (`replay_compression.cpp`):
+     - Mirror the multi-word unpacking:
+       ```cpp
+       for (std::size_t w = 0; w < words_per_plane; ++w) {
+           const std::uint64_t bits = bitpacked_planes[binary_word_index++];
+           const std::size_t bit_start = w * 64U;
+           const std::size_t bit_end = std::min(bit_start + 64U, squares_per_plane);
+           for (std::size_t sq = bit_start; sq < bit_end; ++sq) {
+               out_dense_state[plane_offset + sq] =
+                   ((bits >> (sq - bit_start)) & std::uint64_t{1}) != 0U ? 1.0F : 0.0F;
+           }
+       }
+       ```
+     - Float plane fill: use `fill_n(..., squares_per_plane, value)`.
+
+  6. **Update all callers** of `compress_state` / `decompress_state` in
+     `compact_replay_buffer.cpp` to pass `squares_per_plane_`:
+     - `add_game()` — compression call
+     - `sample()` — decompression call
+     - `sample_batch()` — decompression call
+     - `export_positions()` — decompression call
+     - `import_positions()` — compression call
+
+  7. **Update `CompactReplayPosition` metadata** (`src/selfplay/replay_buffer.h`):
+     - Add `uint16_t num_binary_words = 0U` field (the total words used, for serialization).
+       This replaces the role of `num_binary_planes` for indexing into `bitpacked_planes`.
+       Keep `num_binary_planes` as well (it records the logical plane count).
+     - This changes `sizeof(CompactReplayPosition)`. Bump the test assertion
+       (`sizeof <= 1300`) to `sizeof <= 1304` to account for the new field.
+
+  8. **Update file serialization** (`compact_replay_buffer.cpp`):
+     - Bump `kFileVersion` from 1 to 2.
+     - Add `squares_per_plane` to the file header (after the existing fields):
+       ```
+       [magic: 4 bytes "AZRB"]
+       [version: uint32 = 2]
+       [count: uint64]
+       [sizeof_position: uint64]
+       [squares_per_plane: uint32]    // NEW
+       [positions: count × CompactReplayPosition]
+       ```
+     - On load, verify `squares_per_plane` matches the buffer's configured value.
+     - Version 1 files can still be loaded by assuming `squares_per_plane = 64`.
+
+  9. **Update pybind11 bindings** (`src/bindings/python_bindings.cpp`):
+     - Add `squares_per_plane` parameter to `CompactReplayBuffer.__init__` (with default 64 for
+       backward compatibility):
+       ```cpp
+       py::arg("squares_per_plane") = 64U,
+       ```
+
+  10. **Remove the board-size guard in `scripts/train.py`** (line 411):
+      - Replace `if rows * cols != 64 or not hasattr(cpp, "CompactReplayBuffer"):` with
+        `if not hasattr(cpp, "CompactReplayBuffer"):`.
+      - Pass `squares_per_plane=rows * cols` to the `CompactReplayBuffer` constructor.
+      - The Go config in `python/alphazero/config.py` already has `float_plane_indices=()`
+        (0 float planes) and `input_channels=17` (16 binary + 1 constant plane). Verify whether
+        Go's constant plane (side-to-move, a uniform 0/1) should be treated as binary or float.
+        If it's binary-valued (0.0 or 1.0), it should be a binary plane. If it can be fractional
+        (e.g., komi encoding), it should be a float plane. Check `go_state.cpp`'s `encode()`
+        implementation for the last plane's semantics and update `GO_CONFIG.float_plane_indices`
+        if needed.
+
+  11. **Restore Go buffer capacity** in `configs/go.yaml`:
+      ```yaml
+      replay_buffer:
+        capacity: 5000000   # ~6 GB compact storage (1.2 KB/pos)
+      ```
+
+- **Acceptance criteria**:
+  1. `CompactReplayBuffer` accepts `squares_per_plane` parameter (default 64)
+  2. Compression/decompression correctly handles 19×19 boards (361 squares, 6 words/plane)
+  3. Chess (8×8, 1 word/plane) continues to work identically — full backward compatibility
+  4. Go training starts without `std::bad_alloc` at 5M capacity (~6 GB memory)
+  5. `save_to_file` / `load_from_file` work for Go-sized buffers (version 2 format)
+  6. Version 1 files (chess) can still be loaded
+  7. The Python `train.py` uses `CompactReplayBuffer` for Go (no board-size guard)
+  8. All existing replay buffer tests pass
+  9. `cmake --build build --target alphazero_cpp -j$(nproc)` succeeds
+  10. `ctest --test-dir build --output-on-failure` passes
+
+- **Testing guidance**:
+  - Add C++ unit tests in `tests/cpp/test_replay_buffer.cpp`:
+    a. **Round-trip test (19×19)**: Create a `CompactReplayBuffer` with `squares_per_plane=361`,
+       `num_binary_planes=16`, `num_float_planes=1`. Add a game with known board states. Sample
+       back and verify decompressed states match originals within quantization tolerance.
+    b. **Round-trip test (8×8)**: Same as above with `squares_per_plane=64` to verify chess still
+       works after the refactor.
+    c. **Compression unit test**: Directly test `compress_state` / `decompress_state` with a
+       361-element plane. Verify specific bit patterns: all zeros, all ones, checkerboard, single
+       bit in the 6th word (square index > 320).
+    d. **Serialization round-trip**: `save_to_file` then `load_from_file` for a Go-sized buffer.
+       Verify loaded data matches.
+    e. **Version 1 backward compat**: Load a version-1 file and verify it reads correctly with
+       `squares_per_plane=64`.
+  - Update the existing constant assertion test (`kMaxBinaryPlanes` → `kMaxBinaryWords`).
+  - Document WHY multi-word packing is needed (361 squares > 64 bits per word).
+
+- **Struct size estimate after changes**:
+  - `bitpacked_planes`: 117 × 8 = 936 bytes (unchanged array size)
+  - New `num_binary_words` field: 2 bytes
+  - Total: ~1229 bytes (within 1304 limit)
+  - Go per-position: 96 words used × 8 + metadata ≈ ~1000 bytes effective
+  - 5M positions: ~5.8 GB (fits 128 GB budget with headroom)
+
+- **Implementation notes (2026-02-28)**:
+  - Renamed compact binary-capacity semantics from `kMaxBinaryPlanes` to `kMaxBinaryWords` and added
+    `num_binary_words` metadata to `CompactReplayPosition`.
+  - Extended `compress_state`/`decompress_state` to accept `squares_per_plane` and support multi-word
+    packing/unpacking (`ceil(squares/64)` words per binary plane) while preserving 64-square behavior.
+  - Added board-size-aware shape handling in `CompactReplayBuffer` via `squares_per_plane_`,
+    `words_per_plane_`, and `num_binary_words_`; all compression/decompression call sites now pass the
+    configured plane size.
+  - Upgraded compact replay serialization to version 2 with `squares_per_plane` in the header and
+    implemented version-1 load compatibility for legacy chess files.
+  - Exposed `squares_per_plane` in pybind for `CompactReplayBuffer` (default `64`) and updated
+    `scripts/train.py` to select compact replay for Go by passing `rows * cols` instead of hardcoding
+    a 64-square guard.
+  - Restored Go replay capacity to `5_000_000` in `configs/go.yaml`.
+  - Added regression coverage for:
+    - 19×19 compact round-trip sampling
+    - multi-word compression bitpacking/unpacking (including sixth-word high indices)
+    - Go-sized file save/load round-trip
+    - legacy version-1 replay-file loading
+    - Python training-runtime compact-buffer wiring for Go
+  - Verified Go constant plane encoding remains binary (`0.0/1.0` side-to-move plane), so
+    `GO_CONFIG.float_plane_indices` correctly remains empty.
+  - Validation run:
+    - `cmake --build build --target alphazero_cpp -j$(nproc)`
+    - `cmake --build build --target alphazero_cpp_tests -j$(nproc)`
+    - `ctest --test-dir build --output-on-failure -R "(ReplayBufferTest\\.|ReplayCompressionTest\\.|CompactReplayBufferTest\\.)"`
+    - `ctest --test-dir build --output-on-failure`
+    - `python3 -m pytest tests/python/test_train_script.py`
+    - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py`
+    - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix --ignore-installed`
+    - `python3 -m compileall scripts/train.py tests/python/test_bindings.py tests/python/test_train_script.py`
+  - Tooling notes:
+    - `ruff` unavailable in this sandbox (`ruff: command not found`)
+    - `mypy` unavailable in this sandbox (`mypy: command not found`)
+  - No additional follow-up tasks discovered while implementing TASK-003.
+
+---
+
 ## Reference: DeepMind / KataGo / Leela Zero Comparison
 
 For agents implementing these tasks, here are the key hyperparameter references:

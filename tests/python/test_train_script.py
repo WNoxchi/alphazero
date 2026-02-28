@@ -86,6 +86,7 @@ class _FakeCompactReplayBuffer:
         random_seed: int,
         sampling_strategy: object = "uniform",
         recency_weight_lambda: float = 1.0,
+        squares_per_plane: int = 64,
     ) -> None:
         self.capacity = capacity
         self.num_binary_planes = num_binary_planes
@@ -95,6 +96,7 @@ class _FakeCompactReplayBuffer:
         self.random_seed = random_seed
         self.sampling_strategy = sampling_strategy
         self.recency_weight_lambda = float(recency_weight_lambda)
+        self.squares_per_plane = int(squares_per_plane)
 
 
 class _FakeReplaySamplingStrategy:
@@ -450,6 +452,7 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertEqual(replay_buffer.full_policy_size, 4672)
         self.assertEqual(replay_buffer.sampling_strategy, _FakeReplaySamplingStrategy.UNIFORM)
         self.assertEqual(replay_buffer.recency_weight_lambda, 1.0)
+        self.assertEqual(replay_buffer.squares_per_plane, 64)
 
     def test_build_replay_buffer_maps_recency_weighted_sampling_settings(self) -> None:
         """WHY: recency-weighted replay sampling must propagate YAML controls into compact buffer construction."""
@@ -477,8 +480,8 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(replay_buffer.recency_weight_lambda, 2.5)
 
-    def test_build_replay_buffer_falls_back_to_dense_for_non_chess_board_shapes(self) -> None:
-        """WHY: current compact encoding assumes 8x8 planes, so Go must stay on the dense buffer path."""
+    def test_build_replay_buffer_uses_compact_buffer_for_go_board_shapes(self) -> None:
+        """WHY: 19x19 Go now uses compact replay storage with board-size-aware state compression."""
         harness = _Harness()
         dependencies = harness.build_dependencies()
         config = _minimal_config()
@@ -490,9 +493,14 @@ class TrainScriptRuntimeTests(unittest.TestCase):
             go_config,
         )
 
-        self.assertIsInstance(replay_buffer, _FakeReplayBuffer)
+        self.assertIsInstance(replay_buffer, _FakeCompactReplayBuffer)
         self.assertEqual(replay_buffer.capacity, 512)
         self.assertEqual(replay_buffer.random_seed, 42)
+        self.assertEqual(replay_buffer.num_binary_planes, 17)
+        self.assertEqual(replay_buffer.num_float_planes, 0)
+        self.assertEqual(replay_buffer.float_plane_indices, [])
+        self.assertEqual(replay_buffer.full_policy_size, 362)
+        self.assertEqual(replay_buffer.squares_per_plane, 361)
 
     def test_build_replay_buffer_rejects_unknown_sampling_strategy(self) -> None:
         """WHY: invalid replay sampling strategy values should fail fast before worker startup."""

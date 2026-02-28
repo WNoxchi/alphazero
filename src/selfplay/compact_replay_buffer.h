@@ -35,7 +35,8 @@ public:
         std::size_t full_policy_size,
         std::uint64_t random_seed = 0x9E3779B97F4A7C15ULL,
         SamplingStrategy sampling_strategy = SamplingStrategy::kUniform,
-        float recency_weight_lambda = 1.0F);
+        float recency_weight_lambda = 1.0F,
+        std::size_t squares_per_plane = 64U);
 
     void add_game(const std::vector<ReplayPosition>& positions);
 
@@ -98,6 +99,9 @@ private:
     mutable std::mt19937_64 rng_;
 
     std::vector<std::size_t> float_plane_indices_;
+    std::size_t squares_per_plane_ = 64U;
+    std::size_t words_per_plane_ = 1U;
+    std::size_t num_binary_words_ = 0U;
     std::size_t encoded_state_size_ = 0U;
     std::size_t num_binary_planes_ = 0U;
     std::size_t num_float_planes_ = 0U;

@@ -53,7 +53,7 @@ pipeline:
   training_steps_per_cycle: 1
 
 replay_buffer:
-  capacity: 5000000                # ~6 GB compact storage (1.2 KB/pos); fits 128 GB budget
+  capacity: 5000000                # compact replay ~6 GB at 19x19; restores long-horizon data retention
 
 evaluation:
   interval_steps: 10000

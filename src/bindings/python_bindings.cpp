@@ -1213,7 +1213,8 @@ PYBIND11_MODULE(alphazero_cpp, module) {
                 std::size_t,
                 std::uint64_t,
                 SamplingStrategy,
-                float>(),
+                float,
+                std::size_t>(),
             py::arg("capacity"),
             py::arg("num_binary_planes"),
             py::arg("num_float_planes"),
@@ -1221,7 +1222,8 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("full_policy_size"),
             py::arg("random_seed") = 0x9E3779B97F4A7C15ULL,
             py::arg("sampling_strategy") = SamplingStrategy::kUniform,
-            py::arg("recency_weight_lambda") = 1.0F)
+            py::arg("recency_weight_lambda") = 1.0F,
+            py::arg("squares_per_plane") = 64U)
         .def(
             "add_game",
             &CompactReplayBuffer::add_game,

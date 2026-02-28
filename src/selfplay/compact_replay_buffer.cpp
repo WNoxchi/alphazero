@@ -50,10 +50,12 @@ CompactReplayBuffer::CompactReplayBuffer(
     const std::size_t full_policy_size,
     const std::uint64_t random_seed,
     const SamplingStrategy sampling_strategy,
-    const float recency_weight_lambda)
+    const float recency_weight_lambda,
+    const std::size_t squares_per_plane)
     : buffer_(capacity),
       rng_(random_seed),
       float_plane_indices_(std::move(float_plane_indices)),
+      squares_per_plane_(squares_per_plane),
       num_binary_planes_(num_binary_planes),
       num_float_planes_(num_float_planes),
       full_policy_size_(full_policy_size),
@@ -65,8 +67,8 @@ CompactReplayBuffer::CompactReplayBuffer(
     if (num_binary_planes_ == 0U) {
         throw std::invalid_argument("CompactReplayBuffer num_binary_planes must be greater than zero");
     }
-    if (num_binary_planes_ > CompactReplayPosition::kMaxBinaryPlanes) {
-        throw std::invalid_argument("CompactReplayBuffer num_binary_planes exceeds supported maximum");
+    if (squares_per_plane_ == 0U) {
+        throw std::invalid_argument("CompactReplayBuffer squares_per_plane must be greater than zero");
     }
     if (num_float_planes_ > CompactReplayPosition::kMaxFloatPlanes) {
         throw std::invalid_argument("CompactReplayBuffer num_float_planes exceeds supported maximum");
@@ -91,10 +93,18 @@ CompactReplayBuffer::CompactReplayBuffer(
     }
 
     const std::size_t total_planes = num_binary_planes_ + num_float_planes_;
-    if (total_planes > (ReplayPosition::kMaxEncodedStateSize / 64U)) {
+    if (total_planes > (ReplayPosition::kMaxEncodedStateSize / squares_per_plane_)) {
         throw std::invalid_argument("CompactReplayBuffer total plane count exceeds supported encoded-state size");
     }
-    encoded_state_size_ = total_planes * 64U;
+    words_per_plane_ = (squares_per_plane_ + 63U) / 64U;
+    if (num_binary_planes_ > (std::numeric_limits<std::size_t>::max() / words_per_plane_)) {
+        throw std::invalid_argument("CompactReplayBuffer binary plane layout overflows");
+    }
+    num_binary_words_ = num_binary_planes_ * words_per_plane_;
+    if (num_binary_words_ > CompactReplayPosition::kMaxBinaryWords) {
+        throw std::invalid_argument("CompactReplayBuffer binary-word usage exceeds supported maximum");
+    }
+    encoded_state_size_ = total_planes * squares_per_plane_;
 
     std::vector<bool> seen(total_planes, false);
     for (const std::size_t plane : float_plane_indices_) {
@@ -140,12 +150,15 @@ void CompactReplayBuffer::add_game(const std::vector<ReplayPosition>& positions)
         const StateCompressionLayout layout = compress_state(
             std::span<const float>(position.encoded_state.data(), encoded_state_size_),
             float_plane_indices_,
-            compact.bitpacked_planes,
+            squares_per_plane_,
+            std::span<std::uint64_t>(compact.bitpacked_planes.data(), num_binary_words_),
             compact.quantized_float_planes);
-        if (layout.num_binary_planes != num_binary_planes_ || layout.num_float_planes != num_float_planes_) {
+        if (layout.num_binary_words != num_binary_words_ || layout.num_binary_planes != num_binary_planes_ ||
+            layout.num_float_planes != num_float_planes_) {
             throw std::invalid_argument("CompactReplayBuffer add_game produced an unexpected compression layout");
         }
 
+        compact.num_binary_words = checked_u16(layout.num_binary_words, "num_binary_words");
         compact.num_binary_planes = checked_u16(layout.num_binary_planes, "num_binary_planes");
         compact.num_float_planes = checked_u16(layout.num_float_planes, "num_float_planes");
         compact.num_policy_entries = compress_policy(
@@ -202,9 +215,10 @@ std::vector<ReplayPosition> CompactReplayBuffer::sample(const std::size_t batch_
 
         ReplayPosition dense{};
         decompress_state(
-            std::span<const std::uint64_t>(compact.bitpacked_planes.data(), num_binary_planes_),
+            std::span<const std::uint64_t>(compact.bitpacked_planes.data(), num_binary_words_),
             std::span<const std::uint8_t>(compact.quantized_float_planes.data(), num_float_planes_),
             float_plane_indices_,
+            squares_per_plane_,
             std::span<float>(dense.encoded_state.data(), encoded_state_size_));
         decompress_policy(
             compact.policy_actions,
@@ -268,9 +282,10 @@ SampledBatch CompactReplayBuffer::sample_batch(
 
         float* const state_row = packed.states.data() + (sample_index * encoded_state_size_);
         decompress_state(
-            std::span<const std::uint64_t>(compact.bitpacked_planes.data(), num_binary_planes_),
+            std::span<const std::uint64_t>(compact.bitpacked_planes.data(), num_binary_words_),
             std::span<const std::uint8_t>(compact.quantized_float_planes.data(), num_float_planes_),
             float_plane_indices_,
+            squares_per_plane_,
             std::span<float>(state_row, encoded_state_size_));
 
         float* const policy_row = packed.policies.data() + (sample_index * full_policy_size_);
@@ -321,9 +336,10 @@ std::size_t CompactReplayBuffer::export_positions(
 
         float* const state_row = out_states + (i * encoded_state_size_);
         decompress_state(
-            std::span<const std::uint64_t>(compact.bitpacked_planes.data(), num_binary_planes_),
+            std::span<const std::uint64_t>(compact.bitpacked_planes.data(), num_binary_words_),
             std::span<const std::uint8_t>(compact.quantized_float_planes.data(), num_float_planes_),
             float_plane_indices_,
+            squares_per_plane_,
             std::span<float>(state_row, encoded_state_size_));
 
         float* const policy_row = out_policies + (i * full_policy_size_);
@@ -370,12 +386,15 @@ void CompactReplayBuffer::import_positions(
         const StateCompressionLayout layout = compress_state(
             std::span<const float>(states + (i * encoded_state_size_), encoded_state_size_),
             float_plane_indices_,
-            compact.bitpacked_planes,
+            squares_per_plane_,
+            std::span<std::uint64_t>(compact.bitpacked_planes.data(), num_binary_words_),
             compact.quantized_float_planes);
-        if (layout.num_binary_planes != num_binary_planes_ || layout.num_float_planes != num_float_planes_) {
+        if (layout.num_binary_words != num_binary_words_ || layout.num_binary_planes != num_binary_planes_ ||
+            layout.num_float_planes != num_float_planes_) {
             throw std::invalid_argument("import_positions: compressed state layout does not match configuration");
         }
 
+        compact.num_binary_words = checked_u16(layout.num_binary_words, "num_binary_words");
         compact.num_binary_planes = checked_u16(layout.num_binary_planes, "num_binary_planes");
         compact.num_float_planes = checked_u16(layout.num_float_planes, "num_float_planes");
         compact.num_policy_entries = compress_policy(
@@ -419,19 +438,52 @@ void CompactReplayBuffer::import_positions(
 //   [version: uint32]
 //   [count: uint64]
 //   [sizeof_position: uint64]
+//   [squares_per_plane: uint32]   // version 2+
 //   [positions: count × CompactReplayPosition, oldest first]
 
 namespace {
 
 constexpr char kFileMagic[4] = {'A', 'Z', 'R', 'B'};
-constexpr std::uint32_t kFileVersion = 1U;
+constexpr std::uint32_t kFileVersionV1 = 1U;
+constexpr std::uint32_t kFileVersion = 2U;
 
-struct FileHeader {
+struct FileHeaderPrefix {
+    char magic[4]{};
+    std::uint32_t version = 0U;
+};
+
+struct FileHeaderCommon {
+    std::uint64_t count = 0U;
+    std::uint64_t sizeof_position = 0U;
+};
+
+struct FileHeaderV2 {
     char magic[4]{};
     std::uint32_t version = 0U;
     std::uint64_t count = 0U;
     std::uint64_t sizeof_position = 0U;
+    std::uint32_t squares_per_plane = 64U;
 };
+
+struct LegacyCompactReplayPositionV1 {
+    std::array<std::uint64_t, CompactReplayPosition::kMaxBinaryWords> bitpacked_planes{};
+    std::array<std::uint8_t, CompactReplayPosition::kMaxFloatPlanes> quantized_float_planes{};
+    std::array<std::uint16_t, CompactReplayPosition::kMaxSparsePolicy> policy_actions{};
+    std::array<std::uint16_t, CompactReplayPosition::kMaxSparsePolicy> policy_probs_fp16{};
+    std::uint8_t num_policy_entries = 0U;
+    float value = 0.0F;
+    float training_weight = 1.0F;
+    std::array<float, CompactReplayPosition::kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
+    std::uint32_t game_id = 0U;
+    std::uint16_t move_number = 0U;
+    std::uint16_t num_binary_planes = 0U;
+    std::uint16_t num_float_planes = 0U;
+    std::uint16_t policy_size = 0U;
+};
+
+static_assert(
+    std::is_trivially_copyable_v<LegacyCompactReplayPositionV1>,
+    "LegacyCompactReplayPositionV1 must be trivially copyable");
 
 }  // namespace
 
@@ -445,11 +497,12 @@ void CompactReplayBuffer::save_to_file(const std::string& path) const {
         throw std::runtime_error("CompactReplayBuffer save_to_file: cannot open " + path);
     }
 
-    FileHeader header{};
+    FileHeaderV2 header{};
     std::memcpy(header.magic, kFileMagic, 4);
     header.version = kFileVersion;
     header.count = static_cast<std::uint64_t>(current_count);
     header.sizeof_position = static_cast<std::uint64_t>(sizeof(CompactReplayPosition));
+    header.squares_per_plane = static_cast<std::uint32_t>(squares_per_plane_);
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
     // Write positions in logical order (oldest → newest).
@@ -469,40 +522,110 @@ std::size_t CompactReplayBuffer::load_from_file(const std::string& path) {
         throw std::runtime_error("CompactReplayBuffer load_from_file: cannot open " + path);
     }
 
-    FileHeader header{};
-    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    FileHeaderPrefix prefix{};
+    in.read(reinterpret_cast<char*>(&prefix), sizeof(prefix));
     if (!in) {
         throw std::runtime_error("CompactReplayBuffer load_from_file: truncated header in " + path);
     }
-    if (std::memcmp(header.magic, kFileMagic, 4) != 0) {
+    if (std::memcmp(prefix.magic, kFileMagic, 4) != 0) {
         throw std::runtime_error("CompactReplayBuffer load_from_file: invalid magic in " + path);
     }
-    if (header.version != kFileVersion) {
+
+    FileHeaderCommon common{};
+    std::uint32_t file_squares_per_plane = 64U;
+    std::size_t serialized_position_size = 0U;
+    bool is_legacy_v1 = false;
+    if (prefix.version == kFileVersionV1) {
+        in.read(reinterpret_cast<char*>(&common), sizeof(common));
+        serialized_position_size = sizeof(LegacyCompactReplayPositionV1);
+        is_legacy_v1 = true;
+    } else if (prefix.version == kFileVersion) {
+        struct FileHeaderV2Tail {
+            std::uint64_t count = 0U;
+            std::uint64_t sizeof_position = 0U;
+            std::uint32_t squares_per_plane = 64U;
+        } tail;
+        in.read(reinterpret_cast<char*>(&tail), sizeof(tail));
+        common.count = tail.count;
+        common.sizeof_position = tail.sizeof_position;
+        file_squares_per_plane = tail.squares_per_plane;
+        serialized_position_size = sizeof(CompactReplayPosition);
+    } else {
         throw std::runtime_error("CompactReplayBuffer load_from_file: unsupported version in " + path);
     }
-    if (header.sizeof_position != static_cast<std::uint64_t>(sizeof(CompactReplayPosition))) {
+    if (!in) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: truncated header in " + path);
+    }
+    if (file_squares_per_plane != squares_per_plane_) {
+        throw std::runtime_error(
+            "CompactReplayBuffer load_from_file: squares_per_plane mismatch in " + path +
+            " (file=" + std::to_string(file_squares_per_plane) +
+            ", runtime=" + std::to_string(squares_per_plane_) + ")");
+    }
+    if (common.sizeof_position != static_cast<std::uint64_t>(serialized_position_size)) {
         throw std::runtime_error(
             "CompactReplayBuffer load_from_file: sizeof mismatch in " + path +
-            " (file=" + std::to_string(header.sizeof_position) +
-            ", runtime=" + std::to_string(sizeof(CompactReplayPosition)) + ")");
+            " (file=" + std::to_string(common.sizeof_position) +
+            ", runtime=" + std::to_string(serialized_position_size) + ")");
     }
 
-    const auto file_count = static_cast<std::size_t>(header.count);
+    if (common.count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: count exceeds platform limits in " + path);
+    }
+    const auto file_count = static_cast<std::size_t>(common.count);
     // If the file has more positions than our capacity, skip the oldest entries.
     const std::size_t to_load = std::min(file_count, buffer_.size());
     const std::size_t to_skip = file_count - to_load;
     if (to_skip > 0U) {
         in.seekg(
-            static_cast<std::streamoff>(to_skip * sizeof(CompactReplayPosition)),
+            static_cast<std::streamoff>(to_skip * serialized_position_size),
             std::ios::cur);
     }
 
     std::unique_lock lock(mutex_);
     for (std::size_t i = 0U; i < to_load; ++i) {
-        in.read(reinterpret_cast<char*>(&buffer_[i]), sizeof(CompactReplayPosition));
-        if (!in) {
-            throw std::runtime_error("CompactReplayBuffer load_from_file: truncated data in " + path);
+        if (is_legacy_v1) {
+            LegacyCompactReplayPositionV1 legacy{};
+            in.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
+            if (!in) {
+                throw std::runtime_error("CompactReplayBuffer load_from_file: truncated data in " + path);
+            }
+
+            CompactReplayPosition converted{};
+            converted.bitpacked_planes = legacy.bitpacked_planes;
+            converted.quantized_float_planes = legacy.quantized_float_planes;
+            converted.policy_actions = legacy.policy_actions;
+            converted.policy_probs_fp16 = legacy.policy_probs_fp16;
+            converted.num_policy_entries = legacy.num_policy_entries;
+            converted.value = legacy.value;
+            converted.training_weight = legacy.training_weight;
+            converted.value_wdl = legacy.value_wdl;
+            converted.game_id = legacy.game_id;
+            converted.move_number = legacy.move_number;
+            converted.num_binary_words = legacy.num_binary_planes;
+            converted.num_binary_planes = legacy.num_binary_planes;
+            converted.num_float_planes = legacy.num_float_planes;
+            converted.policy_size = legacy.policy_size;
+            buffer_[i] = converted;
+        } else {
+            in.read(reinterpret_cast<char*>(&buffer_[i]), sizeof(CompactReplayPosition));
+            if (!in) {
+                throw std::runtime_error("CompactReplayBuffer load_from_file: truncated data in " + path);
+            }
         }
+    }
+
+    for (std::size_t i = 0U; i < to_load; ++i) {
+        if (!has_valid_compact_shape(buffer_[i])) {
+            throw std::runtime_error("CompactReplayBuffer load_from_file: incompatible compact payload in " + path);
+        }
+    }
+    for (std::size_t i = to_load; i < buffer_.size(); ++i) {
+        buffer_[i] = CompactReplayPosition{};
+    }
+
+    if (!in) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: truncated data in " + path);
     }
 
     write_head_.store(to_load % buffer_.size(), std::memory_order_release);
@@ -528,8 +651,8 @@ bool CompactReplayBuffer::has_valid_shape(const ReplayPosition& position) noexce
 }
 
 bool CompactReplayBuffer::has_valid_compact_shape(const CompactReplayPosition& position) const noexcept {
-    return position.num_binary_planes == num_binary_planes_ && position.num_float_planes == num_float_planes_ &&
-           position.policy_size == full_policy_size_ &&
+    return position.num_binary_words == num_binary_words_ && position.num_binary_planes == num_binary_planes_ &&
+           position.num_float_planes == num_float_planes_ && position.policy_size == full_policy_size_ &&
            position.num_policy_entries <= CompactReplayPosition::kMaxSparsePolicy &&
            std::isfinite(position.training_weight) && position.training_weight >= 0.0F;
 }

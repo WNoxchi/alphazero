@@ -13,8 +13,6 @@
 namespace alphazero::selfplay {
 namespace {
 
-constexpr std::size_t kSquaresPerPlane = 64U;
-
 [[nodiscard]] std::vector<bool> make_float_plane_mask(
     const std::size_t total_planes,
     const std::span<const std::size_t> float_plane_indices) {
@@ -36,25 +34,31 @@ constexpr std::size_t kSquaresPerPlane = 64U;
 StateCompressionLayout compress_state(
     const std::span<const float> dense_state,
     const std::span<const std::size_t> float_plane_indices,
+    const std::size_t squares_per_plane,
     const std::span<std::uint64_t> out_bitpacked_planes,
     const std::span<std::uint8_t> out_quantized_float_planes) {
     if (dense_state.empty()) {
         throw std::invalid_argument("compress_state requires a non-empty dense state");
     }
-    if (dense_state.size() % kSquaresPerPlane != 0U) {
-        throw std::invalid_argument("compress_state dense state must be a multiple of 64 values");
+    if (squares_per_plane == 0U) {
+        throw std::invalid_argument("compress_state squares_per_plane must be greater than zero");
+    }
+    if (dense_state.size() % squares_per_plane != 0U) {
+        throw std::invalid_argument("compress_state dense state must be a multiple of squares_per_plane");
     }
     if (float_plane_indices.size() > out_quantized_float_planes.size()) {
         throw std::invalid_argument("compress_state float-plane output capacity is too small");
     }
 
-    const std::size_t total_planes = dense_state.size() / kSquaresPerPlane;
+    const std::size_t total_planes = dense_state.size() / squares_per_plane;
     if (float_plane_indices.size() > total_planes) {
         throw std::invalid_argument("compress_state has more float planes than total planes");
     }
 
     const std::size_t required_binary_planes = total_planes - float_plane_indices.size();
-    if (required_binary_planes > out_bitpacked_planes.size()) {
+    const std::size_t words_per_plane = (squares_per_plane + 63U) / 64U;
+    const std::size_t required_binary_words = required_binary_planes * words_per_plane;
+    if (required_binary_words > out_bitpacked_planes.size()) {
         throw std::invalid_argument("compress_state binary-plane output capacity is too small");
     }
 
@@ -66,7 +70,7 @@ StateCompressionLayout compress_state(
     std::size_t binary_index = 0U;
     std::size_t float_index = 0U;
     for (std::size_t plane = 0U; plane < total_planes; ++plane) {
-        const std::size_t plane_offset = plane * kSquaresPerPlane;
+        const std::size_t plane_offset = plane * squares_per_plane;
         if (float_plane_mask[plane]) {
             const float clamped_value = std::clamp(dense_state[plane_offset], 0.0F, 1.0F);
             const long quantized = std::lround(clamped_value * 255.0F);
@@ -74,17 +78,22 @@ StateCompressionLayout compress_state(
             continue;
         }
 
-        std::uint64_t bits = 0U;
-        for (std::size_t square = 0U; square < kSquaresPerPlane; ++square) {
-            if (dense_state[plane_offset + square] >= 0.5F) {
-                bits |= (std::uint64_t{1} << square);
+        for (std::size_t word = 0U; word < words_per_plane; ++word) {
+            std::uint64_t bits = 0U;
+            const std::size_t bit_start = word * 64U;
+            const std::size_t bit_end = std::min(bit_start + 64U, squares_per_plane);
+            for (std::size_t square = bit_start; square < bit_end; ++square) {
+                if (dense_state[plane_offset + square] >= 0.5F) {
+                    bits |= (std::uint64_t{1} << (square - bit_start));
+                }
             }
+            out_bitpacked_planes[binary_index++] = bits;
         }
-        out_bitpacked_planes[binary_index++] = bits;
     }
 
     return StateCompressionLayout{
-        .num_binary_planes = binary_index,
+        .num_binary_words = binary_index,
+        .num_binary_planes = required_binary_planes,
         .num_float_planes = float_index,
     };
 }
@@ -93,18 +102,28 @@ void decompress_state(
     const std::span<const std::uint64_t> bitpacked_planes,
     const std::span<const std::uint8_t> quantized_float_planes,
     const std::span<const std::size_t> float_plane_indices,
+    const std::size_t squares_per_plane,
     const std::span<float> out_dense_state) {
-    const std::size_t total_planes = bitpacked_planes.size() + quantized_float_planes.size();
+    if (squares_per_plane == 0U) {
+        throw std::invalid_argument("decompress_state squares_per_plane must be greater than zero");
+    }
     if (float_plane_indices.size() != quantized_float_planes.size()) {
         throw std::invalid_argument("decompress_state float-plane index count must match quantized plane count");
     }
+    const std::size_t words_per_plane = (squares_per_plane + 63U) / 64U;
+    if (words_per_plane == 0U || (bitpacked_planes.size() % words_per_plane) != 0U) {
+        throw std::invalid_argument(
+            "decompress_state binary word count must align with squares_per_plane");
+    }
+    const std::size_t num_binary_planes = bitpacked_planes.size() / words_per_plane;
+    const std::size_t total_planes = num_binary_planes + quantized_float_planes.size();
     if (total_planes == 0U) {
         if (out_dense_state.empty()) {
             return;
         }
         throw std::invalid_argument("decompress_state output must be empty when no planes are provided");
     }
-    if (out_dense_state.size() != total_planes * kSquaresPerPlane) {
+    if (out_dense_state.size() != total_planes * squares_per_plane) {
         throw std::invalid_argument("decompress_state output size does not match plane counts");
     }
 
@@ -113,16 +132,21 @@ void decompress_state(
     std::size_t binary_index = 0U;
     std::size_t float_index = 0U;
     for (std::size_t plane = 0U; plane < total_planes; ++plane) {
-        const std::size_t plane_offset = plane * kSquaresPerPlane;
+        const std::size_t plane_offset = plane * squares_per_plane;
         if (float_plane_mask[plane]) {
             const float value = static_cast<float>(quantized_float_planes[float_index++]) / 255.0F;
-            std::fill_n(out_dense_state.data() + plane_offset, kSquaresPerPlane, value);
+            std::fill_n(out_dense_state.data() + plane_offset, squares_per_plane, value);
             continue;
         }
 
-        const std::uint64_t bits = bitpacked_planes[binary_index++];
-        for (std::size_t square = 0U; square < kSquaresPerPlane; ++square) {
-            out_dense_state[plane_offset + square] = ((bits >> square) & std::uint64_t{1}) != 0U ? 1.0F : 0.0F;
+        for (std::size_t word = 0U; word < words_per_plane; ++word) {
+            const std::uint64_t bits = bitpacked_planes[binary_index++];
+            const std::size_t bit_start = word * 64U;
+            const std::size_t bit_end = std::min(bit_start + 64U, squares_per_plane);
+            for (std::size_t square = bit_start; square < bit_end; ++square) {
+                out_dense_state[plane_offset + square] =
+                    ((bits >> (square - bit_start)) & std::uint64_t{1}) != 0U ? 1.0F : 0.0F;
+            }
         }
     }
 }

@@ -40,13 +40,13 @@ struct ReplayPosition {
 };
 
 struct CompactReplayPosition {
-    static constexpr std::size_t kMaxBinaryPlanes = 117U;
+    static constexpr std::size_t kMaxBinaryWords = 117U;
     static constexpr std::size_t kMaxFloatPlanes = 2U;
     static constexpr std::size_t kMaxSparsePolicy = 64U;
     static constexpr std::size_t kWdlSize = 3U;
 
-    // Binary state planes bitpacked as one 64-bit word per plane.
-    std::array<std::uint64_t, kMaxBinaryPlanes> bitpacked_planes{};
+    // Binary state planes bitpacked as words (words_per_plane * num_binary_planes total).
+    std::array<std::uint64_t, kMaxBinaryWords> bitpacked_planes{};
     // Constant-valued float planes quantized to [0, 255].
     std::array<std::uint8_t, kMaxFloatPlanes> quantized_float_planes{};
 
@@ -61,6 +61,7 @@ struct CompactReplayPosition {
     std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
     std::uint32_t game_id = 0U;
     std::uint16_t move_number = 0U;
+    std::uint16_t num_binary_words = 0U;
     std::uint16_t num_binary_planes = 0U;
     std::uint16_t num_float_planes = 0U;
     std::uint16_t policy_size = 0U;
