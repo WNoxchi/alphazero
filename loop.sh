@@ -21,7 +21,7 @@ for i in $(seq 1 "$N"); do
     "$BUILD_PROMPT"
 
   if grep -q "TASK COMPLETE" "$OUTFILE" 2>/dev/null; then
-    echo ">>> Builder emitted TASK COMPLETE on iteration $i"
+    echo ">>> Builder returned TASK COMPLETE on iteration $i"
   else
     echo ">>> WARNING: TASK COMPLETE not found in builder output on iteration $i"
   fi
@@ -34,7 +34,7 @@ for i in $(seq 1 "$N"); do
     "$REVIEW_PROMPT"
 
   if grep -q "REVIEW COMPLETE" "$OUTFILE" 2>/dev/null; then
-    echo ">>> Reviewer emitted REVIEW COMPLETE on iteration $i"
+    echo ">>> Reviewer returned REVIEW COMPLETE on iteration $i"
   else
     echo ">>> WARNING: REVIEW COMPLETE not found in reviewer output on iteration $i"
   fi
