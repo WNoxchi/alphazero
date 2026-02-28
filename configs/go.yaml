@@ -8,8 +8,11 @@ network:
 
 mcts:
   simulations_per_move: 400        # reduced from 800 — 2x faster self-play in early training
-  c_puct: 2.5
-  c_fpu: 0.25
+  enable_playout_cap: true         # KataGo-style: 75% of moves use reduced sims, 25% full
+  reduced_simulations: 100
+  full_playout_probability: 0.25
+  c_puct: 1.5                     # ELF OpenGo / Leela Zero convention; AZ effective ~1.25
+  c_fpu: 0.2                      # KataGo uses 0.2 in-tree (0.0 at root — needs code change)
   dirichlet_alpha: 0.03
   dirichlet_epsilon: 0.25
   temperature_moves: 30
@@ -22,12 +25,19 @@ mcts:
 
 training:
   batch_size: 4096                 # increased from 1024 — better GPU arithmetic intensity on 19x19
-  max_steps: 350000
+  max_steps: 700000                # matches DeepMind AZ (700K steps)
   lr_schedule:
+    # DeepMind AZ schedule: drop at 14%, 43%, 71% of total steps
+    # For different run lengths, scale milestones proportionally:
+    #   steps  |  drop1   drop2   drop3
+    #   350K   |  50K     150K    250K
+    #   500K   |  70K     215K    355K
+    #   700K   |  100K    300K    500K    (DeepMind default)
+    #   1M     |  140K    430K    710K
     - [0, 0.2]
     - [100000, 0.02]
-    - [200000, 0.002]
-    - [300000, 0.0002]
+    - [300000, 0.002]
+    - [500000, 0.0002]
   momentum: 0.9
   l2_reg: 0.0001
   checkpoint_interval: 1000
@@ -41,7 +51,7 @@ pipeline:
   training_steps_per_cycle: 1
 
 replay_buffer:
-  capacity: 800000                 # larger buffer for training diversity; fits ~120 GB memory target
+  capacity: 5000000                # ~6 GB compact storage (1.2 KB/pos); fits 128 GB budget
 
 evaluation:
   interval_steps: 10000
