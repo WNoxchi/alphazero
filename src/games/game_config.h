@@ -46,6 +46,7 @@ struct GameConfig {
 
     // MCTS parameters
     float dirichlet_alpha = 0.0F;
+    int dirichlet_alpha_reference_moves = 0;
     int max_game_length = 0;
 
     // Value head type

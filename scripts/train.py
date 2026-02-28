@@ -524,6 +524,10 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
             "mcts.dirichlet_alpha",
             float(mcts["dirichlet_alpha"]),
         )
+    game_config.dynamic_dirichlet_alpha = _coerce_bool(
+        "mcts.dynamic_dirichlet_alpha",
+        mcts.get("dynamic_dirichlet_alpha", game_config.dynamic_dirichlet_alpha),
+    )
     game_config.temperature = _coerce_positive_float(
         "mcts.temperature",
         float(mcts.get("temperature", game_config.temperature)),

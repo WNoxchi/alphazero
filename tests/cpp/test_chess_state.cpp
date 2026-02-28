@@ -148,6 +148,7 @@ TEST(ChessStateTest, ChessGameConfigMatchesSpecAndCreatesInitialState) {
     EXPECT_EQ(config.total_input_channels, 119);
     EXPECT_EQ(config.action_space_size, 4672);
     EXPECT_FLOAT_EQ(config.dirichlet_alpha, 0.3F);
+    EXPECT_EQ(config.dirichlet_alpha_reference_moves, 30);
     EXPECT_EQ(config.max_game_length, 512);
     EXPECT_EQ(config.value_head_type, alphazero::GameConfig::ValueHeadType::WDL);
     EXPECT_FALSE(config.supports_symmetry);

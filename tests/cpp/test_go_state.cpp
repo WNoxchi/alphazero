@@ -76,6 +76,7 @@ TEST(GoStateTest, GoGameConfigMatchesSpecAndCreatesInitialState) {
     EXPECT_EQ(config.total_input_channels, 17);
     EXPECT_EQ(config.action_space_size, 362);
     EXPECT_FLOAT_EQ(config.dirichlet_alpha, 0.03F);
+    EXPECT_EQ(config.dirichlet_alpha_reference_moves, 361);
     EXPECT_EQ(config.max_game_length, 722);
     EXPECT_EQ(config.value_head_type, alphazero::GameConfig::ValueHeadType::SCALAR);
     EXPECT_TRUE(config.supports_symmetry);

@@ -21,6 +21,7 @@ ChessGameConfig::ChessGameConfig() {
     action_space_size = kActionSpaceSize;
 
     dirichlet_alpha = 0.3F;
+    dirichlet_alpha_reference_moves = 30;
     max_game_length = ChessState::kMaxGameLength;
 
     value_head_type = ValueHeadType::WDL;

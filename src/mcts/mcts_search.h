@@ -30,6 +30,7 @@ struct SearchConfig {
     bool enable_dirichlet_noise = false;
     float dirichlet_epsilon = 0.25F;
     float dirichlet_alpha_override = 0.0F;
+    bool dynamic_dirichlet_alpha = false;
 
     float temperature = 1.0F;
     int temperature_moves = 30;
@@ -130,7 +131,7 @@ private:
     static void revert_virtual_loss(NodeType* node, int action_slot);
     static void apply_backup(NodeType* node, int action_slot, float value);
 
-    [[nodiscard]] float dirichlet_alpha() const;
+    [[nodiscard]] float dirichlet_alpha(int num_legal_moves) const;
     [[nodiscard]] std::vector<float> sample_dirichlet(int size, float alpha);
     [[nodiscard]] int argmax_visit_slot(const NodeType& node) const;
     [[nodiscard]] float temperature_for_move(int move_number) const;

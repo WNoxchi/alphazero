@@ -23,6 +23,7 @@ constexpr float kOutcomeEpsilon = 1.0e-6F;
         .enable_dirichlet_noise = config.enable_dirichlet_noise,
         .dirichlet_epsilon = config.dirichlet_epsilon,
         .dirichlet_alpha_override = config.dirichlet_alpha_override,
+        .dynamic_dirichlet_alpha = config.dynamic_dirichlet_alpha,
         .temperature = config.temperature,
         .temperature_moves = config.temperature_moves,
         .enable_resignation = config.enable_resignation,

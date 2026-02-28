@@ -1006,6 +1006,9 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "dirichlet_alpha",
             [](const GameConfig& config) { return config.dirichlet_alpha; })
         .def_property_readonly(
+            "dirichlet_alpha_reference_moves",
+            [](const GameConfig& config) { return config.dirichlet_alpha_reference_moves; })
+        .def_property_readonly(
             "max_game_length",
             [](const GameConfig& config) { return config.max_game_length; })
         .def_property_readonly(
@@ -1055,6 +1058,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("enable_dirichlet_noise", &alphazero::mcts::SearchConfig::enable_dirichlet_noise)
         .def_readwrite("dirichlet_epsilon", &alphazero::mcts::SearchConfig::dirichlet_epsilon)
         .def_readwrite("dirichlet_alpha_override", &alphazero::mcts::SearchConfig::dirichlet_alpha_override)
+        .def_readwrite("dynamic_dirichlet_alpha", &alphazero::mcts::SearchConfig::dynamic_dirichlet_alpha)
         .def_readwrite("temperature", &alphazero::mcts::SearchConfig::temperature)
         .def_readwrite("temperature_moves", &alphazero::mcts::SearchConfig::temperature_moves)
         .def_readwrite("enable_resignation", &alphazero::mcts::SearchConfig::enable_resignation)
@@ -1295,6 +1299,9 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "dirichlet_epsilon_max",
             &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon_max)
         .def_readwrite("dirichlet_alpha_override", &alphazero::selfplay::SelfPlayGameConfig::dirichlet_alpha_override)
+        .def_readwrite(
+            "dynamic_dirichlet_alpha",
+            &alphazero::selfplay::SelfPlayGameConfig::dynamic_dirichlet_alpha)
         .def_readwrite("temperature", &alphazero::selfplay::SelfPlayGameConfig::temperature)
         .def_readwrite("temperature_moves", &alphazero::selfplay::SelfPlayGameConfig::temperature_moves)
         .def_readwrite("enable_resignation", &alphazero::selfplay::SelfPlayGameConfig::enable_resignation)

@@ -124,6 +124,7 @@ GoGameConfig::GoGameConfig() {
     action_space_size = kActionSpaceSize;
 
     dirichlet_alpha = 0.03F;
+    dirichlet_alpha_reference_moves = kBoardArea;
     max_game_length = GoState::kMaxGameLength;
 
     value_head_type = ValueHeadType::SCALAR;

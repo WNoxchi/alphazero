@@ -63,6 +63,7 @@ class PythonBindingsTests(unittest.TestCase):
         bindings = _require_bindings()
         chess_config = bindings.chess_game_config()
         state = chess_config.new_game()
+        self.assertEqual(chess_config.dirichlet_alpha_reference_moves, 30)
 
         legal_actions = state.legal_actions()
         self.assertTrue(legal_actions)
@@ -81,6 +82,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertIsInstance(cloned, bindings.GameState)
 
         go_state = bindings.GoState()
+        self.assertEqual(bindings.go_game_config().dirichlet_alpha_reference_moves, 361)
         go_tensor = go_state.encode()
         self.assertEqual(tuple(go_tensor.shape), (17, 19, 19))
 
@@ -478,7 +480,9 @@ class PythonBindingsTests(unittest.TestCase):
         game_config.randomize_dirichlet_epsilon = True
         game_config.dirichlet_epsilon_min = 0.15
         game_config.dirichlet_epsilon_max = 0.35
+        game_config.dynamic_dirichlet_alpha = True
         search_config.c_fpu_root = 0.0
+        search_config.dynamic_dirichlet_alpha = True
 
         self.assertTrue(game_config.enable_playout_cap)
         self.assertEqual(game_config.reduced_simulations, 37)
@@ -487,7 +491,9 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertTrue(game_config.randomize_dirichlet_epsilon)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
+        self.assertTrue(game_config.dynamic_dirichlet_alpha)
         self.assertAlmostEqual(search_config.c_fpu_root, 0.0)
+        self.assertTrue(search_config.dynamic_dirichlet_alpha)
 
     def test_self_play_manager_bindings_release_gil_for_lifecycle_and_metrics_calls(self) -> None:
         """WHY: removing these call guards can reintroduce Python-thread stalls during self-play startup and runtime control calls."""

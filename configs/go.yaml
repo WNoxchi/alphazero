@@ -15,6 +15,7 @@ mcts:
   c_fpu: 0.2                      # KataGo-style in-tree FPU reduction
   c_fpu_root: 0.0                 # No root FPU reduction; Dirichlet noise already drives exploration
   dirichlet_alpha: 0.03
+  dynamic_dirichlet_alpha: true   # Scale alpha by legal-move count to keep per-move noise magnitude stable
   dirichlet_epsilon: 0.25
   temperature_moves: 30
   concurrent_games: 384            # higher parallelism keeps eval queue full and smooths GPU utilization

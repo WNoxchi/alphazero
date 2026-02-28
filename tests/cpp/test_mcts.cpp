@@ -9,6 +9,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -201,6 +202,55 @@ template <typename T, std::size_t N>
         }
     }
     return -1;
+}
+
+[[nodiscard]] std::shared_ptr<ToyGameModel> make_single_root_model(int action_space_size) {
+    ToyStateSpec root{};
+    root.current_player = 0;
+    root.terminal = false;
+    root.terminal_outcome = {0.0F, 0.0F};
+    root.legal_actions.reserve(static_cast<std::size_t>(action_space_size));
+    root.transitions.reserve(static_cast<std::size_t>(action_space_size));
+    for (int action = 0; action < action_space_size; ++action) {
+        root.legal_actions.push_back(action);
+        root.transitions.emplace(action, 1);
+    }
+
+    ToyStateSpec terminal{};
+    terminal.current_player = 1;
+    terminal.terminal = true;
+    terminal.terminal_outcome = {0.0F, 0.0F};
+
+    return make_model(
+        action_space_size,
+        {std::move(root), std::move(terminal)});
+}
+
+[[nodiscard]] std::vector<float> sample_dirichlet_for_test(
+    const int size,
+    const float alpha,
+    const std::uint64_t seed) {
+    std::vector<float> samples(static_cast<std::size_t>(size), 0.0F);
+    std::mt19937_64 rng(seed);
+    std::gamma_distribution<float> gamma(alpha, 1.0F);
+
+    float sum = 0.0F;
+    for (int i = 0; i < size; ++i) {
+        const float sample = std::max(0.0F, gamma(rng));
+        samples[static_cast<std::size_t>(i)] = sample;
+        sum += sample;
+    }
+
+    if (!(sum > 0.0F)) {
+        const float uniform = 1.0F / static_cast<float>(size);
+        std::fill(samples.begin(), samples.end(), uniform);
+        return samples;
+    }
+
+    for (float& sample : samples) {
+        sample /= sum;
+    }
+    return samples;
 }
 
 }  // namespace
@@ -794,6 +844,65 @@ TEST(MctsSearchTest, AppliesDirichletNoiseOnlyAtRoot) {
     const float raw_child_3 = 1.0F / (std::exp(2.0F) + 1.0F);
     EXPECT_NEAR(child_node.prior[static_cast<std::size_t>(action2_slot)], raw_child_2, 1.0e-6F);
     EXPECT_NEAR(child_node.prior[static_cast<std::size_t>(action3_slot)], raw_child_3, 1.0e-6F);
+}
+
+// WHY: Dynamic alpha keeps root-noise concentration comparable across opening and endgame positions by scaling alpha
+// with legal-move count; these cases cover the Go targets and edge cases (single move and max-capacity branching).
+TEST(MctsSearchTest, DynamicDirichletAlphaScalesWithLegalMoveCount) {
+    constexpr float kBaseAlpha = 0.03F;
+    constexpr int kReferenceMoves = 361;
+    constexpr std::uint64_t kSeed = 0xF00DFACEULL;
+    const std::array<int, 5> legal_move_cases = {361, 100, 10, 1, 362};
+
+    for (const int legal_moves : legal_move_cases) {
+        SCOPED_TRACE("legal_moves=" + std::to_string(legal_moves));
+
+        const auto model = make_single_root_model(legal_moves);
+        ToyGameConfig config(model);
+        config.dirichlet_alpha = kBaseAlpha;
+        config.dirichlet_alpha_reference_moves = kReferenceMoves;
+
+        ArenaNodeStore store(2048);
+        SearchConfig search_config{};
+        search_config.enable_dirichlet_noise = true;
+        search_config.dirichlet_epsilon = 1.0F;
+        search_config.dynamic_dirichlet_alpha = true;
+        search_config.random_seed = kSeed;
+
+        MctsSearch search(store, config, search_config);
+        search.set_root_state(config.new_game());
+
+        const auto evaluator = make_evaluator({
+            {0,
+             EvaluationResult{
+                 .policy = std::vector<float>(static_cast<std::size_t>(legal_moves), 1.0F),
+                 .value = 0.0F,
+                 .policy_is_logits = false,
+             }},
+        });
+
+        search.run_simulation(evaluator);
+
+        std::vector<float> observed_priors;
+        observed_priors.reserve(static_cast<std::size_t>(legal_moves));
+        for (int action = 0; action < legal_moves; ++action) {
+            const auto edge = search.root_edge_stats(action);
+            ASSERT_TRUE(edge.has_value());
+            observed_priors.push_back(edge->prior);
+        }
+
+        const float expected_alpha =
+            kBaseAlpha * static_cast<float>(kReferenceMoves) / static_cast<float>(legal_moves);
+        const std::vector<float> expected_noise =
+            sample_dirichlet_for_test(legal_moves, expected_alpha, kSeed);
+
+        for (int action = 0; action < legal_moves; ++action) {
+            EXPECT_NEAR(
+                observed_priors[static_cast<std::size_t>(action)],
+                expected_noise[static_cast<std::size_t>(action)],
+                1.0e-6F);
+        }
+    }
 }
 
 // WHY: Temperature controls training target generation and move sampling; both early stochastic and late greedy regimes

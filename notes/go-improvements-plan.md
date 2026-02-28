@@ -106,7 +106,7 @@ This plan covers the remaining improvements that require code changes.
 ### TASK-002: Add dynamic Dirichlet alpha scaling
 
 - **Files**: `src/mcts/mcts_search.cpp`, `src/mcts/mcts_search.h`, `src/bindings/python_bindings.cpp`
-- **Current state**: PENDING
+- **Current state**: COMPLETE (2026-02-28)
 - **Priority**: MEDIUM — improves exploration calibration across positions with varying numbers of
   legal moves. Currently the Dirichlet noise concentration is the same whether there are 10 or
   350 legal moves, which means early-game positions (many legal moves) get nearly uniform noise
@@ -196,6 +196,34 @@ This plan covers the remaining improvements that require code changes.
   - Add a C++ unit test in `tests/cpp/test_mcts.cpp` that verifies the scaling formula
   - Test edge cases: 1 legal move, very large number of legal moves
   - Document WHY the scaling matters (noise concentration vs. number of moves)
+
+- **Implementation notes (2026-02-28)**:
+  - Added `dynamic_dirichlet_alpha` to `SearchConfig` and `SelfPlayGameConfig` with default `false` to preserve
+    backward compatibility.
+  - Added `dirichlet_alpha_reference_moves` to `GameConfig`, set to `361` in Go and `30` in chess.
+  - Updated `MctsSearchT::dirichlet_alpha` to accept `num_legal_moves` and apply
+    `base_alpha * reference_moves / num_legal_moves` when dynamic scaling is enabled.
+  - Root Dirichlet noise now calls `dirichlet_alpha(root_node.num_actions)` so scaling depends on current root
+    legal-move count.
+  - Exposed new config fields through pybind (`GameConfig`, `SearchConfig`, `SelfPlayGameConfig`) and threaded
+    `mcts.dynamic_dirichlet_alpha` through `scripts/train.py` config loading.
+  - Enabled `mcts.dynamic_dirichlet_alpha: true` in `configs/go.yaml`; chess configs remain unchanged.
+  - Added C++ regression coverage for dynamic scaling in `tests/cpp/test_mcts.cpp` including acceptance examples
+    (`361`, `100`, `10`) and edge cases (`1`, `362` legal moves); added config/binding assertions in
+    `tests/cpp/test_chess_state.cpp`, `tests/cpp/test_go_state.cpp`, `tests/python/test_bindings.py`, and
+    `tests/python/test_train_script.py`.
+  - Validation run:
+    - `cmake --build build --target alphazero_cpp -j$(nproc)`
+    - `cmake --build build --target alphazero_cpp_tests -j$(nproc)`
+    - `ctest --test-dir build --output-on-failure -R "(MctsSearchTest\\.|ChessStateTest\\.|GoStateTest\\.)"`
+    - `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py tests/python/test_train_script.py`
+    - `python3 -m pip install -e . --no-build-isolation --no-deps --prefix /tmp/alphazero-prefix`
+    - `python3 -m compileall scripts/train.py tests/python/test_bindings.py tests/python/test_train_script.py`
+  - Tooling notes:
+    - `ruff` unavailable in this sandbox (`ruff: command not found`).
+    - `mypy` is installed but reports existing environment/type issues unrelated to this task (notably missing `torch`
+      stubs/imports and existing typed-API issues in untouched modules).
+  - No additional follow-up tasks discovered while implementing TASK-002.
 
 ---
 

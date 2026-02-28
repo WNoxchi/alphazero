@@ -57,8 +57,11 @@ MctsSearchT<NodeType>::MctsSearchT(NodeStoreT<NodeType>& node_store, const GameC
         config_.dirichlet_epsilon > 1.0F) {
         throw std::invalid_argument("MctsSearch dirichlet_epsilon must be finite and in [0, 1]");
     }
-    if (config_.enable_dirichlet_noise && !(dirichlet_alpha() > 0.0F)) {
-        throw std::invalid_argument("MctsSearch requires positive Dirichlet alpha when root noise is enabled");
+    if (config_.enable_dirichlet_noise) {
+        const float alpha_for_validation = dirichlet_alpha(/*num_legal_moves=*/1);
+        if (!(alpha_for_validation > 0.0F) || !std::isfinite(alpha_for_validation)) {
+            throw std::invalid_argument("MctsSearch requires positive Dirichlet alpha when root noise is enabled");
+        }
     }
 }
 
@@ -524,7 +527,8 @@ void MctsSearchT<NodeType>::apply_dirichlet_noise_to_root() {
         return;
     }
 
-    const std::vector<float> noise = sample_dirichlet(root_node.num_actions, dirichlet_alpha());
+    const std::vector<float> noise =
+        sample_dirichlet(root_node.num_actions, dirichlet_alpha(root_node.num_actions));
     float prior_sum = 0.0F;
     for (int i = 0; i < root_node.num_actions; ++i) {
         const float mixed = ((1.0F - epsilon) * root_node.prior[static_cast<std::size_t>(i)]) +
@@ -897,11 +901,16 @@ void MctsSearchT<NodeType>::apply_backup(NodeType* node, const int action_slot, 
 }
 
 template <typename NodeType>
-float MctsSearchT<NodeType>::dirichlet_alpha() const {
-    if (config_.dirichlet_alpha_override > 0.0F) {
-        return config_.dirichlet_alpha_override;
+float MctsSearchT<NodeType>::dirichlet_alpha(const int num_legal_moves) const {
+    float alpha = config_.dirichlet_alpha_override > 0.0F
+        ? config_.dirichlet_alpha_override
+        : game_config_.dirichlet_alpha;
+
+    if (config_.dynamic_dirichlet_alpha && num_legal_moves > 0) {
+        alpha = alpha * static_cast<float>(game_config_.dirichlet_alpha_reference_moves) /
+            static_cast<float>(num_legal_moves);
     }
-    return game_config_.dirichlet_alpha;
+    return alpha;
 }
 
 template <typename NodeType>

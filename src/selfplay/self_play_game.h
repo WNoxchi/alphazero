@@ -38,6 +38,7 @@ struct SelfPlayGameConfig {
     float dirichlet_epsilon_min = 0.15F;
     float dirichlet_epsilon_max = 0.35F;
     float dirichlet_alpha_override = 0.0F;
+    bool dynamic_dirichlet_alpha = false;
 
     float temperature = 1.0F;
     int temperature_moves = 30;

@@ -132,6 +132,7 @@ class _FakeSelfPlayGameConfig:
         self.dirichlet_epsilon_min = 0.15
         self.dirichlet_epsilon_max = 0.35
         self.dirichlet_alpha_override = 0.0
+        self.dynamic_dirichlet_alpha = False
         self.temperature = 1.0
         self.temperature_moves = 30
         self.enable_resignation = True
@@ -274,6 +275,7 @@ def _minimal_config() -> dict[str, object]:
             "c_fpu": 0.25,
             "c_fpu_root": -1.0,
             "dirichlet_alpha": 0.3,
+            "dynamic_dirichlet_alpha": False,
             "dirichlet_epsilon": 0.25,
             "randomize_dirichlet_epsilon": False,
             "dirichlet_epsilon_min": 0.15,
@@ -539,6 +541,7 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         mcts["reduced_simulations"] = 8
         mcts["full_playout_probability"] = 0.4
         mcts["c_fpu_root"] = 0.0
+        mcts["dynamic_dirichlet_alpha"] = True
         config["mcts"] = mcts
 
         manager_config = train_script._build_selfplay_manager_config(dependencies.cpp, config)
@@ -547,6 +550,7 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertEqual(manager_config.game_config.reduced_simulations, 8)
         self.assertAlmostEqual(manager_config.game_config.full_playout_probability, 0.4)
         self.assertAlmostEqual(manager_config.game_config.c_fpu_root, 0.0)
+        self.assertTrue(manager_config.game_config.dynamic_dirichlet_alpha)
 
     def test_build_selfplay_manager_config_rejects_reduced_simulations_above_full_budget(self) -> None:
         """WHY: invalid reduced playout budget should fail fast instead of crashing inside long-running workers."""
