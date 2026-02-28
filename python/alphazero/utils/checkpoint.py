@@ -225,6 +225,11 @@ def replay_buffer_path_for_checkpoint(checkpoint_path: Path) -> Path:
     return checkpoint_path.with_suffix(".replay.npz")
 
 
+def compact_replay_buffer_path_for_checkpoint(checkpoint_path: Path) -> Path:
+    """Derive the companion .replay.bin path for a compact checkpoint."""
+    return checkpoint_path.with_suffix(".replay.bin")
+
+
 def save_replay_buffer_state(
     replay_buffer: object,
     checkpoint_path: str | Path,
@@ -232,17 +237,30 @@ def save_replay_buffer_state(
     encoded_state_size: int,
     policy_size: int,
 ) -> Path | None:
-    """Save replay buffer contents as a companion .replay.npz alongside a checkpoint.
+    """Save replay buffer contents alongside a checkpoint.
 
-    Returns the path written, or None if the buffer is empty or lacks export_buffer.
+    For CompactReplayBuffer, saves as a compact binary (.replay.bin) without
+    decompressing to dense arrays.  For the legacy ReplayBuffer, falls back to
+    the dense numpy (.replay.npz) format.
+
+    Returns the path written, or None if the buffer is empty.
     """
+    buf_size = replay_buffer.size()
+    if buf_size == 0:
+        return None
+
+    # Compact binary path — avoids the ~229 GB dense allocation for 5M entries.
+    save_fn = getattr(replay_buffer, "save_to_file", None)
+    if callable(save_fn):
+        compact_path = compact_replay_buffer_path_for_checkpoint(Path(checkpoint_path))
+        save_fn(str(compact_path))
+        return compact_path
+
+    # Legacy dense numpy path (ReplayBuffer).
     import numpy as np
 
     export_fn = getattr(replay_buffer, "export_buffer", None)
     if not callable(export_fn):
-        return None
-    buf_size = replay_buffer.size()
-    if buf_size == 0:
         return None
 
     states, policies, values_wdl, game_ids, move_numbers = export_fn(
@@ -269,19 +287,31 @@ def load_replay_buffer_state(
     encoded_state_size: int,
     policy_size: int,
 ) -> int:
-    """Load replay buffer state from a companion .replay.npz file.
+    """Load replay buffer state from a companion checkpoint file.
 
-    Returns the number of positions loaded, or 0 if the file doesn't exist.
+    Tries the compact binary format (.replay.bin) first, then falls back to the
+    legacy dense numpy format (.replay.npz).
+
+    Returns the number of positions loaded, or 0 if no file exists.
     """
-    import numpy as np
+    cp = Path(checkpoint_path)
 
-    replay_path = replay_buffer_path_for_checkpoint(Path(checkpoint_path))
+    # Try compact binary format first.
+    compact_path = compact_replay_buffer_path_for_checkpoint(cp)
+    load_fn = getattr(replay_buffer, "load_from_file", None)
+    if compact_path.exists() and callable(load_fn):
+        return int(load_fn(str(compact_path)))
+
+    # Fall back to legacy dense numpy format.
+    replay_path = replay_buffer_path_for_checkpoint(cp)
     if not replay_path.exists():
         return 0
 
     import_fn = getattr(replay_buffer, "import_buffer", None)
     if not callable(import_fn):
         return 0
+
+    import numpy as np
 
     data = np.load(replay_path)
     import_fn(
@@ -314,9 +344,12 @@ def _prune_rolling_checkpoints(checkpoint_dir: Path, *, keep_last: int) -> None:
         folded = checkpoint_dir / f"checkpoint_{step:08d}_folded.pt"
         if folded.exists():
             folded.unlink()
-        replay = checkpoint_dir / f"checkpoint_{step:08d}.replay.npz"
-        if replay.exists():
-            replay.unlink()
+        replay_npz = checkpoint_dir / f"checkpoint_{step:08d}.replay.npz"
+        if replay_npz.exists():
+            replay_npz.unlink()
+        replay_bin = checkpoint_dir / f"checkpoint_{step:08d}.replay.bin"
+        if replay_bin.exists():
+            replay_bin.unlink()
 
 
 def save_checkpoint(
@@ -464,6 +497,7 @@ __all__ = [
     "DEFAULT_ROLLING_CHECKPOINT_KEEP_LAST",
     "CheckpointPaths",
     "LoadedCheckpoint",
+    "compact_replay_buffer_path_for_checkpoint",
     "extract_replay_buffer_metadata",
     "find_latest_checkpoint",
     "list_checkpoints",

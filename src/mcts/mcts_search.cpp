@@ -576,6 +576,12 @@ std::optional<EdgeStats> MctsSearchT<NodeType>::root_edge_stats(const int action
 }
 
 template <typename NodeType>
+std::size_t MctsSearchT<NodeType>::cached_node_mutex_count() const {
+    std::scoped_lock node_mutexes_lock(node_mutex_map_mutex_);
+    return node_mutexes_.size();
+}
+
+template <typename NodeType>
 std::shared_ptr<std::mutex> MctsSearchT<NodeType>::node_mutex(const NodeId node_id) const {
     std::scoped_lock node_mutexes_lock(node_mutex_map_mutex_);
     auto [it, inserted] = node_mutexes_.emplace(node_id, std::make_shared<std::mutex>());
@@ -586,11 +592,7 @@ std::shared_ptr<std::mutex> MctsSearchT<NodeType>::node_mutex(const NodeId node_
 template <typename NodeType>
 NodeId MctsSearchT<NodeType>::allocate_node() {
     std::scoped_lock store_lock(store_mutex_);
-    const NodeId id = node_store_.allocate();
-
-    std::scoped_lock node_mutexes_lock(node_mutex_map_mutex_);
-    node_mutexes_.emplace(id, std::make_shared<std::mutex>());
-    return id;
+    return node_store_.allocate();
 }
 
 template <typename NodeType>

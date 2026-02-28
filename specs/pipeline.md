@@ -14,7 +14,7 @@ This follows the AlphaZero approach: continuous training from the latest network
 │   Self-Play Manager (C++)                                       │
 │   ┌──────────┐ ┌──────────┐         ┌──────────┐               │
 │   │  Game 0   │ │  Game 1   │  ...    │  Game M   │              │
-│   │  K threads│ │  K threads│         │  K threads│              │
+│   │  1 thread │ │  1 thread │         │  1 thread │              │
 │   └─────┬─────┘ └─────┬─────┘        └─────┬─────┘              │
 │         │              │                     │                   │
 │         └──────────────┼─────────────────────┘                   │
@@ -24,14 +24,14 @@ This follows the AlphaZero approach: continuous training from the latest network
 │              └────────┬────────┘                                 │
 │                       │                                          │
 │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┼ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
-│           GPU Scheduler (interleaved)                            │
+│           Parallel Pipeline Threads                              │
 │                       │                                          │
 │         ┌─────────────┼─────────────┐                            │
 │         ▼                           ▼                            │
 │  ┌──────────────┐          ┌──────────────┐                      │
 │  │  Inference    │          │   Training   │                      │
+│  │  Thread       │          │   Thread     │                      │
 │  │  (BF16)       │          │   (BF16 AMP) │                      │
-│  │  S batches    │          │   T steps    │                      │
 │  └──────┬───────┘          └──────┬───────┘                      │
 │         │                          │                              │
 │         ▼                          │                              │
@@ -46,7 +46,7 @@ This follows the AlphaZero approach: continuous training from the latest network
 │                                    ▼                              │
 │  ┌────────────────────────────────────────┐                       │
 │  │          Replay Buffer                 │                       │
-│  │    (ring buffer, 1-2M positions)       │                       │
+│  │    (ring buffer, up to 5M positions)   │                       │
 │  │                                        │                       │
 │  │   ◄── self-play writes positions       │                       │
 │  │   ──► training reads mini-batches      │                       │
@@ -63,42 +63,49 @@ This follows the AlphaZero approach: continuous training from the latest network
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-## 3. GPU Time-Sharing: Interleaved Scheduling
+## 3. GPU Time-Sharing: Parallel Pipeline
 
-Since self-play inference and training share one GPU, they are interleaved:
+Since self-play inference and training share one GPU, they run in **parallel threads** that naturally time-share the GPU via CUDA stream scheduling:
 
 ```python
-while not done:
-    # --- Self-play inference phase ---
-    for i in range(S):                              # S inference batches
-        batch = eval_queue.collect(batch_size)       # collect from MCTS threads
-        policies, values = model.infer(batch)        # GPU: forward only
-        dispatch_results(policies, values)           # wake MCTS threads
+# Inference thread (daemon) — continuously services eval queue
+def inference_worker():
+    while not stopped:
+        eval_queue.process_batch()   # GPU: forward only, dedicated CUDA stream
 
-    # --- Training phase ---
-    for j in range(T):                              # T training steps
-        states, target_pi, target_z = replay_buffer.sample(train_batch_size)
-        loss = train_step(model, states, target_pi, target_z)  # GPU: fwd + bwd + optim
+# Training thread (daemon) — continuously trains from replay buffer
+def training_worker():
+    while step < max_steps:
+        if replay_buffer.size() < min_buffer_size:
+            time.sleep(wait_for_buffer_seconds)
+            continue
+        batch = replay_buffer.sample(train_batch_size)
+        loss = train_step(model, batch)   # GPU: fwd + bwd + optim
         log_metrics(loss, step)
+        step += 1
 ```
+
+The main thread coordinates startup, shutdown, checkpointing, and metrics collection. Synchronization between threads uses `threading.Condition`.
 
 ### Scheduling Parameters
 
-| Parameter | Default | Notes |
-|---|---|---|
-| S (inference batches per cycle) | 50 | ~50ms of inference at 1ms/batch |
-| T (training steps per cycle) | 1 | ~5-10ms per training step |
-| Inference batch size | 256 | = M * K (concurrent games * threads) |
-| Training batch size | 1024 | Scale to 4096 as replay buffer fills |
+| Parameter | Chess | Go | Notes |
+|---|---|---|---|
+| Inference batch size | 384 | 384 | = M × K (concurrent games × threads) |
+| Training batch size | 8,192 | 4,096 | Tuned for GPU arithmetic intensity |
+| Min buffer size | 16,384 | 8,192 | 2× training batch for sample diversity |
 
-The **S:T ratio** controls the balance between data generation and learning:
-- **Early training** (replay buffer underfull): Increase S to generate more data before training.
-- **Steady state**: S=50, T=1 provides a good balance. The GPU spends ~85% of time on inference (feeding self-play) and ~15% on training.
-- This ratio is tunable and can be adjusted dynamically.
+### Shutdown Order
+
+1. Stop `eval_queue` first — this unblocks any MCTS workers waiting in `submit_and_wait()`
+2. Join inference thread
+3. Stop `self_play_manager`
+4. Join training thread
+5. Save final checkpoint
 
 ### Weight Visibility
 
-Training updates model weights in-place (unified memory). The next inference batch automatically uses the updated weights. This is the "slightly stale network" behavior that AlphaZero uses by design — self-play games generated with a marginally older network are still valid training data.
+Training updates model weights in-place (unified memory). The inference thread automatically uses the updated weights on its next batch. This is the "slightly stale network" behavior that AlphaZero uses by design — self-play games generated with a marginally older network are still valid training data.
 
 No explicit weight synchronization mechanism is needed on the DGX Spark's cache-coherent unified memory architecture.
 
@@ -108,11 +115,12 @@ The self-play manager owns and orchestrates all concurrent games.
 
 ### Responsibilities
 
-1. Maintain M concurrent game slots, each with its own `GameState` and MCTS tree.
-2. Spawn K MCTS worker threads per game.
-3. Track simulation counts per game and trigger move selection when the budget (800) is reached.
-4. When a game ends, write the game record to the replay buffer and start a new game in that slot.
-5. Collect and report self-play metrics.
+1. Maintain M concurrent game slots (M=384), each with its own `GameState` and MCTS tree.
+2. Spawn K MCTS worker threads per game (K=1 by default).
+3. Track simulation counts per game and trigger move selection when the budget is reached (configurable, with playout cap randomization and dynamic schedule support).
+4. When a game ends, write the game record to the replay buffer (via type-erased `AddGameFn` callback) and start a new game in that slot.
+5. Collect and report self-play metrics via `SelfPlayMetricsSnapshot`.
+6. Support runtime simulation budget updates via `update_simulations_per_move()`.
 
 ### Game Lifecycle
 
@@ -127,7 +135,7 @@ NEW GAME
 MOVE LOOP
   │
   ├─ K threads run simulations concurrently
-  ├─ When simulation_count >= 800:
+  ├─ When simulation_count >= budget (playout cap may reduce this):
   │     ├─ Compute move policy: π(a) ∝ N(root, a)^(1/τ)
   │     ├─ Select move (sample from π if τ=1, argmax if τ→0)
   │     ├─ Store training sample: (state, π, _)  [outcome filled at game end]
@@ -160,74 +168,81 @@ Resignation is **disabled** in a configurable fraction of games (default: 10%) f
 
 ### Design
 
-A **ring buffer** (circular buffer) of fixed capacity in unified memory. Oldest positions are overwritten when the buffer is full.
+Two implementations are provided:
+
+1. **`ReplayBuffer`** — Dense ring buffer of `ReplayPosition` structs. Simple, used as fallback for non-64-square boards.
+2. **`CompactReplayBuffer`** (default for chess and Go) — Compressed ring buffer using bitpacking and sparse policy storage. ~100× memory reduction.
+
+Both are circular buffers in unified memory. Oldest positions are overwritten when the buffer is full.
+
+### ReplayPosition (Dense Format)
 
 ```cpp
 struct ReplayPosition {
-    // Board encoding: stored as compressed/raw representation.
-    // NOT the full NN input tensor (which includes history) — the tensor is
-    // reconstructed on-the-fly during training from sequential positions.
-    // For simplicity in v1: store the full encoded NN input tensor.
     float encoded_state[MAX_INPUT_SIZE];   // NN input (e.g., 119*8*8 for chess)
-
-    // Policy target: MCTS visit count distribution.
     float policy[MAX_ACTION_SIZE];          // π(a) for each action
-
-    // Value target: game outcome from current player's perspective.
     float value;                            // z ∈ {-1, 0, +1} for scalar
     float value_wdl[3];                     // [win, draw, loss] for WDL
-
-    // Metadata
-    uint32_t game_id;                       // which game this came from
-    uint16_t move_number;                   // move within the game
-};
-
-class ReplayBuffer {
-public:
-    // Capacity: number of positions the buffer can hold.
-    ReplayBuffer(size_t capacity);
-
-    // Write: called by self-play when a game completes.
-    // Thread-safe (multiple games may complete concurrently).
-    void add_game(const std::vector<ReplayPosition>& positions);
-
-    // Read: called by training to sample a mini-batch.
-    // Returns batch_size positions sampled uniformly at random.
-    // Thread-safe (training reads while self-play writes).
-    std::vector<ReplayPosition> sample(size_t batch_size);
-
-    // Current fill level.
-    size_t size() const;
-
-private:
-    std::vector<ReplayPosition> buffer;     // contiguous, in unified memory
-    std::atomic<size_t> write_head;
-    std::atomic<size_t> count;
-    mutable std::shared_mutex mutex;        // readers-writer lock
+    float training_weight;                  // sample weight (default 1.0; reduced for playout cap)
+    uint32_t game_id;
+    uint16_t move_number;
+    uint32_t encoded_state_size;            // actual used size
+    uint32_t policy_size;                   // actual used size
 };
 ```
 
+### CompactReplayPosition (Compressed Format)
+
+```cpp
+struct CompactReplayPosition {
+    uint64_t bitpacked_planes[117];        // binary planes as uint64 (1 per plane)
+    uint8_t  quantized_float_planes[2];    // constant float planes as uint8
+    int16_t  policy_actions[64];           // sparse policy: action indices
+    uint16_t policy_probs_fp16[64];        // sparse policy: FP16 probabilities
+    uint8_t  num_policy_entries;           // sparse policy size
+    float    value, value_wdl[3], training_weight;
+    uint32_t game_id;
+    uint16_t move_number;
+    // shape metadata: num_binary_planes, num_float_planes, policy_size
+};
+```
+
+The `CompactReplayBuffer` uses `GameConfig::float_plane_indices` to determine which planes are bitpacked (binary) vs. quantized (float). Decompression to dense format happens on-the-fly during sampling.
+
+### Sampling Strategies
+
+| Strategy | Description |
+|---|---|
+| `kUniform` (default) | Standard uniform random sampling |
+| `kRecencyWeighted` | Exponential decay by insertion order: weight ∝ (1 - exp(-λ × age)) |
+
+Recency-weighted sampling biases toward more recent (higher-quality) data. Configurable via `sampling_strategy` and `recency_weight_lambda` in config.
+
 ### Configuration
 
-| Parameter | Value | Notes |
-|---|---|---|
-| Capacity | 1,000,000 positions | ~500K games × ~60 moves for chess |
-| Sampling | Uniform random | Per AlphaZero paper |
-| Minimum fill before training | 10,000 positions | Avoid training on too-small dataset |
+| Parameter | Chess | Go | Notes |
+|---|---|---|---|
+| Capacity | 5,000,000 | 800,000 | Tuned per game for memory budget |
+| Sampling | Uniform | Uniform | Recency-weighted also available |
+| Min fill before training | 16,384 | 8,192 | 2× training batch size |
 
 ### Memory Budget
 
-Per-position memory for chess: `119*8*8*4 (state) + 4672*4 (policy) + 4 (value) = ~49 KB`
+**Dense format** (ReplayBuffer): ~49 KB/position for chess. 5M × 49 KB = ~245 GB — too large.
 
-1M positions × 49 KB = ~49 GB. This is significant.
+**Compact format** (CompactReplayBuffer): ~300-500 bytes/position. 5M × 500 bytes = ~2.5 GB. Fits comfortably in 128 GB unified memory.
 
-**Optimization**: Compress the stored representation:
-- Store board state as raw piece positions (not full NN tensor): ~120 bytes for chess, ~400 bytes for Go.
-- Store policy as sparse (only legal moves, ~30-40 for chess): ~200 bytes.
-- Reconstruct full NN input tensor and dense policy on-the-fly during training.
-- Compressed: ~500 bytes per position × 1M = ~500 MB. Fits comfortably.
+The `CompactReplayBuffer` is automatically selected for boards with 64 squares (chess). It supports binary serialization to/from files via `save_to_file()` / `load_from_file()`.
 
-The v1 implementation can use the uncompressed format for simplicity (49 GB fits in 128 GB), with compression as a clear optimization path.
+### Type Erasure: AddGameFn
+
+The `SelfPlayManager` and `SelfPlayGame` accept buffer writes via a type-erased callback:
+
+```cpp
+using AddGameFn = std::function<void(const std::vector<ReplayPosition>&)>;
+```
+
+This allows writing to either `ReplayBuffer` or `CompactReplayBuffer` (or any custom buffer) without template parameterization.
 
 ### Symmetry Augmentation (Go only)
 
@@ -331,12 +346,12 @@ Each checkpoint contains:
 
 ### Checkpoint Schedule
 
-| Action | Frequency | Notes |
-|---|---|---|
-| Save checkpoint | Every 1,000 training steps | Full model + optimizer state |
-| Export folded weights | Every 1,000 training steps | BN-folded model for inference |
-| Keep last K checkpoints | K = 10 | Delete older checkpoints to save disk |
-| Save "milestone" checkpoint | Every 50,000 steps | Permanent, for Elo tracking |
+| Action | Chess | Go | Notes |
+|---|---|---|---|
+| Save checkpoint | Every 1,000 steps | Every 1,000 steps | Full model + optimizer state |
+| Export folded weights | Every 1,000 steps | Every 1,000 steps | BN-folded model for inference |
+| Keep last K checkpoints | K = 10 | K = 10 | Delete older checkpoints to save disk |
+| Save "milestone" checkpoint | Every 5,000 steps | Every 25,000 steps | Permanent, for Elo tracking |
 
 ### Storage
 
@@ -371,14 +386,17 @@ Checkpoints are saved to the local NVMe SSD (4 TB). A 25M parameter model in FP3
 
 ### Elo Estimation (periodic, non-gating)
 
-Every N training steps (e.g., 10,000), run a small evaluation match:
-- Current network vs. a saved milestone checkpoint
-- Fast time control: 100 simulations per move (not 800, for speed)
-- 50-100 games
-- Estimate Elo difference
-- Log as `eval/elo_vs_step_N`
+A `PeriodicEloEvaluator` runs in a background thread, matching the current network against historical milestone checkpoints:
 
-This is purely for monitoring — it does not gate training or select best players. It provides a human-readable measure of training progress.
+| Parameter | Chess | Go | Notes |
+|---|---|---|---|
+| Evaluation interval | 5,000 steps | 10,000 steps | Match against milestones |
+| Games per match | 20 | 20 | Reduced from paper for speed |
+| Simulations per move | 100 | 100 | Fast time control |
+
+- Discovers milestones by pattern `milestone_XXXXXXXX.pt` in checkpoint directory
+- Logs Elo difference via TensorBoard
+- Purely for monitoring — does not gate training or select best players
 
 ## 9. Configuration
 
@@ -397,52 +415,60 @@ network:
 
 # MCTS
 mcts:
-  simulations_per_move: 800
+  simulations_per_move: 200        # chess default; 400 for go
+  enable_playout_cap: true         # randomize between full and reduced sims
+  reduced_simulations: 50
+  full_playout_probability: 0.25
   c_puct: 2.5
   c_fpu: 0.25
-  dirichlet_alpha: 0.3           # auto-set from game if not specified
+  dirichlet_alpha: 0.3            # 0.03 for go
   dirichlet_epsilon: 0.25
-  temperature_moves: 30
-  concurrent_games: 32
-  threads_per_game: 8
-  batch_size: 256
+  randomize_dirichlet_epsilon: true
+  dirichlet_epsilon_min: 0.15
+  dirichlet_epsilon_max: 0.35
+  temperature_moves: 40            # 30 for go
+  concurrent_games: 384
+  threads_per_game: 1
+  batch_size: 384
   resign_threshold: -0.9
   resign_disable_fraction: 0.1
 
 # Training
 training:
-  batch_size: 1024
-  max_steps: 700000
+  batch_size: 8192                 # 4096 for go
+  max_steps: 125000                # 350000 for go
   lr_schedule:
     - [0, 0.2]
-    - [200000, 0.02]
-    - [400000, 0.002]
-    - [600000, 0.0002]
+    - [7000, 0.02]                 # go: [100000, 0.02]
+    - [9000, 0.002]                # go: [200000, 0.002], [300000, 0.0002]
   momentum: 0.9
   l2_reg: 0.0001
   checkpoint_interval: 1000
-  milestone_interval: 50000
-  log_interval: 100
-  min_buffer_size: 10000
+  milestone_interval: 5000         # 25000 for go
+  log_interval: 50
+  min_buffer_size: 16384           # 8192 for go
+  wait_for_buffer_seconds: 0.01
 
 # Pipeline
 pipeline:
-  inference_batches_per_cycle: 50    # S
-  training_steps_per_cycle: 1        # T
+  inference_batches_per_cycle: 100
+  training_steps_per_cycle: 1
 
 # Replay buffer
 replay_buffer:
-  capacity: 1000000
+  capacity: 5000000                # 800000 for go
+  sampling_strategy: uniform       # or "recency_weighted"
 
 # Evaluation
 evaluation:
-  interval_steps: 10000
-  num_games: 50
+  interval_steps: 5000             # 10000 for go
+  num_games: 20
   simulations_per_move: 100
 
 # System
 system:
   precision: "bf16"
+  compile: true                    # enable torch.compile
   num_gpu: 1
   checkpoint_dir: "./checkpoints"
   log_dir: "./logs"

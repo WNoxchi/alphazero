@@ -217,21 +217,33 @@ Where `z` is one-hot: `[1,0,0]` for win, `[0,1,0]` for draw, `[0,0,1]` for loss.
 | Optimizer | SGD with momentum | Per AlphaZero paper |
 | Momentum | 0.9 | |
 | Weight decay (L2) | 1e-4 | Applied as explicit L2 term in loss |
-| Mini-batch size | 1024 (start), scale to 4096 | Adjust based on GPU throughput |
-| Learning rate schedule | See table below | Step decay |
+| Mini-batch size | 8192 (chess), 4096 (Go) | Tuned for GPU arithmetic intensity |
+| Learning rate schedule | See tables below | Step decay, game-specific |
 | Mixed precision | BF16 (PyTorch AMP) | Blackwell native BF16 tensor core support |
 | Gradient scaling | AMP GradScaler | Prevents underflow in BF16 |
 
-### Learning Rate Schedule
+### Learning Rate Schedules
+
+Schedules are adapted per-game based on total training steps and data generation rate.
+
+**Chess** (125K total steps):
+
+| Training steps | Learning rate |
+|---|---|
+| 0 – 7,000 | 0.2 |
+| 7,000 – 9,000 | 0.02 |
+| 9,000+ | 0.002 |
+
+**Go** (350K total steps):
 
 | Training steps (thousands) | Learning rate |
 |---|---|
-| 0 – 200 | 0.2 |
-| 200 – 400 | 0.02 |
-| 400 – 600 | 0.002 |
-| 600+ | 0.0002 |
+| 0 – 100 | 0.2 |
+| 100 – 200 | 0.02 |
+| 200 – 300 | 0.002 |
+| 300+ | 0.0002 |
 
-This schedule is from the AlphaZero paper. The exact step boundaries may need adjustment based on the rate of self-play data generation on the DGX Spark.
+These are tuned for the DGX Spark's self-play data generation rate. The original AlphaZero paper used 200K/400K/600K step boundaries over 700K total steps.
 
 ## 6. Batch Normalization Folding
 

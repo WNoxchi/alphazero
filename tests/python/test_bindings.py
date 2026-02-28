@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -483,6 +484,125 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
 
+    def test_self_play_manager_bindings_release_gil_for_lifecycle_and_metrics_calls(self) -> None:
+        """WHY: removing these call guards can reintroduce Python-thread stalls during self-play startup and runtime control calls."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r'\.def\(\s*"start"\s*,\s*&SelfPlayManager::start\s*,\s*'
+                r"py::call_guard<py::gil_scoped_release>\(\)\s*\)"
+            ),
+        )
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r'\.def\(\s*"update_simulations_per_move"\s*,\s*'
+                r"&SelfPlayManager::update_simulations_per_move\s*,\s*"
+                r'py::arg\("new_sims"\)\s*,\s*'
+                r"py::call_guard<py::gil_scoped_release>\(\)\s*\)"
+            ),
+        )
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r'\.def\(\s*"metrics"\s*,\s*&SelfPlayManager::metrics\s*,\s*'
+                r"py::call_guard<py::gil_scoped_release>\(\)\s*\)"
+            ),
+        )
+
+    def test_game_state_bindings_release_gil_for_hot_paths(self) -> None:
+        """WHY: state transition/encoding helpers can be CPU-heavy and should not monopolize the Python GIL."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        required_patterns = (
+            r'\.def\(\s*"apply_action"\s*,\s*&GameState::apply_action\s*,\s*py::arg\("action"\)\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"legal_actions"\s*,\s*&GameState::legal_actions\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"clone"\s*,\s*&GameState::clone\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def_static\(\s*"from_fen"\s*,\s*&ChessState::from_fen\s*,\s*py::arg\("fen"\)\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"legal_actions_uci"\s*,\s*&chess_legal_actions_uci\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def_static\(\s*"from_sgf"\s*,\s*&GoState::from_sgf\s*,\s*py::arg\("sgf"\)\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+            r'\.def\(\s*"legal_actions"\s*,\s*&GoState::legal_actions\s*,\s*'
+            r"py::call_guard<py::gil_scoped_release>\(\)\s*\)",
+        )
+        for required_pattern in required_patterns:
+            self.assertRegex(bindings_source, re.compile(required_pattern))
+
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r"std::vector<float>\s+encode_state_flat\([^)]*\)\s*\{"
+                r".*?py::gil_scoped_release\s+release_gil;"
+                r".*?state\.encode\(encoded\.data\(\)\);",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            bindings_source,
+            re.compile(
+                r"py::array_t<float>\s+encode_state_tensor\([^)]*\)\s*\{"
+                r".*?py::gil_scoped_release\s+release_gil;"
+                r".*?state\.encode\(encoded\.mutable_data\(\)\);",
+                re.DOTALL,
+            ),
+        )
+
+    def test_replay_buffer_bindings_release_gil_for_hot_paths(self) -> None:
+        """WHY: replay hot paths should release the GIL either at the binding edge or around heavy native buffer operations."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        gil_guard = r"py::call_guard<py::gil_scoped_release>\(\)\s*"
+        required_patterns = (
+            r'\.def\(\s*"add_game"\s*,\s*&alphazero::selfplay::ReplayBuffer::add_game\s*,\s*'
+            r'py::arg\("positions"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"sample"\s*,\s*&alphazero::selfplay::ReplayBuffer::sample\s*,\s*'
+            r'py::arg\("batch_size"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"add_game"\s*,\s*&CompactReplayBuffer::add_game\s*,\s*'
+            r'py::arg\("positions"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"sample"\s*,\s*&CompactReplayBuffer::sample\s*,\s*'
+            r'py::arg\("batch_size"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"save_to_file"\s*,\s*&CompactReplayBuffer::save_to_file\s*,\s*'
+            r'py::arg\("path"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+            r'\.def\(\s*"load_from_file"\s*,\s*&CompactReplayBuffer::load_from_file\s*,\s*'
+            r'py::arg\("path"\)\s*,\s*'
+            + gil_guard
+            + r"\)",
+        )
+
+        for required_pattern in required_patterns:
+            self.assertRegex(bindings_source, re.compile(required_pattern))
+
+        self.assertIn("replay_buffer_sample_batch_numpy_impl", bindings_source)
+        self.assertIn("replay_buffer_export_numpy_impl", bindings_source)
+        self.assertIn("replay_buffer_import_numpy_impl", bindings_source)
+        self.assertGreaterEqual(bindings_source.count("py::gil_scoped_release release_gil;"), 3)
+
+    def test_sample_batch_numpy_capsule_owner_transfer_is_exception_safe(self) -> None:
+        """WHY: sample_batch NumPy views must transfer capsule ownership without raw-new leak windows."""
+        bindings_source = (ROOT / "src" / "bindings" / "python_bindings.cpp").read_text(encoding="utf-8")
+
+        self.assertNotIn("new std::shared_ptr<SampledBatch>(batch)", bindings_source)
+        self.assertIn("std::make_unique<std::shared_ptr<SampledBatch>>(batch)", bindings_source)
+        self.assertIn("owner_guard.release()", bindings_source)
+        self.assertGreaterEqual(bindings_source.count("sampled_batch_owner_capsule(batch)"), 2)
+
     def test_self_play_manager_exposes_simulation_budget_update_api(self) -> None:
         """WHY: train.py must be able to retune self-play simulation budgets at runtime for phase-4 scheduling."""
         bindings = _require_bindings()
@@ -546,6 +666,48 @@ class PythonBindingsTests(unittest.TestCase):
             queue.stop()
             thread.join(timeout=2.0)
             self.assertFalse(thread.is_alive())
+
+    def test_eval_queue_stop_unblocks_waiting_submitters_without_consumer(self) -> None:
+        """WHY: shutdown may stop EvalQueue before a consumer drains pending requests, so waiting submitters must be released."""
+        bindings = _require_bindings()
+        eval_config = bindings.EvalQueueConfig()
+        eval_config.batch_size = 8
+        eval_config.flush_timeout_us = 10_000
+
+        def evaluator(_batch: object) -> tuple[object, object]:
+            raise AssertionError("consumer should not run in this regression test")
+
+        queue = bindings.EvalQueue(evaluator=evaluator, encoded_state_size=1, config=eval_config)
+        started = threading.Event()
+        results: dict[str, BaseException | None] = {"first": None, "second": None}
+
+        def submitter(slot: str, value: float) -> None:
+            started.set()
+            try:
+                queue.submit_and_wait([value])
+            except BaseException as exc:  # pragma: no cover - exercised by assertions below
+                results[slot] = exc
+
+        first = threading.Thread(target=submitter, args=("first", 1.0))
+        second = threading.Thread(target=submitter, args=("second", 2.0))
+        first.start()
+        second.start()
+
+        self.assertTrue(started.wait(timeout=1.0))
+        time.sleep(0.05)
+        queue.stop()
+
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertIsInstance(results["first"], RuntimeError)
+        self.assertIsInstance(results["second"], RuntimeError)
+
+        first_message = str(results["first"])
+        second_message = str(results["second"])
+        self.assertTrue("stopped" in first_message.lower())
+        self.assertTrue("stopped" in second_message.lower())
 
     def test_self_play_manager_starts_and_stops_from_python(self) -> None:
         """Validates that Python can control C++ self-play lifecycle and collect resulting replay data."""

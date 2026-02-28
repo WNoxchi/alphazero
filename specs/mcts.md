@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-MCTS is the search algorithm that converts the neural network's raw policy and value estimates into much stronger move selections. Each move in self-play is selected by running 800 MCTS simulations, where each simulation traverses the game tree, evaluates a leaf position with the neural network, and backpropagates the result.
+MCTS is the search algorithm that converts the neural network's raw policy and value estimates into much stronger move selections. Each move in self-play is selected by running MCTS simulations (configurable; defaults: 200 for chess, 400 for Go), where each simulation traverses the game tree, evaluates a leaf position with the neural network, and backpropagates the result.
 
 The implementation uses **hybrid parallelism**: root parallelism across concurrent games, tree parallelism within each game, and an asynchronous evaluation queue for batched GPU inference.
 
@@ -74,32 +74,40 @@ v_backup = -v_backup            (at each parent level)
 Each MCTS node uses SoA layout for SIMD-friendly PUCT computation:
 
 ```cpp
-struct MCTSNode {
+template<int MaxActions>
+struct MCTSNodeT {
     // --- Edge statistics (SoA for vectorized PUCT) ---
-    int32_t   visit_count[MAX_ACTIONS];     // N(s, a)
-    float     total_value[MAX_ACTIONS];     // W(s, a)
-    float     mean_value[MAX_ACTIONS];      // Q(s, a) = W/N
-    float     prior[MAX_ACTIONS];           // P(s, a) from NN
+    int32_t   visit_count[MaxActions];     // N(s, a)
+    float     total_value[MaxActions];     // W(s, a)
+    float     mean_value[MaxActions];      // Q(s, a) = W/N
+    float     prior[MaxActions];           // P(s, a) from NN
 
     // --- Node metadata ---
-    int16_t   actions[MAX_ACTIONS];         // Legal action indices
-    int16_t   num_actions;                  // Number of legal actions
-    int32_t   total_visits;                 // Σ N(s, a) (cached)
-    float     node_value;                   // V(s): NN value of this node
+    int16_t   actions[MaxActions];         // Legal action indices
+    int16_t   num_actions;                 // Number of legal actions
+    int32_t   total_visits;                // Σ N(s, a) (cached)
+    float     node_value;                  // V(s): NN value of this node
 
     // --- Tree structure ---
-    NodeId    children[MAX_ACTIONS];        // Child node handles (NULL_NODE if unexpanded)
-    NodeId    parent;                       // Parent node handle
-    int16_t   parent_action;               // Action that led to this node from parent
+    NodeId    children[MaxActions];        // Child node handles (NULL_NODE if unexpanded)
+    NodeId    parent;                      // Parent node handle
+    int16_t   parent_action;              // Action that led to this node from parent
 
     // --- Virtual loss tracking ---
-    int32_t   virtual_loss[MAX_ACTIONS];    // In-flight virtual losses per edge
+    int32_t   virtual_loss[MaxActions];    // In-flight virtual losses per edge
 };
+
+// Game-specific specializations:
+using ChessMCTSNode = MCTSNodeT<218>;   // max legal chess moves
+using GoMCTSNode    = MCTSNodeT<362>;   // 19*19 + pass
+using MCTSNode      = GoMCTSNode;       // universal alias
 ```
 
-`MAX_ACTIONS` is a compile-time constant per game type:
+`MaxActions` is a compile-time template parameter per game type:
 - Chess: 218 (theoretical maximum legal moves)
 - Go: 362 (19*19 + pass)
+
+The `NodeStore`, `ArenaNodeStore`, and `MctsSearch` classes are similarly templatized (`NodeStoreT<NodeType>`, `ArenaNodeStoreT<NodeType>`, `MctsSearchT<NodeType>`). A `RuntimeMctsSearch` wrapper uses `std::variant` for runtime game-type dispatch.
 
 ### NodeId Abstraction
 
@@ -174,14 +182,16 @@ A `TranspositionNodeStore` would use a hash map keyed by position hash (`GameSta
 M concurrent games (root parallelism)  ×  K threads per game (tree parallelism)
 = M * K total threads feeding one evaluation queue
 
-Recommended defaults:
-  M = 32 games
-  K = 8 threads per game
-  Total = 256 threads
-  GPU batch size = 256
+Current defaults:
+  M = 384 games
+  K = 1 thread per game
+  Total = 384 threads
+  GPU batch size = 384
 
 All values are configurable.
 ```
+
+In practice, K=1 (pure root parallelism) performs best on the DGX Spark: NN eval latency dominates over MCTS tree traversal, so additional tree parallelism threads add CPU overhead without improving GPU utilization. High M keeps the eval queue full and smooths GPU utilization.
 
 ### Root Parallelism (Game Level)
 
@@ -195,15 +205,14 @@ All values are configurable.
 - Within each game, K threads explore the same MCTS tree concurrently.
 - Each thread performs: select → submit leaf to eval queue → wait → backup.
 - **Virtual loss** prevents threads from exploring the same path (see Section 6).
-- K = 4-8 is the sweet spot: negligible search quality degradation, good batch contribution.
+- K > 1 is supported but currently not used (K=1 is preferred, see above).
 
 ### Synchronization
 
 - Each game's MCTS tree is accessed only by its K threads. No cross-game synchronization needed.
-- Within a game, edge statistics are protected by fine-grained atomics:
-  - `visit_count` and `total_visits`: `std::atomic<int32_t>` with relaxed ordering for reads, acquire-release for updates.
-  - `total_value` and `mean_value`: Updated under a per-node lightweight lock (spinlock or mutex) during backup, since float addition is not natively atomic.
-  - `virtual_loss`: `std::atomic<int32_t>`.
+- Within a game, edge statistics are protected by fine-grained locks:
+  - Per-node `shared_ptr<std::mutex>` for node-level locking during select/backup.
+  - `virtual_loss`: `int32_t` (protected by node mutex).
 - The evaluation queue is thread-safe (see Section 7).
 
 ## 6. Virtual Loss
@@ -319,13 +328,17 @@ P(root, a) = (1 - ε) * p_a + ε * η_a
 Where:
   p_a       = neural network policy prior for action a
   η ~ Dir(α) = Dirichlet noise vector
-  ε         = 0.25
+  ε         = 0.25 (or randomized per-game from a range, see below)
   α         = 0.3 (chess) or 0.03 (Go)
 ```
 
 The Dirichlet α is scaled inversely with the typical number of legal moves: `α ≈ 10 / avg_legal_moves`. This ensures a similar level of exploration regardless of action space size.
 
 Noise is sampled **once per move** (when the root changes), not per simulation.
+
+### Randomized Dirichlet Epsilon (Optional)
+
+When `randomize_dirichlet_epsilon` is enabled, each game samples ε uniformly from `[dirichlet_epsilon_min, dirichlet_epsilon_max]` instead of using a fixed value. This increases opening diversity. Chess defaults: `[0.15, 0.35]`.
 
 ## 10. Temperature and Move Selection
 
@@ -339,8 +352,10 @@ After completing all simulations, a move is selected from the root based on visi
 
 | Move number | Temperature τ | Selection behavior |
 |---|---|---|
-| 1 – 30 | 1.0 | Proportional to visit count (stochastic, ensures diverse openings) |
-| 31+ | → 0 (effectively: argmax) | Select most-visited move (deterministic, strongest play) |
+| 1 – N | 1.0 | Proportional to visit count (stochastic, ensures diverse openings) |
+| N+1 and beyond | → 0 (effectively: argmax) | Select most-visited move (deterministic, strongest play) |
+
+N = `temperature_moves` (chess: 40, Go: 30).
 
 When τ → 0, this becomes greedy selection of the most-visited action. In practice, implement this as `argmax(N(root, a))` rather than computing the power.
 
@@ -387,20 +402,34 @@ To prevent premature resignations (false positives), disable resignation in a fr
 
 | Parameter | Chess | Go | Notes |
 |---|---|---|---|
-| Simulations per move | 800 | 800 | Tunable; 800 matches AlphaZero paper |
+| Simulations per move | 200 | 400 | Tunable; reduced from AlphaZero paper's 800 for faster data generation |
+| Playout cap | enabled | — | 25% full (200), 75% reduced (50 sims); see below |
 | c_puct | 2.5 | 2.5 | Exploration constant; tunable |
 | c_fpu | 0.25 | 0.25 | FPU reduction constant; tunable |
 | Dirichlet α | 0.3 | 0.03 | ~10 / avg_legal_moves |
-| Dirichlet ε | 0.25 | 0.25 | Root noise weight |
-| Temperature (moves 1-30) | 1.0 | 1.0 | Stochastic move selection |
-| Temperature (moves 31+) | → 0 | → 0 | Greedy move selection |
-| Concurrent games (M) | 32 | 32 | Root parallelism; tunable |
-| Threads per game (K) | 8 | 8 | Tree parallelism; tunable |
-| GPU batch size | 256 | 256 | M * K; tunable |
-| Arena capacity (per game) | 8,192 nodes | 8,192 nodes | Sufficient for 800 sims + reuse |
+| Dirichlet ε | 0.25 (randomized 0.15–0.35) | 0.25 | Root noise weight; chess uses per-game randomization |
+| Temperature moves | 40 | 30 | Stochastic selection for first N moves |
+| Concurrent games (M) | 384 | 384 | High M keeps eval queue full; tunable |
+| Threads per game (K) | 1 | 1 | Eval latency dominates; K=1 saves CPU for more games |
+| GPU batch size | 384 | 384 | = M × K; tunable |
+| Arena capacity (per game) | 8,192 nodes | 2,048 nodes | Go reduced to save memory (~22 GB savings) |
 | Resign threshold | -0.9 | -0.9 | Tunable; calibrate via false positive rate |
 | Resign disable fraction | 10% | 10% | For calibration |
 | Max game length | 512 | 722 (19*19*2) | Draw/score after this |
+
+### Playout Cap Randomization
+
+When `enable_playout_cap` is true, each move randomly selects between the full simulation budget and a reduced budget:
+- With probability `full_playout_probability` (default 0.25): use full `simulations_per_move` (200)
+- Otherwise: use `reduced_simulations` (default 50)
+
+Positions generated with reduced simulations receive a proportionally lower `training_weight` in the replay buffer. This accelerates self-play data generation while maintaining training signal quality.
+
+### Dynamic Simulation Schedule
+
+The simulation budget can be adjusted at runtime via `SelfPlayManager::update_simulations_per_move()`. The current training script uses a step-based schedule:
+- Steps 0–10,000: 100 simulations/move (fast early exploration)
+- Steps 10,000+: 200 simulations/move (higher quality data)
 
 ## 14. Pseudocode: Complete MCTS Simulation
 

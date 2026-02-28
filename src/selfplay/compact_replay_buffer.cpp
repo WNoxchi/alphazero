@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -408,6 +410,104 @@ void CompactReplayBuffer::import_positions(
 
     write_head_.store(head, std::memory_order_release);
     count_.store(current_count, std::memory_order_release);
+}
+
+// --- Binary serialization (compact format) ---
+//
+// File layout:
+//   [magic: 4 bytes "AZRB"]
+//   [version: uint32]
+//   [count: uint64]
+//   [sizeof_position: uint64]
+//   [positions: count × CompactReplayPosition, oldest first]
+
+namespace {
+
+constexpr char kFileMagic[4] = {'A', 'Z', 'R', 'B'};
+constexpr std::uint32_t kFileVersion = 1U;
+
+struct FileHeader {
+    char magic[4]{};
+    std::uint32_t version = 0U;
+    std::uint64_t count = 0U;
+    std::uint64_t sizeof_position = 0U;
+};
+
+}  // namespace
+
+void CompactReplayBuffer::save_to_file(const std::string& path) const {
+    std::shared_lock lock(mutex_);
+    const std::size_t current_count = count_.load(std::memory_order_relaxed);
+    const std::size_t current_head = write_head_.load(std::memory_order_relaxed);
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("CompactReplayBuffer save_to_file: cannot open " + path);
+    }
+
+    FileHeader header{};
+    std::memcpy(header.magic, kFileMagic, 4);
+    header.version = kFileVersion;
+    header.count = static_cast<std::uint64_t>(current_count);
+    header.sizeof_position = static_cast<std::uint64_t>(sizeof(CompactReplayPosition));
+    out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+    // Write positions in logical order (oldest → newest).
+    for (std::size_t i = 0U; i < current_count; ++i) {
+        const std::size_t physical = to_physical_index(i, current_count, current_head);
+        out.write(reinterpret_cast<const char*>(&buffer_[physical]), sizeof(CompactReplayPosition));
+    }
+
+    if (!out) {
+        throw std::runtime_error("CompactReplayBuffer save_to_file: write error on " + path);
+    }
+}
+
+std::size_t CompactReplayBuffer::load_from_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: cannot open " + path);
+    }
+
+    FileHeader header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!in) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: truncated header in " + path);
+    }
+    if (std::memcmp(header.magic, kFileMagic, 4) != 0) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: invalid magic in " + path);
+    }
+    if (header.version != kFileVersion) {
+        throw std::runtime_error("CompactReplayBuffer load_from_file: unsupported version in " + path);
+    }
+    if (header.sizeof_position != static_cast<std::uint64_t>(sizeof(CompactReplayPosition))) {
+        throw std::runtime_error(
+            "CompactReplayBuffer load_from_file: sizeof mismatch in " + path +
+            " (file=" + std::to_string(header.sizeof_position) +
+            ", runtime=" + std::to_string(sizeof(CompactReplayPosition)) + ")");
+    }
+
+    const auto file_count = static_cast<std::size_t>(header.count);
+    // If the file has more positions than our capacity, skip the oldest entries.
+    const std::size_t to_load = std::min(file_count, buffer_.size());
+    const std::size_t to_skip = file_count - to_load;
+    if (to_skip > 0U) {
+        in.seekg(
+            static_cast<std::streamoff>(to_skip * sizeof(CompactReplayPosition)),
+            std::ios::cur);
+    }
+
+    std::unique_lock lock(mutex_);
+    for (std::size_t i = 0U; i < to_load; ++i) {
+        in.read(reinterpret_cast<char*>(&buffer_[i]), sizeof(CompactReplayPosition));
+        if (!in) {
+            throw std::runtime_error("CompactReplayBuffer load_from_file: truncated data in " + path);
+        }
+    }
+
+    write_head_.store(to_load % buffer_.size(), std::memory_order_release);
+    count_.store(to_load, std::memory_order_release);
+    return to_load;
 }
 
 std::size_t CompactReplayBuffer::size() const noexcept { return count_.load(std::memory_order_acquire); }

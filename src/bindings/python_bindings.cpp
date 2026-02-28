@@ -127,14 +127,21 @@ using alphazero::selfplay::SelfPlayManager;
     return static_cast<py::ssize_t>(value);
 }
 
+[[nodiscard]] py::capsule sampled_batch_owner_capsule(const std::shared_ptr<SampledBatch>& batch) {
+    auto owner_guard = std::make_unique<std::shared_ptr<SampledBatch>>(batch);
+    py::capsule owner(
+        owner_guard.get(),
+        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    owner_guard.release();
+    return owner;
+}
+
 [[nodiscard]] py::array_t<float> sampled_batch_array_view(
     const std::shared_ptr<SampledBatch>& batch,
     const std::vector<float>& storage,
     const std::size_t rows,
     const std::size_t cols) {
-    py::capsule owner(
-        new std::shared_ptr<SampledBatch>(batch),
-        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    py::capsule owner = sampled_batch_owner_capsule(batch);
     const std::array<py::ssize_t, 2> shape{to_py_ssize(rows, "rows"), to_py_ssize(cols, "cols")};
     const std::array<py::ssize_t, 2> strides{
         to_py_ssize(cols * sizeof(float), "row stride"),
@@ -146,9 +153,7 @@ using alphazero::selfplay::SelfPlayManager;
     const std::shared_ptr<SampledBatch>& batch,
     const std::vector<float>& storage,
     const std::size_t size) {
-    py::capsule owner(
-        new std::shared_ptr<SampledBatch>(batch),
-        [](void* ptr) { delete static_cast<std::shared_ptr<SampledBatch>*>(ptr); });
+    py::capsule owner = sampled_batch_owner_capsule(batch);
     const std::array<py::ssize_t, 1> shape{to_py_ssize(size, "size")};
     const std::array<py::ssize_t, 1> strides{
         static_cast<py::ssize_t>(sizeof(float))};
@@ -381,7 +386,10 @@ template <typename StateType>
 [[nodiscard]] std::vector<float> encode_state_flat(const GameState& state) {
     const std::size_t value_count = encoded_state_size(state);
     std::vector<float> encoded(value_count, 0.0F);
-    state.encode(encoded.data());
+    {
+        py::gil_scoped_release release_gil;
+        state.encode(encoded.data());
+    }
     return encoded;
 }
 
@@ -528,7 +536,10 @@ template <typename StateType>
     const int cols) {
     py::array_t<float> encoded(
         {static_cast<py::ssize_t>(channels), static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(cols)});
-    state.encode(encoded.mutable_data());
+    {
+        py::gil_scoped_release release_gil;
+        state.encode(encoded.mutable_data());
+    }
     return encoded;
 }
 
@@ -746,7 +757,10 @@ public:
         queue_.process_batch();
     }
 
-    void stop() { queue_.stop(); }
+    void stop() {
+        py::gil_scoped_release release_gil;
+        queue_.stop();
+    }
 
     [[nodiscard]] std::size_t encoded_state_size() const noexcept { return encoded_state_size_; }
     [[nodiscard]] alphazero::mcts::EvalQueue& raw_queue() noexcept { return queue_; }
@@ -857,8 +871,12 @@ PYBIND11_MODULE(alphazero_cpp, module) {
     module.doc() = "pybind11 bridge for the AlphaZero C++ engine";
 
     py::class_<GameState>(module, "GameState")
-        .def("apply_action", &GameState::apply_action, py::arg("action"))
-        .def("legal_actions", &GameState::legal_actions)
+        .def(
+            "apply_action",
+            &GameState::apply_action,
+            py::arg("action"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions", &GameState::legal_actions, py::call_guard<py::gil_scoped_release>())
         .def("is_terminal", &GameState::is_terminal)
         .def("outcome", &GameState::outcome, py::arg("player"))
         .def("current_player", &GameState::current_player)
@@ -866,7 +884,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "encode",
             [](const GameState& state) { return encode_state_flat(state); },
             "Encode the state into a flat float vector.")
-        .def("clone", &GameState::clone)
+        .def("clone", &GameState::clone, py::call_guard<py::gil_scoped_release>())
         .def("hash", &GameState::hash)
         .def("to_string", &GameState::to_string)
         .def("__repr__", [](const GameState& state) { return state.to_string(); })
@@ -874,21 +892,27 @@ PYBIND11_MODULE(alphazero_cpp, module) {
 
     py::class_<ChessState, GameState>(module, "ChessState")
         .def(py::init<>())
-        .def_static("from_fen", &ChessState::from_fen, py::arg("fen"))
-        .def("to_fen", &ChessState::to_fen)
+        .def_static(
+            "from_fen",
+            &ChessState::from_fen,
+            py::arg("fen"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("to_fen", &ChessState::to_fen, py::call_guard<py::gil_scoped_release>())
         .def_static(
             "actions_to_pgn",
             &ChessState::actions_to_pgn,
             py::arg("action_history"),
             py::arg("result"),
-            py::arg("starting_fen") = std::string{})
+            py::arg("starting_fen") = std::string{},
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "apply_action",
             [](const ChessState& state, const int action) {
                 return downcast_state_unique_ptr<ChessState>(state.apply_action(action), "ChessState.apply_action()");
             },
-            py::arg("action"))
-        .def("legal_actions", &ChessState::legal_actions)
+            py::arg("action"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions", &ChessState::legal_actions, py::call_guard<py::gil_scoped_release>())
         .def("is_terminal", &ChessState::is_terminal)
         .def("outcome", &ChessState::outcome, py::arg("player"))
         .def("current_player", &ChessState::current_player)
@@ -901,35 +925,43 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "clone",
             [](const ChessState& state) {
                 return downcast_state_unique_ptr<ChessState>(state.clone(), "ChessState.clone()");
-            })
+            },
+            py::call_guard<py::gil_scoped_release>())
         .def("hash", &ChessState::hash)
-        .def("action_to_uci", &chess_action_to_uci, py::arg("action"))
-        .def("uci_to_action", &chess_uci_to_action, py::arg("uci"))
-        .def("legal_actions_uci", &chess_legal_actions_uci)
+        .def("action_to_uci", &chess_action_to_uci, py::arg("action"), py::call_guard<py::gil_scoped_release>())
+        .def("uci_to_action", &chess_uci_to_action, py::arg("uci"), py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions_uci", &chess_legal_actions_uci, py::call_guard<py::gil_scoped_release>())
         .def("to_string", &ChessState::to_string)
         .def("__repr__", [](const ChessState& state) { return state.to_string(); })
         .def("__str__", [](const ChessState& state) { return state.to_string(); });
 
     py::class_<GoState, GameState>(module, "GoState")
         .def(py::init<>())
-        .def_static("from_sgf", &GoState::from_sgf, py::arg("sgf"))
+        .def_static(
+            "from_sgf",
+            &GoState::from_sgf,
+            py::arg("sgf"),
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "to_sgf",
             &GoState::to_sgf,
-            py::arg("result") = std::string{"?"})
+            py::arg("result") = std::string{"?"},
+            py::call_guard<py::gil_scoped_release>())
         .def_static(
             "actions_to_sgf",
             &GoState::actions_to_sgf,
             py::arg("action_history"),
             py::arg("result") = std::string{"?"},
-            py::arg("komi") = alphazero::go::kDefaultKomi)
+            py::arg("komi") = alphazero::go::kDefaultKomi,
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "apply_action",
             [](const GoState& state, const int action) {
                 return downcast_state_unique_ptr<GoState>(state.apply_action(action), "GoState.apply_action()");
             },
-            py::arg("action"))
-        .def("legal_actions", &GoState::legal_actions)
+            py::arg("action"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("legal_actions", &GoState::legal_actions, py::call_guard<py::gil_scoped_release>())
         .def("is_terminal", &GoState::is_terminal)
         .def("outcome", &GoState::outcome, py::arg("player"))
         .def("current_player", &GoState::current_player)
@@ -940,7 +972,8 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             "clone",
             [](const GoState& state) {
                 return downcast_state_unique_ptr<GoState>(state.clone(), "GoState.clone()");
-            })
+            },
+            py::call_guard<py::gil_scoped_release>())
         .def("hash", &GoState::hash)
         .def("to_string", &GoState::to_string)
         .def("__repr__", [](const GoState& state) { return state.to_string(); })
@@ -1124,8 +1157,16 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::init<std::size_t, std::uint64_t>(),
             py::arg("capacity") = alphazero::selfplay::ReplayBuffer::kDefaultCapacity,
             py::arg("random_seed") = 0x9E3779B97F4A7C15ULL)
-        .def("add_game", &alphazero::selfplay::ReplayBuffer::add_game, py::arg("positions"))
-        .def("sample", &alphazero::selfplay::ReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "add_game",
+            &alphazero::selfplay::ReplayBuffer::add_game,
+            py::arg("positions"),
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "sample",
+            &alphazero::selfplay::ReplayBuffer::sample,
+            py::arg("batch_size"),
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "sample_batch",
             &replay_buffer_sample_batch_numpy,
@@ -1176,8 +1217,16 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("random_seed") = 0x9E3779B97F4A7C15ULL,
             py::arg("sampling_strategy") = SamplingStrategy::kUniform,
             py::arg("recency_weight_lambda") = 1.0F)
-        .def("add_game", &CompactReplayBuffer::add_game, py::arg("positions"))
-        .def("sample", &CompactReplayBuffer::sample, py::arg("batch_size"))
+        .def(
+            "add_game",
+            &CompactReplayBuffer::add_game,
+            py::arg("positions"),
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "sample",
+            &CompactReplayBuffer::sample,
+            py::arg("batch_size"),
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "sample_batch",
             &compact_replay_buffer_sample_batch_numpy,
@@ -1202,7 +1251,17 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("game_ids"),
             py::arg("move_numbers"),
             py::arg("encoded_state_size"),
-            py::arg("policy_size"));
+            py::arg("policy_size"))
+        .def(
+            "save_to_file",
+            &CompactReplayBuffer::save_to_file,
+            py::arg("path"),
+            py::call_guard<py::gil_scoped_release>())
+        .def(
+            "load_from_file",
+            &CompactReplayBuffer::load_from_file,
+            py::arg("path"),
+            py::call_guard<py::gil_scoped_release>());
 
     py::enum_<alphazero::selfplay::GameTerminationReason>(module, "GameTerminationReason")
         .value("NATURAL", alphazero::selfplay::GameTerminationReason::kNatural)
@@ -1438,12 +1497,13 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::keep_alive<1, 3>(),
             py::keep_alive<1, 4>(),
             py::keep_alive<1, 6>())
-        .def("start", &SelfPlayManager::start)
+        .def("start", &SelfPlayManager::start, py::call_guard<py::gil_scoped_release>())
         .def("stop", &SelfPlayManager::stop, py::call_guard<py::gil_scoped_release>())
         .def("is_running", &SelfPlayManager::is_running)
         .def(
             "update_simulations_per_move",
             &SelfPlayManager::update_simulations_per_move,
-            py::arg("new_sims"))
-        .def("metrics", &SelfPlayManager::metrics);
+            py::arg("new_sims"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("metrics", &SelfPlayManager::metrics, py::call_guard<py::gil_scoped_release>());
 }
