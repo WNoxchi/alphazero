@@ -1051,6 +1051,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("simulations_per_move", &alphazero::mcts::SearchConfig::simulations_per_move)
         .def_readwrite("c_puct", &alphazero::mcts::SearchConfig::c_puct)
         .def_readwrite("c_fpu", &alphazero::mcts::SearchConfig::c_fpu)
+        .def_readwrite("c_fpu_root", &alphazero::mcts::SearchConfig::c_fpu_root)
         .def_readwrite("enable_dirichlet_noise", &alphazero::mcts::SearchConfig::enable_dirichlet_noise)
         .def_readwrite("dirichlet_epsilon", &alphazero::mcts::SearchConfig::dirichlet_epsilon)
         .def_readwrite("dirichlet_alpha_override", &alphazero::mcts::SearchConfig::dirichlet_alpha_override)
@@ -1281,6 +1282,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             &alphazero::selfplay::SelfPlayGameConfig::full_playout_probability)
         .def_readwrite("c_puct", &alphazero::selfplay::SelfPlayGameConfig::c_puct)
         .def_readwrite("c_fpu", &alphazero::selfplay::SelfPlayGameConfig::c_fpu)
+        .def_readwrite("c_fpu_root", &alphazero::selfplay::SelfPlayGameConfig::c_fpu_root)
         .def_readwrite("enable_dirichlet_noise", &alphazero::selfplay::SelfPlayGameConfig::enable_dirichlet_noise)
         .def_readwrite("dirichlet_epsilon", &alphazero::selfplay::SelfPlayGameConfig::dirichlet_epsilon)
         .def_readwrite(

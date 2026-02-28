@@ -47,6 +47,9 @@ MctsSearchT<NodeType>::MctsSearchT(NodeStoreT<NodeType>& node_store, const GameC
     if (!(config_.c_fpu >= 0.0F) || !std::isfinite(config_.c_fpu)) {
         throw std::invalid_argument("MctsSearch c_fpu must be finite and >= 0");
     }
+    if (!std::isfinite(config_.c_fpu_root)) {
+        throw std::invalid_argument("MctsSearch c_fpu_root must be finite");
+    }
     if (!std::isfinite(config_.temperature) || config_.temperature < 0.0F) {
         throw std::invalid_argument("MctsSearch temperature must be finite and >= 0");
     }
@@ -153,7 +156,7 @@ void MctsSearchT<NodeType>::run_simulation(const EvaluateFn& evaluator) {
                 break;
             }
 
-            selected_slot = select_action_slot(node);
+            selected_slot = select_action_slot(node, current == root_id);
             selected_action = node.actions[static_cast<std::size_t>(selected_slot)];
             apply_virtual_loss(&node, selected_slot);
             child_id = node.children[static_cast<std::size_t>(selected_slot)];
@@ -783,12 +786,13 @@ void MctsSearchT<NodeType>::initialize_node(
 }
 
 template <typename NodeType>
-int MctsSearchT<NodeType>::select_action_slot(const NodeType& node) const {
+int MctsSearchT<NodeType>::select_action_slot(const NodeType& node, const bool is_root) const {
     if (node.num_actions <= 0) {
         throw std::logic_error("MctsSearch select_action_slot called on an unexpanded node");
     }
 
-    const float fpu = compute_fpu_value(node, config_.c_fpu);
+    const float effective_fpu = (is_root && config_.c_fpu_root >= 0.0F) ? config_.c_fpu_root : config_.c_fpu;
+    const float fpu = compute_fpu_value(node, effective_fpu);
     // Keep at least one effective visit so first selection is prior-driven instead of all-zero ties.
     const float sqrt_total_visits = std::sqrt(static_cast<float>(std::max(1, node.total_visits)));
 

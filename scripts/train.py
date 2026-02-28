@@ -495,6 +495,10 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
         "mcts.c_fpu",
         float(mcts.get("c_fpu", game_config.c_fpu)),
     )
+    game_config.c_fpu_root = _coerce_numeric(
+        "mcts.c_fpu_root",
+        float(mcts.get("c_fpu_root", game_config.c_fpu_root)),
+    )
     game_config.enable_dirichlet_noise = _coerce_bool(
         "mcts.enable_dirichlet_noise",
         mcts.get("enable_dirichlet_noise", game_config.enable_dirichlet_noise),

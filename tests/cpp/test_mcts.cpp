@@ -541,6 +541,167 @@ TEST(MctsSearchTest, ComputesLeelaStyleFpuReductionFromVisitedPriorMass) {
     EXPECT_NEAR(fpu, expected, 1.0e-6F);
 }
 
+// WHY: Root FPU should not counteract root exploration when Dirichlet noise is active, while in-tree FPU
+// reduction should still bias unvisited children toward the parent value estimate.
+TEST(MctsSearchTest, UsesRootFpuOverrideOnlyAtRootAndKeepsInTreeReduction) {
+    {
+        const auto model = make_model(
+            2,
+            {
+                ToyStateSpec{
+                    .current_player = 0,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {0, 1},
+                    .transitions = {{0, 1}, {1, 2}},
+                },
+                ToyStateSpec{
+                    .current_player = 1,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {},
+                    .transitions = {},
+                },
+                ToyStateSpec{
+                    .current_player = 1,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {},
+                    .transitions = {},
+                },
+            });
+
+        ToyGameConfig config(model);
+        ArenaNodeStore store(256);
+        SearchConfig search_config{};
+        search_config.c_puct = 1.0F;
+        search_config.c_fpu = 0.2F;
+        search_config.c_fpu_root = 0.0F;
+        search_config.enable_dirichlet_noise = false;
+
+        MctsSearch search(store, config, search_config);
+        search.set_root_state(config.new_game());
+
+        const auto evaluator = make_evaluator({
+            {0,
+             EvaluationResult{
+                 .policy = {0.8F, 0.2F},
+                 .value = 0.0F,
+                 .policy_is_logits = false,
+             }},
+            {1,
+             EvaluationResult{
+                 .policy = {0.0F, 0.0F},
+                 .value = 0.3F,
+                 .policy_is_logits = false,
+             }},
+            {2,
+             EvaluationResult{
+                 .policy = {0.0F, 0.0F},
+                 .value = 0.3F,
+                 .policy_is_logits = false,
+             }},
+        });
+
+        search.run_simulations(2, evaluator);
+
+        const auto edge0 = search.root_edge_stats(0);
+        const auto edge1 = search.root_edge_stats(1);
+        ASSERT_TRUE(edge0.has_value());
+        ASSERT_TRUE(edge1.has_value());
+        EXPECT_EQ(edge0->visit_count, 1);
+        EXPECT_EQ(edge1->visit_count, 1);
+    }
+
+    {
+        const auto model = make_model(
+            3,
+            {
+                ToyStateSpec{
+                    .current_player = 0,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {0},
+                    .transitions = {{0, 1}},
+                },
+                ToyStateSpec{
+                    .current_player = 1,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {1, 2},
+                    .transitions = {{1, 2}, {2, 3}},
+                },
+                ToyStateSpec{
+                    .current_player = 0,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {},
+                    .transitions = {},
+                },
+                ToyStateSpec{
+                    .current_player = 0,
+                    .terminal = false,
+                    .terminal_outcome = {0.0F, 0.0F},
+                    .legal_actions = {},
+                    .transitions = {},
+                },
+            });
+
+        ToyGameConfig config(model);
+        ArenaNodeStore store(256);
+        SearchConfig search_config{};
+        search_config.c_puct = 1.0F;
+        search_config.c_fpu = 0.2F;
+        search_config.c_fpu_root = 0.0F;
+        search_config.enable_dirichlet_noise = false;
+
+        MctsSearch search(store, config, search_config);
+        search.set_root_state(config.new_game());
+
+        const auto evaluator = make_evaluator({
+            {0,
+             EvaluationResult{
+                 .policy = {1.0F, 0.0F, 0.0F},
+                 .value = 0.0F,
+                 .policy_is_logits = false,
+             }},
+            {1,
+             EvaluationResult{
+                 .policy = {0.0F, 0.8F, 0.2F},
+                 .value = 0.0F,
+                 .policy_is_logits = false,
+             }},
+            {2,
+             EvaluationResult{
+                 .policy = {0.0F, 0.0F, 0.0F},
+                 .value = 0.3F,
+                 .policy_is_logits = false,
+             }},
+            {3,
+             EvaluationResult{
+                 .policy = {0.0F, 0.0F, 0.0F},
+                 .value = 0.3F,
+                 .policy_is_logits = false,
+             }},
+        });
+
+        search.run_simulations(3, evaluator);
+
+        const auto root_edge = search.root_edge_stats(0);
+        ASSERT_TRUE(root_edge.has_value());
+        ASSERT_NE(root_edge->child, alphazero::mcts::NULL_NODE);
+
+        const MCTSNode& child_node = store.get(root_edge->child);
+        const int action1_slot = find_action_slot(child_node, 1);
+        const int action2_slot = find_action_slot(child_node, 2);
+        ASSERT_GE(action1_slot, 0);
+        ASSERT_GE(action2_slot, 0);
+
+        EXPECT_EQ(child_node.visit_count[static_cast<std::size_t>(action1_slot)], 2);
+        EXPECT_EQ(child_node.visit_count[static_cast<std::size_t>(action2_slot)], 0);
+    }
+}
+
 // WHY: Dirichlet exploration noise must be injected at the root only; child priors should stay equal to NN outputs.
 TEST(MctsSearchTest, AppliesDirichletNoiseOnlyAtRoot) {
     const auto model = make_model(

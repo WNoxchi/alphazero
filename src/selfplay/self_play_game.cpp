@@ -19,6 +19,7 @@ constexpr float kOutcomeEpsilon = 1.0e-6F;
         .simulations_per_move = config.simulations_per_move,
         .c_puct = config.c_puct,
         .c_fpu = config.c_fpu,
+        .c_fpu_root = config.c_fpu_root,
         .enable_dirichlet_noise = config.enable_dirichlet_noise,
         .dirichlet_epsilon = config.dirichlet_epsilon,
         .dirichlet_alpha_override = config.dirichlet_alpha_override,

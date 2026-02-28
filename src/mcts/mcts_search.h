@@ -25,6 +25,7 @@ struct SearchConfig {
     std::size_t simulations_per_move = 800;
     float c_puct = 2.5F;
     float c_fpu = 0.25F;
+    float c_fpu_root = -1.0F;
 
     bool enable_dirichlet_noise = false;
     float dirichlet_epsilon = 0.25F;
@@ -122,7 +123,7 @@ private:
         NodeId parent,
         int parent_action) const;
 
-    [[nodiscard]] int select_action_slot(const NodeType& node) const;
+    [[nodiscard]] int select_action_slot(const NodeType& node, bool is_root) const;
     [[nodiscard]] static int find_action_slot(const NodeType& node, int action);
 
     static void apply_virtual_loss(NodeType* node, int action_slot);

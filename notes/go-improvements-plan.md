@@ -18,7 +18,7 @@ This plan covers the remaining improvements that require code changes.
 ### TASK-001: Add separate root vs. in-tree FPU reduction
 
 - **Files**: `src/mcts/mcts_search.h`, `src/mcts/mcts_search.cpp`, `src/bindings/python_bindings.cpp`
-- **Current state**: PENDING
+- **Current state**: COMPLETE (2026-02-28)
 - **Priority**: HIGH — directly affects search quality; KataGo showed root FPU=0.0 significantly
   improves exploration at the root when Dirichlet noise is applied.
 - **Rationale**: The MCTS implementation uses a single `c_fpu` value for all nodes. KataGo uses
@@ -85,6 +85,21 @@ This plan covers the remaining improvements that require code changes.
     c. Verifies root node's FPU calculation uses 0.0 (no reduction from parent value)
     d. Verifies a child node's FPU calculation uses 0.2
   - The test should document WHY root FPU=0 matters (interaction with Dirichlet noise)
+
+- **Implementation notes (2026-02-28)**:
+  - Added `c_fpu_root` to `SearchConfig` and `SelfPlayGameConfig` with default `-1.0`.
+  - `select_action_slot` now accepts `is_root` and applies `c_fpu_root` only at root when set.
+  - Wired `c_fpu_root` through pybind (`SearchConfig`, `SelfPlayGameConfig`) and `scripts/train.py`
+    YAML loading (`mcts.c_fpu_root`).
+  - Set `mcts.c_fpu_root: 0.0` in `configs/go.yaml`; chess configs unchanged.
+  - Added regression coverage in `tests/cpp/test_mcts.cpp` for root-vs-in-tree FPU behavior and
+    Python wiring assertions in `tests/python/test_bindings.py` and `tests/python/test_train_script.py`.
+  - Validation run: `cmake --build build --target alphazero_cpp -j$(nproc)`,
+    `cmake --build build --target alphazero_cpp_tests -j$(nproc)`,
+    `ctest --test-dir build --output-on-failure -R "MctsSearchTest\\."`,
+    `ctest --test-dir build --output-on-failure -R "SelfPlayGameTest\\."`,
+    `PYTHONPATH=build/src:$PYTHONPATH /home/hakan/miniconda3/envs/alphazero/bin/python -m pytest tests/python/test_bindings.py tests/python/test_train_script.py`.
+  - No additional follow-up tasks discovered while implementing TASK-001.
 
 ---
 

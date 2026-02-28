@@ -466,23 +466,28 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertFalse(search.should_resign())
 
     def test_self_play_game_config_exposes_playout_cap_fields(self) -> None:
-        """Ensures Python can configure playout-cap and Dirichlet-randomization knobs before launching workers."""
+        """Ensures Python can configure playout-cap, root-FPU, and Dirichlet knobs before launching workers."""
         bindings = _require_bindings()
         game_config = bindings.SelfPlayGameConfig()
+        search_config = bindings.SearchConfig()
 
         game_config.enable_playout_cap = True
         game_config.reduced_simulations = 37
         game_config.full_playout_probability = 0.2
+        game_config.c_fpu_root = 0.0
         game_config.randomize_dirichlet_epsilon = True
         game_config.dirichlet_epsilon_min = 0.15
         game_config.dirichlet_epsilon_max = 0.35
+        search_config.c_fpu_root = 0.0
 
         self.assertTrue(game_config.enable_playout_cap)
         self.assertEqual(game_config.reduced_simulations, 37)
         self.assertAlmostEqual(game_config.full_playout_probability, 0.2)
+        self.assertAlmostEqual(game_config.c_fpu_root, 0.0)
         self.assertTrue(game_config.randomize_dirichlet_epsilon)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
+        self.assertAlmostEqual(search_config.c_fpu_root, 0.0)
 
     def test_self_play_manager_bindings_release_gil_for_lifecycle_and_metrics_calls(self) -> None:
         """WHY: removing these call guards can reintroduce Python-thread stalls during self-play startup and runtime control calls."""

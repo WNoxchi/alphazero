@@ -30,6 +30,7 @@ struct SelfPlayGameConfig {
 
     float c_puct = 2.5F;
     float c_fpu = 0.25F;
+    float c_fpu_root = -1.0F;
 
     bool enable_dirichlet_noise = true;
     float dirichlet_epsilon = 0.25F;

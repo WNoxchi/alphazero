@@ -12,7 +12,8 @@ mcts:
   reduced_simulations: 100
   full_playout_probability: 0.25
   c_puct: 1.5                     # ELF OpenGo / Leela Zero convention; AZ effective ~1.25
-  c_fpu: 0.2                      # KataGo uses 0.2 in-tree (0.0 at root — needs code change)
+  c_fpu: 0.2                      # KataGo-style in-tree FPU reduction
+  c_fpu_root: 0.0                 # No root FPU reduction; Dirichlet noise already drives exploration
   dirichlet_alpha: 0.03
   dirichlet_epsilon: 0.25
   temperature_moves: 30
