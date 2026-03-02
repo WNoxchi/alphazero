@@ -3,6 +3,7 @@
 #include "games/go/go_state.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 
 #include <gtest/gtest.h>
@@ -421,4 +422,58 @@ TEST(GoScoringTest, EmptyAndFullBoardKnownResults) {
     EXPECT_EQ(full_black_score.white_points, 0);
     EXPECT_FLOAT_EQ(full_black_score.final_score, static_cast<float>(kBoardArea) - kDefaultKomi);
     EXPECT_EQ(full_black_score.winner(), kBlack);
+}
+
+// WHY: Ownership targets are used for auxiliary training and must classify stones/territory consistently with score.
+TEST(GoScoringTest, OwnershipMapMarksStonesTerritoryAndNeutralPoints) {
+    GoPosition position{};
+    position.komi = 0.0F;
+
+    // Black encloses (3, 3).
+    alphazero::go::set_stone(&position, I(2, 3), kBlack);
+    alphazero::go::set_stone(&position, I(3, 2), kBlack);
+    alphazero::go::set_stone(&position, I(3, 4), kBlack);
+    alphazero::go::set_stone(&position, I(4, 3), kBlack);
+
+    // White encloses (10, 10).
+    alphazero::go::set_stone(&position, I(9, 10), kWhite);
+    alphazero::go::set_stone(&position, I(10, 9), kWhite);
+    alphazero::go::set_stone(&position, I(10, 11), kWhite);
+    alphazero::go::set_stone(&position, I(11, 10), kWhite);
+
+    // Neutral shared region at (15, 15).
+    alphazero::go::set_stone(&position, I(15, 14), kBlack);
+    alphazero::go::set_stone(&position, I(14, 15), kBlack);
+    alphazero::go::set_stone(&position, I(15, 16), kWhite);
+    alphazero::go::set_stone(&position, I(16, 15), kWhite);
+
+    std::array<float, kBoardArea> ownership{};
+    alphazero::go::compute_tromp_taylor_ownership(position, ownership.data());
+
+    EXPECT_FLOAT_EQ(ownership[I(2, 3)], 1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(3, 2)], 1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(3, 4)], 1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(4, 3)], 1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(3, 3)], 1.0F);
+
+    EXPECT_FLOAT_EQ(ownership[I(9, 10)], -1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(10, 9)], -1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(10, 11)], -1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(11, 10)], -1.0F);
+    EXPECT_FLOAT_EQ(ownership[I(10, 10)], -1.0F);
+
+    EXPECT_FLOAT_EQ(ownership[I(15, 15)], 0.0F);
+}
+
+// WHY: On an empty board there is no owned territory, so auxiliary ownership labels must be all-neutral.
+TEST(GoScoringTest, OwnershipMapOnEmptyBoardIsAllNeutral) {
+    GoPosition position{};
+    std::array<float, kBoardArea> ownership{};
+    ownership.fill(123.0F);
+
+    alphazero::go::compute_tromp_taylor_ownership(position, ownership.data());
+
+    for (float value : ownership) {
+        EXPECT_FLOAT_EQ(value, 0.0F);
+    }
 }

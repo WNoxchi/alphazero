@@ -137,6 +137,26 @@ if _TORCH_AVAILABLE:
 
 if _TORCH_AVAILABLE:
 
+    class _OwnershipPackedReplayBuffer(_PackedReplayBuffer):
+        def sample_batch(
+            self,
+            batch_size: int,
+            encoded_state_size: int,
+            policy_size: int,
+            value_dim: int,
+        ) -> tuple[list[list[float]], list[list[float]], list[list[float]], list[float], list[list[float]]]:
+            states, policies, values, weights = super().sample_batch(
+                batch_size,
+                encoded_state_size,
+                policy_size,
+                value_dim,
+            )
+            ownership = [[0.0] * 9 for _ in range(batch_size)]
+            return states, policies, values, weights, ownership
+
+
+if _TORCH_AVAILABLE:
+
     class _TinyPolicyValueNetwork(nn.Module):
         def __init__(self, game_config: GameConfig) -> None:
             super().__init__()
@@ -357,6 +377,21 @@ class TrainingLoopTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.allclose(sample_weights, torch.ones_like(sample_weights)))
+
+    def test_sample_replay_batch_tensors_accepts_five_field_batches_with_ownership_suffix(self) -> None:
+        """Ensures packed replay parsing remains forward-compatible when bindings append ownership arrays."""
+        config = self._toy_game_config(supports_symmetry=False)
+        positions = self._make_replay_positions(config, count=4)
+        replay_buffer = _OwnershipPackedReplayBuffer(positions)
+
+        _states, _target_policy, _target_value, sample_weights = sample_replay_batch_tensors(
+            replay_buffer,
+            config,
+            batch_size=8,
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(tuple(sample_weights.shape), (8,))
 
     def test_train_one_step_uses_sample_weights_for_policy_and_value_terms(self) -> None:
         """Verifies playout-cap weights scale optimization loss so zero-weight batches do not update model parameters."""

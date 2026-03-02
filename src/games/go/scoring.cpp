@@ -1,6 +1,8 @@
 #include "games/go/scoring.h"
 
+#include <algorithm>
 #include <array>
+#include <stdexcept>
 #include <vector>
 
 namespace alphazero::go {
@@ -37,6 +39,7 @@ struct EmptyRegionInfo {
     int size = 0;
     bool reaches_black = false;
     bool reaches_white = false;
+    std::vector<int> intersections;
 };
 
 [[nodiscard]] EmptyRegionInfo analyze_empty_region(
@@ -56,6 +59,7 @@ struct EmptyRegionInfo {
         const int current = stack.back();
         stack.pop_back();
         ++region.size;
+        region.intersections.push_back(current);
 
         for_each_neighbor(current, [&](int neighbor) {
             const std::uint8_t stone = stone_at(position, neighbor);
@@ -113,6 +117,41 @@ TrompTaylorScore compute_tromp_taylor_score(const GoPosition& position) {
 
     score.final_score = static_cast<float>(score.black_points - score.white_points) - score.komi;
     return score;
+}
+
+void compute_tromp_taylor_ownership(const GoPosition& position, float* out_ownership) {
+    if (out_ownership == nullptr) {
+        throw std::invalid_argument("compute_tromp_taylor_ownership requires a non-null output buffer");
+    }
+
+    std::fill_n(out_ownership, kBoardArea, 0.0F);
+    std::array<bool, kBoardArea> visited{};
+    visited.fill(false);
+
+    for (int intersection = 0; intersection < kBoardArea; ++intersection) {
+        const std::uint8_t stone = stone_at(position, intersection);
+        if (is_black_stone(stone)) {
+            out_ownership[intersection] = 1.0F;
+            continue;
+        }
+        if (is_white_stone(stone)) {
+            out_ownership[intersection] = -1.0F;
+            continue;
+        }
+        if (visited[intersection]) {
+            continue;
+        }
+
+        const EmptyRegionInfo region = analyze_empty_region(position, intersection, &visited);
+        if (region.reaches_black == region.reaches_white) {
+            continue;
+        }
+
+        const float ownership_value = region.reaches_black ? 1.0F : -1.0F;
+        for (const int empty_intersection : region.intersections) {
+            out_ownership[empty_intersection] = ownership_value;
+        }
+    }
 }
 
 }  // namespace alphazero::go

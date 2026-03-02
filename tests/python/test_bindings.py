@@ -163,7 +163,7 @@ class PythonBindingsTests(unittest.TestCase):
         import numpy as np
         import numpy.testing as npt
 
-        states, policies, scalar_values, scalar_weights = replay_buffer.sample_batch(
+        states, policies, scalar_values, scalar_weights, scalar_ownership = replay_buffer.sample_batch(
             batch_size=8,
             encoded_state_size=4,
             policy_size=3,
@@ -177,6 +177,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(scalar_values.dtype, np.float32)
         self.assertEqual(scalar_weights.shape, (8,))
         self.assertEqual(scalar_weights.dtype, np.float32)
+        self.assertEqual(scalar_ownership.size, 0)
 
         for row in range(8):
             game_id = int(round(float(policies[row, 1])))
@@ -188,7 +189,7 @@ class PythonBindingsTests(unittest.TestCase):
             self.assertAlmostEqual(float(scalar_values[row, 0]), scalar_for(game_id, move_number))
             self.assertAlmostEqual(float(scalar_weights[row]), weight_for(game_id, move_number))
 
-        _, wdl_policies, wdl_values, wdl_weights = replay_buffer.sample_batch(
+        _, wdl_policies, wdl_values, wdl_weights, wdl_ownership = replay_buffer.sample_batch(
             batch_size=8,
             encoded_state_size=4,
             policy_size=3,
@@ -197,6 +198,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(wdl_policies.shape, (8, 3))
         self.assertEqual(wdl_values.shape, (8, 3))
         self.assertEqual(wdl_weights.shape, (8,))
+        self.assertEqual(wdl_ownership.size, 0)
         for row in range(8):
             game_id = int(round(float(wdl_policies[row, 1])))
             move_number = int(round(float(wdl_policies[row, 2])))
@@ -239,7 +241,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertEqual(sampled[0].game_id, 77)
         self.assertEqual(sampled[0].move_number, 9)
 
-        states, policies, values_wdl, weights = compact_buffer.sample_batch(
+        states, policies, values_wdl, weights, ownership = compact_buffer.sample_batch(
             batch_size=1,
             encoded_state_size=128,
             policy_size=5,
@@ -252,6 +254,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(float(policies[0, 3]), 0.3, places=3)
         npt.assert_allclose(values_wdl[0], value_wdl, rtol=1e-6)
         npt.assert_allclose(weights, [1.0], rtol=1e-6)
+        self.assertEqual(ownership.size, 0)
 
         exported = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
         restored = bindings.CompactReplayBuffer(
@@ -263,11 +266,63 @@ class PythonBindingsTests(unittest.TestCase):
             random_seed=9876,
             squares_per_plane=64,
         )
-        restored.import_buffer(*exported, encoded_state_size=128, policy_size=5)
+        (
+            exported_states,
+            exported_policies,
+            exported_values_wdl,
+            exported_game_ids,
+            exported_move_numbers,
+            exported_ownership,
+        ) = exported
+        restored.import_buffer(
+            exported_states,
+            exported_policies,
+            exported_values_wdl,
+            exported_game_ids,
+            exported_move_numbers,
+            encoded_state_size=128,
+            policy_size=5,
+            ownership=exported_ownership,
+        )
         self.assertEqual(restored.size(), 1)
         restored_sample = restored.sample(1)[0]
         self.assertEqual(restored_sample.game_id, 77)
         self.assertEqual(restored_sample.move_number, 9)
+
+    def test_replay_buffer_sample_batch_returns_ownership_when_present(self) -> None:
+        """Ensures ownership targets appear as the 5th packed-array output when replay rows include ownership labels."""
+        bindings = _require_bindings()
+        replay_buffer = bindings.ReplayBuffer(capacity=8, random_seed=17)
+
+        ownership = [0.0] * int(bindings.ReplayPosition.MAX_BOARD_AREA)
+        ownership[0] = 1.0
+        ownership[1] = -1.0
+        ownership[4] = 1.0
+        replay_buffer.add_game(
+            [
+                bindings.ReplayPosition.make(
+                    encoded_state=[1.0, 2.0, 3.0, 4.0],
+                    policy=[0.5, 0.3, 0.2],
+                    value=1.0,
+                    value_wdl=[1.0, 0.0, 0.0],
+                    game_id=9,
+                    move_number=0,
+                    ownership=ownership,
+                )
+            ]
+        )
+
+        _states, _policies, _values, _weights, sampled_ownership = replay_buffer.sample_batch(
+            batch_size=2,
+            encoded_state_size=4,
+            policy_size=3,
+            value_dim=1,
+        )
+        self.assertEqual(sampled_ownership.shape, (2, int(bindings.ReplayPosition.MAX_BOARD_AREA)))
+        self.assertAlmostEqual(float(sampled_ownership[0, 0]), 1.0)
+        self.assertAlmostEqual(float(sampled_ownership[0, 1]), -1.0)
+        self.assertAlmostEqual(float(sampled_ownership[0, 2]), 0.0)
+        self.assertAlmostEqual(float(sampled_ownership[1, 4]), 1.0)
 
     def test_compact_replay_buffer_binding_exposes_recency_sampling_controls(self) -> None:
         """WHY: Python training entrypoints must be able to select recency-weighted replay sampling when configured."""
@@ -383,8 +438,8 @@ class PythonBindingsTests(unittest.TestCase):
         dense_export = dense_buffer.export_buffer(encoded_state_size=128, policy_size=5)
         compact_export = compact_buffer.export_buffer(encoded_state_size=128, policy_size=5)
 
-        dense_states, dense_policies, dense_values_wdl, dense_game_ids, dense_move_numbers = dense_export
-        compact_states, compact_policies, compact_values_wdl, compact_game_ids, compact_move_numbers = compact_export
+        dense_states, dense_policies, dense_values_wdl, dense_game_ids, dense_move_numbers, dense_ownership = dense_export
+        compact_states, compact_policies, compact_values_wdl, compact_game_ids, compact_move_numbers, compact_ownership = compact_export
 
         npt.assert_allclose(compact_states[:, :64], dense_states[:, :64], rtol=0.0, atol=0.0)
         npt.assert_allclose(compact_states[:, 64:], dense_states[:, 64:], rtol=0.0, atol=(1.0 / 255.0) + 1e-7)
@@ -392,6 +447,8 @@ class PythonBindingsTests(unittest.TestCase):
         npt.assert_allclose(compact_values_wdl, dense_values_wdl, rtol=0.0, atol=0.0)
         npt.assert_array_equal(compact_game_ids, dense_game_ids)
         npt.assert_array_equal(compact_move_numbers, dense_move_numbers)
+        self.assertEqual(dense_ownership.size, 0)
+        self.assertEqual(compact_ownership.size, 0)
 
     def test_chess_uci_helpers_round_trip_legal_actions(self) -> None:
         """Ensures play-mode move I/O remains stable for chess UCI text entry and engine integration."""
@@ -483,6 +540,7 @@ class PythonBindingsTests(unittest.TestCase):
         game_config.dirichlet_epsilon_min = 0.15
         game_config.dirichlet_epsilon_max = 0.35
         game_config.dynamic_dirichlet_alpha = True
+        game_config.compute_ownership = True
         search_config.c_fpu_root = 0.0
         search_config.dynamic_dirichlet_alpha = True
 
@@ -494,6 +552,7 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(game_config.dirichlet_epsilon_min, 0.15)
         self.assertAlmostEqual(game_config.dirichlet_epsilon_max, 0.35)
         self.assertTrue(game_config.dynamic_dirichlet_alpha)
+        self.assertTrue(game_config.compute_ownership)
         self.assertAlmostEqual(search_config.c_fpu_root, 0.0)
         self.assertTrue(search_config.dynamic_dirichlet_alpha)
 

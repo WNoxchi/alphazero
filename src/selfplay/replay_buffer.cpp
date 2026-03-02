@@ -149,17 +149,53 @@ SampledBatch ReplayBuffer::sample_batch(
     const std::size_t current_head = write_head_.load(std::memory_order_relaxed);
 
     const std::vector<std::size_t> logical_indices = sample_logical_indices(current_count, batch_size);
+    std::vector<const ReplayPosition*> sampled_positions;
+    sampled_positions.reserve(logical_indices.size());
+    for (const std::size_t logical_index : logical_indices) {
+        const std::size_t physical_index = to_physical_index(logical_index, current_count, current_head);
+        sampled_positions.push_back(&buffer_[physical_index]);
+    }
+
+    bool saw_missing_ownership = false;
+    bool saw_present_ownership = false;
+    std::size_t packed_ownership_size = 0U;
+    for (const ReplayPosition* const position : sampled_positions) {
+        if (position == nullptr) {
+            throw std::logic_error("ReplayBuffer sample_batch encountered a null sampled position");
+        }
+        if (position->ownership_size > ReplayPosition::kMaxBoardArea) {
+            throw std::invalid_argument("ReplayBuffer sample_batch ownership_size is out of range");
+        }
+        if (position->ownership_size == 0U) {
+            saw_missing_ownership = true;
+            continue;
+        }
+        saw_present_ownership = true;
+        if (packed_ownership_size == 0U) {
+            packed_ownership_size = position->ownership_size;
+            continue;
+        }
+        if (position->ownership_size != packed_ownership_size) {
+            throw std::invalid_argument("ReplayBuffer sample_batch encountered inconsistent ownership_size values");
+        }
+    }
+    if (saw_missing_ownership || !saw_present_ownership) {
+        packed_ownership_size = 0U;
+    }
+
     SampledBatch packed{};
     packed.batch_size = logical_indices.size();
     packed.states.resize(checked_flat_size(packed.batch_size, encoded_state_size, "states"));
     packed.policies.resize(checked_flat_size(packed.batch_size, policy_size, "policies"));
     packed.values.resize(checked_flat_size(packed.batch_size, value_dim, "values"));
     packed.weights.resize(packed.batch_size, 1.0F);
+    packed.ownership_size = packed_ownership_size;
+    if (packed_ownership_size > 0U) {
+        packed.ownership.resize(checked_flat_size(packed.batch_size, packed_ownership_size, "ownership"));
+    }
 
-    for (std::size_t sample_index = 0U; sample_index < logical_indices.size(); ++sample_index) {
-        const std::size_t logical_index = logical_indices[sample_index];
-        const std::size_t physical_index = to_physical_index(logical_index, current_count, current_head);
-        const ReplayPosition& position = buffer_[physical_index];
+    for (std::size_t sample_index = 0U; sample_index < sampled_positions.size(); ++sample_index) {
+        const ReplayPosition& position = *sampled_positions[sample_index];
 
         if (position.encoded_state_size != encoded_state_size) {
             throw std::invalid_argument(
@@ -183,6 +219,14 @@ SampledBatch ReplayBuffer::sample_batch(
         }
 
         packed.weights[sample_index] = position.training_weight;
+        if (packed_ownership_size > 0U) {
+            if (position.ownership_size != packed_ownership_size) {
+                throw std::invalid_argument(
+                    "ReplayBuffer sample_batch encountered a row without ownership data in an ownership batch");
+            }
+            float* ownership_row = packed.ownership.data() + (sample_index * packed_ownership_size);
+            std::copy_n(position.ownership.begin(), packed_ownership_size, ownership_row);
+        }
     }
 
     return packed;
@@ -195,12 +239,20 @@ std::size_t ReplayBuffer::export_positions(
     std::uint32_t* const out_game_ids,
     std::uint16_t* const out_move_numbers,
     const std::size_t encoded_state_size,
-    const std::size_t policy_size) const {
+    const std::size_t policy_size,
+    float* const out_ownership,
+    const std::size_t ownership_size) const {
     if (encoded_state_size == 0U || encoded_state_size > ReplayPosition::kMaxEncodedStateSize) {
         throw std::invalid_argument("export_positions: encoded_state_size is out of range");
     }
     if (policy_size == 0U || policy_size > ReplayPosition::kMaxPolicySize) {
         throw std::invalid_argument("export_positions: policy_size is out of range");
+    }
+    if (ownership_size > ReplayPosition::kMaxBoardArea) {
+        throw std::invalid_argument("export_positions: ownership_size is out of range");
+    }
+    if (ownership_size > 0U && out_ownership == nullptr) {
+        throw std::invalid_argument("export_positions: ownership output must be non-null when ownership_size > 0");
     }
 
     std::shared_lock lock(mutex_);
@@ -217,6 +269,15 @@ std::size_t ReplayBuffer::export_positions(
                      out_policies + i * policy_size);
         std::copy_n(pos.value_wdl.begin(), ReplayPosition::kWdlSize,
                      out_values_wdl + i * ReplayPosition::kWdlSize);
+        if (ownership_size > 0U) {
+            if (pos.ownership_size != ownership_size) {
+                throw std::invalid_argument("export_positions: ownership_size does not match position payload");
+            }
+            std::copy_n(
+                pos.ownership.begin(),
+                ownership_size,
+                out_ownership + (i * ownership_size));
+        }
         out_game_ids[i] = pos.game_id;
         out_move_numbers[i] = pos.move_number;
     }
@@ -231,7 +292,9 @@ void ReplayBuffer::import_positions(
     const std::uint16_t* const move_numbers,
     const std::size_t count,
     const std::size_t encoded_state_size,
-    const std::size_t policy_size) {
+    const std::size_t policy_size,
+    const float* const ownership,
+    const std::size_t ownership_size) {
     if (count == 0U) {
         return;
     }
@@ -240,6 +303,12 @@ void ReplayBuffer::import_positions(
     }
     if (policy_size == 0U || policy_size > ReplayPosition::kMaxPolicySize) {
         throw std::invalid_argument("import_positions: policy_size is out of range");
+    }
+    if (ownership_size > ReplayPosition::kMaxBoardArea) {
+        throw std::invalid_argument("import_positions: ownership_size is out of range");
+    }
+    if (ownership_size > 0U && ownership == nullptr) {
+        throw std::invalid_argument("import_positions: ownership input must be non-null when ownership_size > 0");
     }
 
     std::unique_lock lock(mutex_);
@@ -251,6 +320,7 @@ void ReplayBuffer::import_positions(
         // Zero the full arrays first so trailing elements are clean.
         pos.encoded_state.fill(0.0F);
         pos.policy.fill(0.0F);
+        pos.ownership.fill(0.0F);
 
         std::copy_n(states + i * encoded_state_size, encoded_state_size,
                      pos.encoded_state.begin());
@@ -265,6 +335,13 @@ void ReplayBuffer::import_positions(
         pos.move_number = move_numbers[i];
         pos.encoded_state_size = static_cast<std::uint16_t>(encoded_state_size);
         pos.policy_size = static_cast<std::uint16_t>(policy_size);
+        pos.ownership_size = static_cast<std::uint16_t>(ownership_size);
+        if (ownership_size > 0U) {
+            std::copy_n(
+                ownership + (i * ownership_size),
+                ownership_size,
+                pos.ownership.begin());
+        }
 
         head = (head + 1U) % buffer_.size();
         if (current_count < buffer_.size()) {
@@ -285,6 +362,7 @@ std::size_t ReplayBuffer::write_head() const noexcept { return write_head_.load(
 bool ReplayBuffer::has_valid_shape(const ReplayPosition& position) noexcept {
     return position.encoded_state_size > 0U && position.encoded_state_size <= ReplayPosition::kMaxEncodedStateSize &&
            position.policy_size > 0U && position.policy_size <= ReplayPosition::kMaxPolicySize &&
+           position.ownership_size <= ReplayPosition::kMaxBoardArea &&
            std::isfinite(position.training_weight) && position.training_weight >= 0.0F;
 }
 

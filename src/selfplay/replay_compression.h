@@ -45,4 +45,16 @@ void decompress_policy(
     std::uint8_t num_entries,
     std::span<float> out_dense_policy);
 
+// Compress ternary ownership targets (+1, 0, -1) into two bitplanes.
+void compress_ownership(
+    std::span<const float> ownership,
+    std::size_t board_area,
+    std::span<std::uint64_t> out_bitpacked);
+
+// Decompress two ownership bitplanes into dense ternary ownership targets.
+void decompress_ownership(
+    std::span<const std::uint64_t> bitpacked,
+    std::size_t board_area,
+    std::span<float> out_ownership);
+
 }  // namespace alphazero::selfplay

@@ -74,6 +74,23 @@ constexpr std::size_t kPolicySize = 6U;
         training_weight_for(game_id, move_number));
 }
 
+[[nodiscard]] ReplayPosition make_position_with_ownership(
+    const std::uint32_t game_id,
+    const std::uint16_t move_number) {
+    ReplayPosition position = make_position(game_id, move_number);
+    for (std::size_t intersection = 0U; intersection < ReplayPosition::kMaxBoardArea; ++intersection) {
+        if ((intersection % 3U) == 0U) {
+            position.ownership[intersection] = 1.0F;
+        } else if ((intersection % 3U) == 1U) {
+            position.ownership[intersection] = -1.0F;
+        } else {
+            position.ownership[intersection] = 0.0F;
+        }
+    }
+    position.ownership_size = static_cast<std::uint16_t>(ReplayPosition::kMaxBoardArea);
+    return position;
+}
+
 [[nodiscard]] std::uint64_t signature_of(const ReplayPosition& position) {
     return static_cast<std::uint64_t>(position.game_id) * 1000ULL + static_cast<std::uint64_t>(position.move_number);
 }
@@ -94,6 +111,7 @@ void expect_position_is_consistent(const ReplayPosition& position) {
     EXPECT_FLOAT_EQ(position.training_weight, training_weight_for(position.game_id, position.move_number));
     const auto expected_wdl = wdl_for(expected_value);
     EXPECT_EQ(position.value_wdl, expected_wdl);
+    EXPECT_EQ(position.ownership_size, 0U);
 }
 
 [[nodiscard]] std::vector<ReplayPosition> make_game(
@@ -118,6 +136,7 @@ TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefau
     EXPECT_EQ(CompactReplayPosition::kMaxBinaryWords, 117U);
     EXPECT_EQ(CompactReplayPosition::kMaxFloatPlanes, 2U);
     EXPECT_EQ(CompactReplayPosition::kMaxSparsePolicy, 64U);
+    EXPECT_EQ(CompactReplayPosition::kMaxOwnershipWords, 12U);
     EXPECT_EQ(CompactReplayPosition::kWdlSize, ReplayPosition::kWdlSize);
 
     EXPECT_TRUE(std::all_of(position.bitpacked_planes.begin(), position.bitpacked_planes.end(), [](std::uint64_t v) {
@@ -133,6 +152,9 @@ TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefau
     EXPECT_TRUE(std::all_of(position.policy_probs_fp16.begin(), position.policy_probs_fp16.end(), [](std::uint16_t v) {
         return v == 0U;
     }));
+    EXPECT_TRUE(std::all_of(position.bitpacked_ownership.begin(), position.bitpacked_ownership.end(), [](std::uint64_t v) {
+        return v == 0U;
+    }));
     EXPECT_EQ(position.num_policy_entries, 0U);
 
     EXPECT_FLOAT_EQ(position.value, 0.0F);
@@ -144,11 +166,12 @@ TEST(ReplayBufferTest, CompactReplayPositionDefinesExpectedConstantsAndZeroDefau
     EXPECT_EQ(position.num_binary_planes, 0U);
     EXPECT_EQ(position.num_float_planes, 0U);
     EXPECT_EQ(position.policy_size, 0U);
+    EXPECT_EQ(position.num_ownership_words, 0U);
 }
 
 // WHY: Replay-capacity scaling assumes compact records are far smaller than dense ReplayPosition entries.
 TEST(ReplayBufferTest, CompactReplayPositionIsSubstantiallySmallerThanDenseReplayPosition) {
-    EXPECT_LE(sizeof(CompactReplayPosition), 1304U);
+    EXPECT_LE(sizeof(CompactReplayPosition), 1408U);
     EXPECT_GT(sizeof(ReplayPosition), sizeof(CompactReplayPosition));
 }
 
@@ -339,6 +362,8 @@ TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
     ASSERT_EQ(scalar_batch.policies.size(), 12U * kPolicySize);
     ASSERT_EQ(scalar_batch.values.size(), 12U);
     ASSERT_EQ(scalar_batch.weights.size(), 12U);
+    EXPECT_EQ(scalar_batch.ownership_size, 0U);
+    EXPECT_TRUE(scalar_batch.ownership.empty());
 
     for (std::size_t sample_index = 0U; sample_index < scalar_batch.batch_size; ++sample_index) {
         const float signature = scalar_batch.states[sample_index * kStateSize];
@@ -361,6 +386,8 @@ TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
     ASSERT_EQ(wdl_batch.batch_size, 12U);
     ASSERT_EQ(wdl_batch.values.size(), 12U * ReplayPosition::kWdlSize);
     ASSERT_EQ(wdl_batch.weights.size(), 12U);
+    EXPECT_EQ(wdl_batch.ownership_size, 0U);
+    EXPECT_TRUE(wdl_batch.ownership.empty());
 
     for (std::size_t sample_index = 0U; sample_index < wdl_batch.batch_size; ++sample_index) {
         const float policy_game = wdl_batch.policies[(sample_index * kPolicySize) + 1U];
@@ -374,6 +401,25 @@ TEST(ReplayBufferTest, SampleBatchPacksConsistentRowsForScalarAndWdlValues) {
         EXPECT_FLOAT_EQ(wdl_batch.values[value_offset + 1U], expected_wdl[1]);
         EXPECT_FLOAT_EQ(wdl_batch.values[value_offset + 2U], expected_wdl[2]);
         EXPECT_FLOAT_EQ(wdl_batch.weights[sample_index], training_weight_for(game_id, move_number));
+    }
+}
+
+// WHY: Go ownership targets are emitted as per-intersection labels and must survive packed sampling unchanged.
+TEST(ReplayBufferTest, SampleBatchCarriesOwnershipWhenAllSampledRowsContainIt) {
+    ReplayBuffer buffer(4U, 0xFACEULL);
+    buffer.add_game({make_position_with_ownership(41U, 0U), make_position_with_ownership(42U, 1U)});
+
+    const alphazero::selfplay::SampledBatch batch = buffer.sample_batch(4U, kStateSize, kPolicySize, 1U);
+    ASSERT_EQ(batch.batch_size, 4U);
+    EXPECT_EQ(batch.ownership_size, ReplayPosition::kMaxBoardArea);
+    ASSERT_EQ(batch.ownership.size(), batch.batch_size * ReplayPosition::kMaxBoardArea);
+
+    for (std::size_t sample_index = 0U; sample_index < batch.batch_size; ++sample_index) {
+        const std::size_t row_offset = sample_index * ReplayPosition::kMaxBoardArea;
+        EXPECT_FLOAT_EQ(batch.ownership[row_offset + 0U], 1.0F);
+        EXPECT_FLOAT_EQ(batch.ownership[row_offset + 1U], -1.0F);
+        EXPECT_FLOAT_EQ(batch.ownership[row_offset + 2U], 0.0F);
+        EXPECT_FLOAT_EQ(batch.ownership[row_offset + 3U], 1.0F);
     }
 }
 

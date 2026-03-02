@@ -342,7 +342,7 @@ class CompactReplayBufferCheckpointTests(unittest.TestCase):
             # Compare dense exports.
             src_dense = source.export_buffer(self._STATE_SIZE, self._POLICY_SIZE)
             dst_dense = restored.export_buffer(self._STATE_SIZE, self._POLICY_SIZE)
-            for i in range(5):
+            for i in range(len(src_dense)):
                 np.testing.assert_array_equal(src_dense[i], dst_dense[i])
 
     def test_legacy_npz_fallback_loads_into_compact_buffer(self):
@@ -354,7 +354,7 @@ class CompactReplayBufferCheckpointTests(unittest.TestCase):
         n = buf.size()
 
         # Manually save as legacy .npz format.
-        states, policies, values_wdl, game_ids, move_numbers = buf.export_buffer(
+        states, policies, values_wdl, game_ids, move_numbers, ownership = buf.export_buffer(
             self._STATE_SIZE, self._POLICY_SIZE,
         )
         with tempfile.TemporaryDirectory() as td:
@@ -367,6 +367,7 @@ class CompactReplayBufferCheckpointTests(unittest.TestCase):
                 game_ids=game_ids, move_numbers=move_numbers,
                 encoded_state_size=np.array(self._STATE_SIZE, dtype=np.int64),
                 policy_size=np.array(self._POLICY_SIZE, dtype=np.int64),
+                ownership=ownership,
             )
 
             restored = self._make_buffer()

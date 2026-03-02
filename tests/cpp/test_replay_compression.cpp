@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -16,8 +17,10 @@ namespace {
 using alphazero::selfplay::StateCompressionLayout;
 using alphazero::selfplay::compress_policy;
 using alphazero::selfplay::compress_state;
+using alphazero::selfplay::compress_ownership;
 using alphazero::selfplay::decompress_policy;
 using alphazero::selfplay::decompress_state;
+using alphazero::selfplay::decompress_ownership;
 using alphazero::selfplay::float_to_fp16;
 using alphazero::selfplay::fp16_to_float;
 
@@ -164,6 +167,43 @@ TEST(ReplayCompressionTest, StateCompressionSupportsMultiWordPlanesForNineteenBy
         const bool on_bit = square == 0U || square == 320U || square == 359U || square == 360U;
         EXPECT_FLOAT_EQ(restored_state[(2U * kGoSquaresPerPlane) + square], on_bit ? 1.0F : 0.0F);
     }
+}
+
+// WHY: Ownership targets are encoded as two bitplanes and must round-trip exactly for Go auxiliary supervision.
+TEST(ReplayCompressionTest, OwnershipCompressionRoundtripPreservesThreeStateTargets) {
+    constexpr std::size_t kBoardArea = 361U;
+    constexpr std::size_t kWordsPerPlane = 6U;
+    constexpr std::size_t kOwnershipWords = 2U * kWordsPerPlane;
+
+    std::vector<float> ownership(kBoardArea, 0.0F);
+    for (std::size_t intersection = 0U; intersection < kBoardArea; ++intersection) {
+        if ((intersection % 3U) == 0U) {
+            ownership[intersection] = 1.0F;
+        } else if ((intersection % 3U) == 1U) {
+            ownership[intersection] = -1.0F;
+        }
+    }
+
+    std::array<std::uint64_t, kOwnershipWords> bitpacked{};
+    compress_ownership(ownership, kBoardArea, bitpacked);
+
+    std::vector<float> restored(kBoardArea, 42.0F);
+    decompress_ownership(bitpacked, kBoardArea, restored);
+    EXPECT_EQ(restored, ownership);
+}
+
+// WHY: Conflicting bitplanes indicate corrupt checkpoints and must be rejected instead of silently mislabeling data.
+TEST(ReplayCompressionTest, OwnershipDecompressionRejectsConflictingBitplanes) {
+    constexpr std::size_t kBoardArea = 361U;
+    constexpr std::size_t kWordsPerPlane = 6U;
+    constexpr std::size_t kOwnershipWords = 2U * kWordsPerPlane;
+
+    std::array<std::uint64_t, kOwnershipWords> bitpacked{};
+    bitpacked[0] = 1U;
+    bitpacked[kWordsPerPlane] = 1U;
+
+    std::vector<float> restored(kBoardArea, 0.0F);
+    EXPECT_THROW(decompress_ownership(bitpacked, kBoardArea, restored), std::invalid_argument);
 }
 
 // WHY: Sparse policy storage is only useful if it keeps the highest-probability actions and preserves retained mass

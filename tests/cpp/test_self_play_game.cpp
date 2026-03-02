@@ -1,5 +1,8 @@
 #include "selfplay/self_play_game.h"
 
+#include "games/go/go_config.h"
+#include "games/go/go_state.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -143,6 +146,31 @@ public:
 
 private:
     std::shared_ptr<const ToyGameModel> model_;
+};
+
+class ShortGoGameConfig final : public GameConfig {
+public:
+    explicit ShortGoGameConfig(const int max_game_length_override) {
+        const alphazero::go::GoGameConfig base{};
+        name = base.name;
+        board_rows = base.board_rows;
+        board_cols = base.board_cols;
+        planes_per_step = base.planes_per_step;
+        num_history_steps = base.num_history_steps;
+        constant_planes = base.constant_planes;
+        total_input_channels = base.total_input_channels;
+        action_space_size = base.action_space_size;
+        dirichlet_alpha = base.dirichlet_alpha;
+        dirichlet_alpha_reference_moves = base.dirichlet_alpha_reference_moves;
+        max_game_length = max_game_length_override;
+        value_head_type = base.value_head_type;
+        supports_symmetry = base.supports_symmetry;
+        num_symmetries = base.num_symmetries;
+    }
+
+    [[nodiscard]] std::unique_ptr<GameState> new_game() const override {
+        return std::make_unique<alphazero::go::GoState>();
+    }
 };
 
 [[nodiscard]] std::shared_ptr<ToyGameModel> make_model(
@@ -663,6 +691,46 @@ TEST(SelfPlayGameTest, MaxLengthAdjudicationStopsNonTerminalGameAndBackfillsDraw
     EXPECT_FLOAT_EQ(replay[0].value, 0.0F);
     EXPECT_FLOAT_EQ(replay[0].training_weight, 1.0F);
     EXPECT_EQ(replay[0].value_wdl, (std::array<float, 3>{0.0F, 1.0F, 0.0F}));
+}
+
+// WHY: Go auxiliary ownership targets must be attached to every replay row when compute_ownership is enabled.
+TEST(SelfPlayGameTest, GoOwnershipTargetsAreAttachedWhenConfigured) {
+    ShortGoGameConfig game_config(/*max_game_length_override=*/1);
+    ReplayBuffer replay_buffer(8U, 111U);
+    const auto evaluator = [](const GameState& state) -> EvaluationResult {
+        const auto* go_state = dynamic_cast<const alphazero::go::GoState*>(&state);
+        if (go_state == nullptr) {
+            throw std::invalid_argument("Expected GoState in ownership test evaluator");
+        }
+        std::vector<float> policy(static_cast<std::size_t>(alphazero::go::kActionSpaceSize), -1000.0F);
+        const std::vector<int> legal = go_state->legal_actions();
+        if (legal.empty()) {
+            throw std::logic_error("Go evaluator expected at least one legal action");
+        }
+        policy[static_cast<std::size_t>(legal.front())] = 1000.0F;
+        return EvaluationResult{
+            .policy = std::move(policy),
+            .value = 0.0F,
+            .policy_is_logits = true,
+        };
+    };
+
+    SelfPlayGameConfig config = default_test_selfplay_config();
+    config.simulations_per_move = 1U;
+    config.mcts_threads = 1U;
+    config.compute_ownership = true;
+
+    SelfPlayGame game(game_config, replay_buffer, evaluator, config);
+    const SelfPlayGameResult result = game.play(/*game_id=*/999U);
+    EXPECT_EQ(result.termination_reason, GameTerminationReason::kMaxLengthAdjudication);
+
+    ASSERT_EQ(replay_buffer.size(), 1U);
+    const std::vector<ReplayPosition> replay = sorted_replay_positions(replay_buffer);
+    ASSERT_EQ(replay.size(), 1U);
+    EXPECT_EQ(replay[0].ownership_size, ReplayPosition::kMaxBoardArea);
+    EXPECT_FLOAT_EQ(replay[0].ownership[0], 1.0F);
+    EXPECT_FLOAT_EQ(replay[0].ownership[120], 1.0F);
+    EXPECT_FLOAT_EQ(replay[0].ownership[360], 1.0F);
 }
 
 }  // namespace

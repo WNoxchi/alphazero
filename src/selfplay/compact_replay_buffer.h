@@ -60,7 +60,9 @@ public:
         std::uint32_t* out_game_ids,
         std::uint16_t* out_move_numbers,
         std::size_t encoded_state_size,
-        std::size_t policy_size) const;
+        std::size_t policy_size,
+        float* out_ownership = nullptr,
+        std::size_t ownership_size = 0U) const;
 
     void import_positions(
         const float* states,
@@ -70,7 +72,9 @@ public:
         const std::uint16_t* move_numbers,
         std::size_t count,
         std::size_t encoded_state_size,
-        std::size_t policy_size);
+        std::size_t policy_size,
+        const float* ownership = nullptr,
+        std::size_t ownership_size = 0U);
 
     void save_to_file(const std::string& path) const;
     std::size_t load_from_file(const std::string& path);

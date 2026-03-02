@@ -80,6 +80,17 @@ using alphazero::selfplay::SelfPlayManager;
     };
 }
 
+[[nodiscard]] std::vector<float> cast_ownership_sequence(const py::handle& handle) {
+    if (handle.is_none()) {
+        return {};
+    }
+    std::vector<float> values = cast_float_sequence(handle, "ownership");
+    if (values.size() > ReplayPosition::kMaxBoardArea) {
+        throw std::invalid_argument("ownership must not exceed ReplayPosition.MAX_BOARD_AREA entries");
+    }
+    return values;
+}
+
 [[nodiscard]] ReplayPosition make_replay_position_from_python(
     const py::handle& encoded_state,
     const py::handle& policy,
@@ -87,12 +98,14 @@ using alphazero::selfplay::SelfPlayManager;
     const py::handle& value_wdl,
     const std::uint32_t game_id,
     const std::uint16_t move_number,
-    const float training_weight) {
+    const float training_weight,
+    const py::handle& ownership) {
     const std::vector<float> encoded_state_values = cast_float_sequence(encoded_state, "encoded_state");
     const std::vector<float> policy_values = cast_float_sequence(policy, "policy");
     const std::array<float, ReplayPosition::kWdlSize> wdl = cast_wdl_sequence(value_wdl);
+    const std::vector<float> ownership_values = cast_ownership_sequence(ownership);
 
-    return ReplayPosition::make(
+    ReplayPosition position = ReplayPosition::make(
         std::span<const float>(encoded_state_values.data(), encoded_state_values.size()),
         std::span<const float>(policy_values.data(), policy_values.size()),
         value,
@@ -100,6 +113,11 @@ using alphazero::selfplay::SelfPlayManager;
         game_id,
         move_number,
         training_weight);
+    if (!ownership_values.empty()) {
+        std::copy_n(ownership_values.begin(), ownership_values.size(), position.ownership.begin());
+        position.ownership_size = static_cast<std::uint16_t>(ownership_values.size());
+    }
+    return position;
 }
 
 [[nodiscard]] py::array_t<float> replay_position_encoded_state_view(const ReplayPosition& position) {
@@ -117,6 +135,15 @@ using alphazero::selfplay::SelfPlayManager;
 [[nodiscard]] py::array_t<float> replay_position_wdl_view(const ReplayPosition& position) {
     py::array_t<float> array(static_cast<py::ssize_t>(ReplayPosition::kWdlSize));
     std::copy_n(position.value_wdl.begin(), ReplayPosition::kWdlSize, array.mutable_data());
+    return array;
+}
+
+[[nodiscard]] py::array_t<float> replay_position_ownership_view(const ReplayPosition& position) {
+    if (position.ownership_size == 0U) {
+        return py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0)});
+    }
+    py::array_t<float> array(static_cast<py::ssize_t>(position.ownership_size));
+    std::copy_n(position.ownership.begin(), position.ownership_size, array.mutable_data());
     return array;
 }
 
@@ -173,11 +200,20 @@ template <typename ReplayBufferType>
         sampled_batch = replay_buffer.sample_batch(batch_size, encoded_state_size, policy_size, value_dim);
     }
     std::shared_ptr<SampledBatch> owned_batch = std::make_shared<SampledBatch>(std::move(sampled_batch));
+    py::array ownership_array = py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0)});
+    if (owned_batch->ownership_size > 0U && !owned_batch->ownership.empty()) {
+        ownership_array = sampled_batch_array_view(
+            owned_batch,
+            owned_batch->ownership,
+            owned_batch->batch_size,
+            owned_batch->ownership_size);
+    }
     return py::make_tuple(
         sampled_batch_array_view(owned_batch, owned_batch->states, owned_batch->batch_size, encoded_state_size),
         sampled_batch_array_view(owned_batch, owned_batch->policies, owned_batch->batch_size, policy_size),
         sampled_batch_array_view(owned_batch, owned_batch->values, owned_batch->batch_size, value_dim),
-        sampled_batch_vector_view(owned_batch, owned_batch->weights, owned_batch->batch_size));
+        sampled_batch_vector_view(owned_batch, owned_batch->weights, owned_batch->batch_size),
+        ownership_array);
 }
 
 [[nodiscard]] py::tuple replay_buffer_sample_batch_numpy(
@@ -220,22 +256,63 @@ template <typename ReplayBufferType>
             py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(policy_size)}),
             py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0), py::ssize_t(ReplayPosition::kWdlSize)}),
             py::array_t<std::uint32_t>(std::vector<py::ssize_t>{py::ssize_t(0)}),
-            py::array_t<std::uint16_t>(std::vector<py::ssize_t>{py::ssize_t(0)}));
+            py::array_t<std::uint16_t>(std::vector<py::ssize_t>{py::ssize_t(0)}),
+            py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0)}));
+    }
+
+    std::size_t ownership_size = 0U;
+    {
+        py::gil_scoped_release release_gil;
+        const std::vector<ReplayPosition> probe = replay_buffer.sample(1U);
+        if (!probe.empty()) {
+            ownership_size = probe.front().ownership_size;
+        }
+    }
+    if (ownership_size > ReplayPosition::kMaxBoardArea) {
+        throw std::invalid_argument("export_buffer: ownership_size is out of range");
     }
 
     py::array_t<float> states({to_py_ssize(n, "rows"), to_py_ssize(encoded_state_size, "encoded_state_size")});
     py::array_t<float> policies({to_py_ssize(n, "rows"), to_py_ssize(policy_size, "policy_size")});
     py::array_t<float> values_wdl({to_py_ssize(n, "rows"), to_py_ssize(ReplayPosition::kWdlSize, "wdl")});
+    py::array_t<float> ownership(
+        ownership_size > 0U
+            ? std::vector<py::ssize_t>{to_py_ssize(n, "rows"), to_py_ssize(ownership_size, "ownership_size")}
+            : std::vector<py::ssize_t>{py::ssize_t(0)});
     py::array_t<std::uint32_t> game_ids({to_py_ssize(n, "rows")});
     py::array_t<std::uint16_t> move_numbers({to_py_ssize(n, "rows")});
 
     std::size_t exported;
     {
         py::gil_scoped_release release_gil;
-        exported = replay_buffer.export_positions(
-            states.mutable_data(), policies.mutable_data(), values_wdl.mutable_data(),
-            game_ids.mutable_data(), move_numbers.mutable_data(),
-            encoded_state_size, policy_size);
+        try {
+            exported = replay_buffer.export_positions(
+                states.mutable_data(),
+                policies.mutable_data(),
+                values_wdl.mutable_data(),
+                game_ids.mutable_data(),
+                move_numbers.mutable_data(),
+                encoded_state_size,
+                policy_size,
+                ownership_size > 0U ? ownership.mutable_data() : nullptr,
+                ownership_size);
+        } catch (const std::invalid_argument&) {
+            if (ownership_size == 0U) {
+                throw;
+            }
+            ownership_size = 0U;
+            ownership = py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0)});
+            exported = replay_buffer.export_positions(
+                states.mutable_data(),
+                policies.mutable_data(),
+                values_wdl.mutable_data(),
+                game_ids.mutable_data(),
+                move_numbers.mutable_data(),
+                encoded_state_size,
+                policy_size,
+                nullptr,
+                0U);
+        }
     }
     // Trim if fewer positions were exported than expected (shouldn't happen, but be safe).
     if (exported < n) {
@@ -244,10 +321,13 @@ template <typename ReplayBufferType>
         states = py::array_t<float>(states[sl2d]);
         policies = py::array_t<float>(policies[sl2d]);
         values_wdl = py::array_t<float>(values_wdl[sl2d]);
+        if (ownership_size > 0U) {
+            ownership = py::array_t<float>(ownership[sl2d]);
+        }
         game_ids = py::array_t<std::uint32_t>(game_ids[sl]);
         move_numbers = py::array_t<std::uint16_t>(move_numbers[sl]);
     }
-    return py::make_tuple(states, policies, values_wdl, game_ids, move_numbers);
+    return py::make_tuple(states, policies, values_wdl, game_ids, move_numbers, ownership);
 }
 
 [[nodiscard]] py::tuple replay_buffer_export_numpy(
@@ -273,7 +353,8 @@ void replay_buffer_import_numpy_impl(
     const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
     const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
     const std::size_t encoded_state_size,
-    const std::size_t policy_size) {
+    const std::size_t policy_size,
+    const py::object& ownership_or_none) {
     if (states.ndim() != 2 || policies.ndim() != 2 || values_wdl.ndim() != 2) {
         throw std::invalid_argument("import_buffer: states, policies, values_wdl must be 2D arrays");
     }
@@ -288,11 +369,40 @@ void replay_buffer_import_numpy_impl(
         throw std::invalid_argument("import_buffer: all arrays must have the same first dimension");
     }
 
+    py::array_t<float, py::array::c_style | py::array::forcecast> ownership_array;
+    const float* ownership_ptr = nullptr;
+    std::size_t ownership_size = 0U;
+    if (!ownership_or_none.is_none()) {
+        ownership_array = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(ownership_or_none);
+        if (!ownership_array) {
+            throw std::invalid_argument("import_buffer: ownership must be a float array or None");
+        }
+        if (ownership_array.size() > 0) {
+            if (ownership_array.ndim() != 2) {
+                throw std::invalid_argument(
+                    "import_buffer: ownership must be a rank-2 array, a size-0 array, or None");
+            }
+            if (static_cast<std::size_t>(ownership_array.shape(0)) != n) {
+                throw std::invalid_argument(
+                    "import_buffer: ownership must have the same row count as states");
+            }
+            ownership_size = static_cast<std::size_t>(ownership_array.shape(1));
+            ownership_ptr = ownership_array.data();
+        }
+    }
+
     py::gil_scoped_release release_gil;
     replay_buffer.import_positions(
-        states.data(), policies.data(), values_wdl.data(),
-        game_ids.data(), move_numbers.data(),
-        n, encoded_state_size, policy_size);
+        states.data(),
+        policies.data(),
+        values_wdl.data(),
+        game_ids.data(),
+        move_numbers.data(),
+        n,
+        encoded_state_size,
+        policy_size,
+        ownership_ptr,
+        ownership_size);
 }
 
 void replay_buffer_import_numpy(
@@ -303,7 +413,8 @@ void replay_buffer_import_numpy(
     const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
     const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
     const std::size_t encoded_state_size,
-    const std::size_t policy_size) {
+    const std::size_t policy_size,
+    const py::object& ownership_or_none) {
     replay_buffer_import_numpy_impl(
         replay_buffer,
         states,
@@ -312,7 +423,8 @@ void replay_buffer_import_numpy(
         game_ids,
         move_numbers,
         encoded_state_size,
-        policy_size);
+        policy_size,
+        ownership_or_none);
 }
 
 void compact_replay_buffer_import_numpy(
@@ -323,7 +435,8 @@ void compact_replay_buffer_import_numpy(
     const py::array_t<std::uint32_t, py::array::c_style | py::array::forcecast>& game_ids,
     const py::array_t<std::uint16_t, py::array::c_style | py::array::forcecast>& move_numbers,
     const std::size_t encoded_state_size,
-    const std::size_t policy_size) {
+    const std::size_t policy_size,
+    const py::object& ownership_or_none) {
     replay_buffer_import_numpy_impl(
         replay_buffer,
         states,
@@ -332,7 +445,8 @@ void compact_replay_buffer_import_numpy(
         game_ids,
         move_numbers,
         encoded_state_size,
-        policy_size);
+        policy_size,
+        ownership_or_none);
 }
 
 template <typename StateType>
@@ -1142,19 +1256,23 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("value_wdl"),
             py::arg("game_id"),
             py::arg("move_number"),
-            py::arg("training_weight") = 1.0F)
+            py::arg("training_weight") = 1.0F,
+            py::arg("ownership") = py::none())
         .def_property_readonly("encoded_state", &replay_position_encoded_state_view)
         .def_property_readonly("policy", &replay_position_policy_view)
         .def_readwrite("value", &ReplayPosition::value)
         .def_readwrite("training_weight", &ReplayPosition::training_weight)
         .def_property_readonly("value_wdl", &replay_position_wdl_view)
+        .def_property_readonly("ownership", &replay_position_ownership_view)
         .def_readwrite("game_id", &ReplayPosition::game_id)
         .def_readwrite("move_number", &ReplayPosition::move_number)
         .def_readwrite("encoded_state_size", &ReplayPosition::encoded_state_size)
-        .def_readwrite("policy_size", &ReplayPosition::policy_size);
+        .def_readwrite("policy_size", &ReplayPosition::policy_size)
+        .def_readwrite("ownership_size", &ReplayPosition::ownership_size);
 
     replay_position.attr("MAX_ENCODED_STATE_SIZE") = py::int_(ReplayPosition::kMaxEncodedStateSize);
     replay_position.attr("MAX_POLICY_SIZE") = py::int_(ReplayPosition::kMaxPolicySize);
+    replay_position.attr("MAX_BOARD_AREA") = py::int_(ReplayPosition::kMaxBoardArea);
     replay_position.attr("WDL_SIZE") = py::int_(ReplayPosition::kWdlSize);
 
     py::class_<alphazero::selfplay::ReplayBuffer>(module, "ReplayBuffer")
@@ -1196,7 +1314,8 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("game_ids"),
             py::arg("move_numbers"),
             py::arg("encoded_state_size"),
-            py::arg("policy_size"));
+            py::arg("policy_size"),
+            py::arg("ownership") = py::none());
 
     py::enum_<SamplingStrategy>(module, "ReplaySamplingStrategy")
         .value("UNIFORM", SamplingStrategy::kUniform)
@@ -1258,7 +1377,8 @@ PYBIND11_MODULE(alphazero_cpp, module) {
             py::arg("game_ids"),
             py::arg("move_numbers"),
             py::arg("encoded_state_size"),
-            py::arg("policy_size"))
+            py::arg("policy_size"),
+            py::arg("ownership") = py::none())
         .def(
             "save_to_file",
             &CompactReplayBuffer::save_to_file,
@@ -1309,6 +1429,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("enable_resignation", &alphazero::selfplay::SelfPlayGameConfig::enable_resignation)
         .def_readwrite("resign_threshold", &alphazero::selfplay::SelfPlayGameConfig::resign_threshold)
         .def_readwrite("resign_disable_fraction", &alphazero::selfplay::SelfPlayGameConfig::resign_disable_fraction)
+        .def_readwrite("compute_ownership", &alphazero::selfplay::SelfPlayGameConfig::compute_ownership)
         .def_readwrite("random_seed", &alphazero::selfplay::SelfPlayGameConfig::random_seed);
 
     py::class_<alphazero::selfplay::SelfPlayManagerConfig>(module, "SelfPlayManagerConfig")

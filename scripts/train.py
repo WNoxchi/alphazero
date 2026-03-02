@@ -553,6 +553,19 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
         "mcts.search_random_seed",
         int(mcts.get("search_random_seed", game_config.random_seed)),
     )
+    raw_game_name = config.get("game")
+    normalized_game_name = raw_game_name.strip().lower() if isinstance(raw_game_name, str) else ""
+    default_compute_ownership = normalized_game_name == "go"
+    configured_compute_ownership = _coerce_bool(
+        "mcts.compute_ownership",
+        mcts.get("compute_ownership", default_compute_ownership),
+    )
+    if hasattr(game_config, "compute_ownership"):
+        game_config.compute_ownership = configured_compute_ownership
+    elif "compute_ownership" in mcts:
+        raise ValueError(
+            "mcts.compute_ownership requires alphazero_cpp bindings with SelfPlayGameConfig.compute_ownership support"
+        )
 
     if game_config.resign_disable_fraction < 0.0 or game_config.resign_disable_fraction > 1.0:
         raise ValueError("mcts.resign_disable_fraction must be in [0, 1]")

@@ -263,20 +263,32 @@ def save_replay_buffer_state(
     if not callable(export_fn):
         return None
 
-    states, policies, values_wdl, game_ids, move_numbers = export_fn(
-        encoded_state_size, policy_size,
-    )
+    exported = export_fn(encoded_state_size, policy_size)
+    ownership = None
+    if isinstance(exported, (tuple, list)) and len(exported) == 5:
+        states, policies, values_wdl, game_ids, move_numbers = exported
+    elif isinstance(exported, (tuple, list)) and len(exported) == 6:
+        states, policies, values_wdl, game_ids, move_numbers, ownership = exported
+    else:
+        raise ValueError(
+            "export_buffer must return a 5-tuple "
+            "(states, policies, values_wdl, game_ids, move_numbers) "
+            "or 6-tuple with ownership appended"
+        )
+
     replay_path = replay_buffer_path_for_checkpoint(Path(checkpoint_path))
-    np.savez(
-        replay_path,
-        states=states,
-        policies=policies,
-        values_wdl=values_wdl,
-        game_ids=game_ids,
-        move_numbers=move_numbers,
-        encoded_state_size=np.array(encoded_state_size, dtype=np.int64),
-        policy_size=np.array(policy_size, dtype=np.int64),
-    )
+    save_payload = {
+        "states": states,
+        "policies": policies,
+        "values_wdl": values_wdl,
+        "game_ids": game_ids,
+        "move_numbers": move_numbers,
+        "encoded_state_size": np.array(encoded_state_size, dtype=np.int64),
+        "policy_size": np.array(policy_size, dtype=np.int64),
+    }
+    if ownership is not None and np.asarray(ownership).size > 0:
+        save_payload["ownership"] = ownership
+    np.savez(replay_path, **save_payload)
     return replay_path
 
 
@@ -314,15 +326,39 @@ def load_replay_buffer_state(
     import numpy as np
 
     data = np.load(replay_path)
-    import_fn(
-        data["states"],
-        data["policies"],
-        data["values_wdl"],
-        data["game_ids"],
-        data["move_numbers"],
-        encoded_state_size,
-        policy_size,
-    )
+    ownership = data["ownership"] if "ownership" in data.files else None
+    if ownership is not None and ownership.size > 0:
+        try:
+            import_fn(
+                data["states"],
+                data["policies"],
+                data["values_wdl"],
+                data["game_ids"],
+                data["move_numbers"],
+                encoded_state_size,
+                policy_size,
+                ownership,
+            )
+        except TypeError:
+            import_fn(
+                data["states"],
+                data["policies"],
+                data["values_wdl"],
+                data["game_ids"],
+                data["move_numbers"],
+                encoded_state_size,
+                policy_size,
+            )
+    else:
+        import_fn(
+            data["states"],
+            data["policies"],
+            data["values_wdl"],
+            data["game_ids"],
+            data["move_numbers"],
+            encoded_state_size,
+            policy_size,
+        )
     return int(data["states"].shape[0])
 
 

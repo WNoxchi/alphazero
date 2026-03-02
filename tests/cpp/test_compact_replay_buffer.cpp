@@ -193,6 +193,23 @@ enum class PolicyVariant {
         training_weight_for(game_id, move_number));
 }
 
+[[nodiscard]] ReplayPosition make_go_position_with_ownership(
+    const std::uint32_t game_id,
+    const std::uint16_t move_number) {
+    ReplayPosition position = make_go_position(game_id, move_number);
+    for (std::size_t intersection = 0U; intersection < ReplayPosition::kMaxBoardArea; ++intersection) {
+        if ((intersection % 4U) == 0U) {
+            position.ownership[intersection] = 1.0F;
+        } else if ((intersection % 4U) == 1U) {
+            position.ownership[intersection] = -1.0F;
+        } else {
+            position.ownership[intersection] = 0.0F;
+        }
+    }
+    position.ownership_size = static_cast<std::uint16_t>(ReplayPosition::kMaxBoardArea);
+    return position;
+}
+
 [[nodiscard]] std::vector<ReplayPosition> make_game(
     const std::uint32_t game_id,
     const std::uint16_t move_count,
@@ -328,6 +345,45 @@ TEST(CompactReplayBufferTest, RoundtripSampleSupportsNineteenByNineteenBinarySta
     }
     EXPECT_TRUE(saw_first);
     EXPECT_TRUE(saw_second);
+}
+
+// WHY: Ownership targets are stored in compact Go payloads as two bitplanes and must round-trip losslessly.
+TEST(CompactReplayBufferTest, RoundtripSampleAndPackedBatchPreserveOwnershipTargets) {
+    CompactReplayBuffer buffer(
+        /*capacity=*/8U,
+        /*num_binary_planes=*/kGoBinaryPlanes,
+        /*num_float_planes=*/0U,
+        /*float_plane_indices=*/{},
+        /*full_policy_size=*/kGoPolicySize,
+        /*random_seed=*/31415U,
+        /*sampling_strategy=*/SamplingStrategy::kUniform,
+        /*recency_weight_lambda=*/1.0F,
+        /*squares_per_plane=*/kGoSquaresPerPlane);
+
+    const ReplayPosition position = make_go_position_with_ownership(401U, 7U);
+    buffer.add_game({position});
+
+    const std::vector<ReplayPosition> sampled = buffer.sample(1U);
+    ASSERT_EQ(sampled.size(), 1U);
+    ASSERT_EQ(sampled[0].ownership_size, ReplayPosition::kMaxBoardArea);
+    EXPECT_FLOAT_EQ(sampled[0].ownership[0], 1.0F);
+    EXPECT_FLOAT_EQ(sampled[0].ownership[1], -1.0F);
+    EXPECT_FLOAT_EQ(sampled[0].ownership[2], 0.0F);
+    EXPECT_FLOAT_EQ(sampled[0].ownership[3], 0.0F);
+    EXPECT_FLOAT_EQ(sampled[0].ownership[4], 1.0F);
+
+    const SampledBatch packed = buffer.sample_batch(2U, kGoStateSize, kGoPolicySize, 1U);
+    ASSERT_EQ(packed.batch_size, 2U);
+    EXPECT_EQ(packed.ownership_size, ReplayPosition::kMaxBoardArea);
+    ASSERT_EQ(packed.ownership.size(), packed.batch_size * ReplayPosition::kMaxBoardArea);
+    for (std::size_t sample_index = 0U; sample_index < packed.batch_size; ++sample_index) {
+        const std::size_t row_offset = sample_index * ReplayPosition::kMaxBoardArea;
+        EXPECT_FLOAT_EQ(packed.ownership[row_offset + 0U], 1.0F);
+        EXPECT_FLOAT_EQ(packed.ownership[row_offset + 1U], -1.0F);
+        EXPECT_FLOAT_EQ(packed.ownership[row_offset + 2U], 0.0F);
+        EXPECT_FLOAT_EQ(packed.ownership[row_offset + 3U], 0.0F);
+        EXPECT_FLOAT_EQ(packed.ownership[row_offset + 4U], 1.0F);
+    }
 }
 
 // WHY: Replay semantics require fixed-capacity ring behavior; once full, oldest positions must be evicted.
@@ -620,6 +676,14 @@ struct LegacyFileHeaderV1 {
     std::uint64_t sizeof_position;
 };
 
+struct LegacyFileHeaderV2 {
+    char magic[4];
+    std::uint32_t version;
+    std::uint64_t count;
+    std::uint64_t sizeof_position;
+    std::uint32_t squares_per_plane;
+};
+
 struct LegacyCompactReplayPositionV1 {
     std::array<std::uint64_t, alphazero::selfplay::CompactReplayPosition::kMaxBinaryWords> bitpacked_planes{};
     std::array<std::uint8_t, alphazero::selfplay::CompactReplayPosition::kMaxFloatPlanes> quantized_float_planes{};
@@ -631,6 +695,23 @@ struct LegacyCompactReplayPositionV1 {
     std::array<float, ReplayPosition::kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
     std::uint32_t game_id = 0U;
     std::uint16_t move_number = 0U;
+    std::uint16_t num_binary_planes = 0U;
+    std::uint16_t num_float_planes = 0U;
+    std::uint16_t policy_size = 0U;
+};
+
+struct LegacyCompactReplayPositionV2 {
+    std::array<std::uint64_t, alphazero::selfplay::CompactReplayPosition::kMaxBinaryWords> bitpacked_planes{};
+    std::array<std::uint8_t, alphazero::selfplay::CompactReplayPosition::kMaxFloatPlanes> quantized_float_planes{};
+    std::array<std::uint16_t, alphazero::selfplay::CompactReplayPosition::kMaxSparsePolicy> policy_actions{};
+    std::array<std::uint16_t, alphazero::selfplay::CompactReplayPosition::kMaxSparsePolicy> policy_probs_fp16{};
+    std::uint8_t num_policy_entries = 0U;
+    float value = 0.0F;
+    float training_weight = 1.0F;
+    std::array<float, ReplayPosition::kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
+    std::uint32_t game_id = 0U;
+    std::uint16_t move_number = 0U;
+    std::uint16_t num_binary_words = 0U;
     std::uint16_t num_binary_planes = 0U;
     std::uint16_t num_float_planes = 0U;
     std::uint16_t policy_size = 0U;
@@ -692,7 +773,7 @@ TEST(CompactReplayBufferTest, SaveAndLoadFileRoundtripPreservesContents) {
     EXPECT_EQ(m1, m2);
 }
 
-// WHY: The v2 replay-file format includes `squares_per_plane`, which must preserve Go-sized compact buffers.
+// WHY: Modern replay-file headers include `squares_per_plane`, which must preserve Go-sized compact buffers.
 TEST(CompactReplayBufferTest, SaveAndLoadFileRoundtripPreservesGoSizedContents) {
     TempFile tmp;
 
@@ -873,6 +954,70 @@ TEST(CompactReplayBufferTest, LoadFileSupportsLegacyVersionOneFormat) {
     const std::vector<ReplayPosition> sampled = restored.sample(1U);
     ASSERT_EQ(sampled.size(), 1U);
     expect_roundtrip_match(expected, sampled[0]);
+}
+
+// WHY: Version-2 compact replay files (pre-ownership payloads) must remain loadable after version-3 upgrades.
+TEST(CompactReplayBufferTest, LoadFileSupportsLegacyVersionTwoFormatWithoutOwnership) {
+    TempFile tmp;
+    const ReplayPosition expected = make_position(89U, 5U, PolicyVariant::kDense);
+
+    LegacyCompactReplayPositionV2 legacy{};
+    const std::array<std::size_t, 1U> float_plane_indices{kFloatPlaneIndex};
+    const StateCompressionLayout layout = compress_state(
+        std::span<const float>(expected.encoded_state.data(), expected.encoded_state_size),
+        float_plane_indices,
+        kSquaresPerPlane,
+        legacy.bitpacked_planes,
+        legacy.quantized_float_planes);
+    ASSERT_EQ(layout.num_binary_words, kNumBinaryPlanes);
+    ASSERT_EQ(layout.num_binary_planes, kNumBinaryPlanes);
+    ASSERT_EQ(layout.num_float_planes, kNumFloatPlanes);
+    legacy.num_policy_entries = compress_policy(
+        std::span<const float>(expected.policy.data(), expected.policy_size),
+        legacy.policy_actions,
+        legacy.policy_probs_fp16);
+    legacy.value = expected.value;
+    legacy.training_weight = expected.training_weight;
+    legacy.value_wdl = expected.value_wdl;
+    legacy.game_id = expected.game_id;
+    legacy.move_number = expected.move_number;
+    legacy.num_binary_words = static_cast<std::uint16_t>(layout.num_binary_words);
+    legacy.num_binary_planes = static_cast<std::uint16_t>(layout.num_binary_planes);
+    legacy.num_float_planes = static_cast<std::uint16_t>(layout.num_float_planes);
+    legacy.policy_size = expected.policy_size;
+
+    {
+        std::ofstream out(tmp.path(), std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.good());
+        LegacyFileHeaderV2 header{};
+        header.magic[0] = 'A';
+        header.magic[1] = 'Z';
+        header.magic[2] = 'R';
+        header.magic[3] = 'B';
+        header.version = 2U;
+        header.count = 1U;
+        header.sizeof_position = sizeof(LegacyCompactReplayPositionV2);
+        header.squares_per_plane = static_cast<std::uint32_t>(kSquaresPerPlane);
+        out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        out.write(reinterpret_cast<const char*>(&legacy), sizeof(legacy));
+        ASSERT_TRUE(out.good());
+    }
+
+    CompactReplayBuffer restored(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kNumBinaryPlanes,
+        /*num_float_planes=*/kNumFloatPlanes,
+        /*float_plane_indices=*/{kFloatPlaneIndex},
+        /*full_policy_size=*/kPolicySize,
+        /*random_seed=*/9292U);
+    const std::size_t loaded = restored.load_from_file(tmp.path());
+    ASSERT_EQ(loaded, 1U);
+    ASSERT_EQ(restored.size(), 1U);
+
+    const std::vector<ReplayPosition> sampled = restored.sample(1U);
+    ASSERT_EQ(sampled.size(), 1U);
+    expect_roundtrip_match(expected, sampled[0]);
+    EXPECT_EQ(sampled[0].ownership_size, 0U);
 }
 
 // WHY: A wrapped ring buffer serializes in logical order; this verifies the ordering survives a wrap + save + load.

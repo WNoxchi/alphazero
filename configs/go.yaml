@@ -24,6 +24,7 @@ mcts:
   node_arena_capacity: 2048        # 400 sims needs ~400 nodes; saves 22 GB vs default 8192
   resign_threshold: -0.9
   resign_disable_fraction: 0.1
+  compute_ownership: true
 
 training:
   batch_size: 4096                 # increased from 1024 — better GPU arithmetic intensity on 19x19

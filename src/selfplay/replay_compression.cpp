@@ -334,4 +334,75 @@ void decompress_policy(
     }
 }
 
+void compress_ownership(
+    const std::span<const float> ownership,
+    const std::size_t board_area,
+    const std::span<std::uint64_t> out_bitpacked) {
+    if (board_area == 0U) {
+        throw std::invalid_argument("compress_ownership board_area must be greater than zero");
+    }
+    if (ownership.size() != board_area) {
+        throw std::invalid_argument("compress_ownership ownership size must match board_area");
+    }
+
+    const std::size_t words_per_plane = (board_area + 63U) / 64U;
+    const std::size_t required_words = 2U * words_per_plane;
+    if (out_bitpacked.size() < required_words) {
+        throw std::invalid_argument("compress_ownership output capacity is too small");
+    }
+    std::fill(out_bitpacked.begin(), out_bitpacked.end(), 0U);
+
+    for (std::size_t intersection = 0U; intersection < board_area; ++intersection) {
+        const float value = ownership[intersection];
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument("compress_ownership values must be finite");
+        }
+        if (value == 0.0F) {
+            continue;
+        }
+
+        const std::size_t word_index = intersection / 64U;
+        const std::uint64_t bit = std::uint64_t{1} << (intersection % 64U);
+        if (value > 0.0F) {
+            out_bitpacked[word_index] |= bit;
+        } else {
+            out_bitpacked[words_per_plane + word_index] |= bit;
+        }
+    }
+}
+
+void decompress_ownership(
+    const std::span<const std::uint64_t> bitpacked,
+    const std::size_t board_area,
+    const std::span<float> out_ownership) {
+    if (board_area == 0U) {
+        throw std::invalid_argument("decompress_ownership board_area must be greater than zero");
+    }
+    if (out_ownership.size() != board_area) {
+        throw std::invalid_argument("decompress_ownership output size must match board_area");
+    }
+
+    const std::size_t words_per_plane = (board_area + 63U) / 64U;
+    const std::size_t required_words = 2U * words_per_plane;
+    if (bitpacked.size() < required_words) {
+        throw std::invalid_argument("decompress_ownership input size is too small");
+    }
+    std::fill(out_ownership.begin(), out_ownership.end(), 0.0F);
+
+    for (std::size_t intersection = 0U; intersection < board_area; ++intersection) {
+        const std::size_t word_index = intersection / 64U;
+        const std::uint64_t bit = std::uint64_t{1} << (intersection % 64U);
+        const bool black_owned = (bitpacked[word_index] & bit) != 0U;
+        const bool white_owned = (bitpacked[words_per_plane + word_index] & bit) != 0U;
+        if (black_owned && white_owned) {
+            throw std::invalid_argument("decompress_ownership found conflicting ownership planes");
+        }
+        if (black_owned) {
+            out_ownership[intersection] = 1.0F;
+        } else if (white_owned) {
+            out_ownership[intersection] = -1.0F;
+        }
+    }
+}
+
 }  // namespace alphazero::selfplay

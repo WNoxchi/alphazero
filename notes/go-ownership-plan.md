@@ -112,7 +112,7 @@ This plan addresses the problem in two phases:
   `src/selfplay/replay_compression.cpp`, `src/selfplay/self_play_game.cpp`,
   `src/bindings/python_bindings.cpp`, `tests/cpp/test_go_state.cpp`,
   `tests/cpp/test_replay_buffer.cpp`
-- **Current state**: PENDING
+- **Current state**: COMPLETE (2026-03-02)
 - **Priority**: HIGH — prerequisite for TASK-003; without ownership data in the replay buffer,
   the ownership head cannot be trained.
 - **Rationale**: KataGo's ownership prediction head requires a per-intersection training target
@@ -232,6 +232,27 @@ This plan addresses the problem in two phases:
   - Document WHY: "Ownership targets teach the network spatial territory understanding,
     which is KataGo's most impactful training innovation"
 
+- **Completion notes (2026-03-02)**:
+  - Added `compute_tromp_taylor_ownership()` and validated ownership maps for stones,
+    enclosed territory, and neutral regions.
+  - Extended replay payloads (`ReplayPosition`, `CompactReplayPosition`, `SampledBatch`) to
+    carry ownership with compact two-plane bitpacking plus decompress/compress helpers.
+  - Threaded ownership through dense + compact replay sampling/export/import paths and added
+    compact replay file format v3 with backward compatibility for v1/v2 files.
+  - Added `SelfPlayGameConfig.compute_ownership`, propagated terminal Go ownership into replay
+    rows when enabled, and enabled it by default for Go in `scripts/train.py`.
+  - Updated pybind replay APIs:
+    - `sample_batch` now returns `(states, policies, values, weights, ownership)`
+    - `export_buffer` now appends ownership as a sixth return array
+    - `import_buffer` accepts optional ownership input
+  - Validation run:
+    - `cmake --build build --target alphazero_cpp -j$(nproc)`
+    - `cmake --build build --target alphazero_cpp_tests -j$(nproc)`
+    - `ctest --test-dir build --output-on-failure -R "(GoScoringTest|GoRulesEngineTest|ReplayBufferTest|CompactReplayBufferTest|ReplayCompressionTest|SelfPlayGameTest)\\."`
+    - `python3 -m pytest tests/python/test_bindings.py tests/python/test_training.py tests/python/test_train_script.py tests/python/test_checkpoint_utils.py`
+    - `python3 -m compileall python scripts/train.py tests/python/test_bindings.py tests/python/test_training.py tests/python/test_train_script.py tests/python/test_checkpoint_utils.py`
+    - `ruff` and `mypy` were unavailable in this environment.
+
 ---
 
 ### TASK-003: Add ownership prediction head and training loss
@@ -242,7 +263,7 @@ This plan addresses the problem in two phases:
   `python/alphazero/pipeline/orchestrator.py`, `python/alphazero/utils/checkpoint.py`,
   `configs/go.yaml`, `scripts/train.py`,
   `tests/python/test_network.py`, `tests/python/test_training.py`
-- **Current state**: PENDING (blocked by TASK-002)
+- **Current state**: PENDING
 - **Priority**: HIGH — the structural fix for Go training quality. Ownership prediction gives
   the network 361 spatial gradient signals per position instead of a single scalar, which
   dramatically accelerates learning and prevents degenerate equilibria.

@@ -17,6 +17,8 @@ struct ReplayPosition {
     static constexpr std::size_t kMaxEncodedStateSize = 119U * 8U * 8U;
     // Max action-space size for supported games in v1 (chess: 4672, go: 362).
     static constexpr std::size_t kMaxPolicySize = 4672U;
+    // Max board area for supported ownership targets (19x19 Go).
+    static constexpr std::size_t kMaxBoardArea = 361U;
     static constexpr std::size_t kWdlSize = 3U;
 
     std::array<float, kMaxEncodedStateSize> encoded_state{};
@@ -24,10 +26,12 @@ struct ReplayPosition {
     float value = 0.0F;
     float training_weight = 1.0F;
     std::array<float, kWdlSize> value_wdl{0.0F, 0.0F, 0.0F};
+    std::array<float, kMaxBoardArea> ownership{};
     std::uint32_t game_id = 0U;
     std::uint16_t move_number = 0U;
     std::uint16_t encoded_state_size = 0U;
     std::uint16_t policy_size = 0U;
+    std::uint16_t ownership_size = 0U;
 
     [[nodiscard]] static ReplayPosition make(
         std::span<const float> encoded_state_values,
@@ -43,6 +47,7 @@ struct CompactReplayPosition {
     static constexpr std::size_t kMaxBinaryWords = 117U;
     static constexpr std::size_t kMaxFloatPlanes = 2U;
     static constexpr std::size_t kMaxSparsePolicy = 64U;
+    static constexpr std::size_t kMaxOwnershipWords = 12U;
     static constexpr std::size_t kWdlSize = 3U;
 
     // Binary state planes bitpacked as words (words_per_plane * num_binary_planes total).
@@ -55,6 +60,9 @@ struct CompactReplayPosition {
     std::array<std::uint16_t, kMaxSparsePolicy> policy_probs_fp16{};
     std::uint8_t num_policy_entries = 0U;
 
+    // Ownership encoded as two bitplanes: black-owned and white-owned.
+    std::array<std::uint64_t, kMaxOwnershipWords> bitpacked_ownership{};
+
     // Metadata and value targets matching ReplayPosition semantics.
     float value = 0.0F;
     float training_weight = 1.0F;
@@ -65,6 +73,7 @@ struct CompactReplayPosition {
     std::uint16_t num_binary_planes = 0U;
     std::uint16_t num_float_planes = 0U;
     std::uint16_t policy_size = 0U;
+    std::uint16_t num_ownership_words = 0U;
 };
 
 struct SampledBatch {
@@ -72,7 +81,9 @@ struct SampledBatch {
     std::vector<float> policies;
     std::vector<float> values;
     std::vector<float> weights;
+    std::vector<float> ownership;
     std::size_t batch_size = 0U;
+    std::size_t ownership_size = 0U;
 };
 
 class ReplayBuffer {
@@ -108,7 +119,9 @@ public:
         std::uint32_t* out_game_ids,
         std::uint16_t* out_move_numbers,
         std::size_t encoded_state_size,
-        std::size_t policy_size) const;
+        std::size_t policy_size,
+        float* out_ownership = nullptr,
+        std::size_t ownership_size = 0U) const;
 
     /// Import positions from flat arrays into the buffer.
     /// Appends to the current buffer (does not clear existing data).
@@ -120,7 +133,9 @@ public:
         const std::uint16_t* move_numbers,
         std::size_t count,
         std::size_t encoded_state_size,
-        std::size_t policy_size);
+        std::size_t policy_size,
+        const float* ownership = nullptr,
+        std::size_t ownership_size = 0U);
 
 private:
     [[nodiscard]] static bool has_valid_shape(const ReplayPosition& position) noexcept;

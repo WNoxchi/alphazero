@@ -27,4 +27,8 @@ struct TrompTaylorScore {
 // - Final score is black_points - white_points - komi.
 [[nodiscard]] TrompTaylorScore compute_tromp_taylor_score(const GoPosition& position);
 
+// Per-intersection ownership for auxiliary training targets.
+// Values: +1.0 black-owned, -1.0 white-owned, 0.0 neutral/dame.
+void compute_tromp_taylor_ownership(const GoPosition& position, float* out_ownership);
+
 }  // namespace alphazero::go

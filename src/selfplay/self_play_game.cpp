@@ -1,6 +1,7 @@
 #include "selfplay/self_play_game.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -8,6 +9,9 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include "games/go/go_state.h"
+#include "games/go/scoring.h"
 
 namespace alphazero::selfplay {
 namespace {
@@ -224,19 +228,33 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
 
     std::vector<ReplayPosition> replay_positions;
     replay_positions.reserve(pending_samples.size());
+    std::array<float, ReplayPosition::kMaxBoardArea> ownership{};
+    std::uint16_t ownership_size = 0U;
+    if (config_.compute_ownership) {
+        const auto* final_go_state = dynamic_cast<const go::GoState*>(&search_.root_state());
+        if (final_go_state == nullptr) {
+            throw std::logic_error("SelfPlayGame compute_ownership requires a GoState root");
+        }
+        go::compute_tromp_taylor_ownership(final_go_state->position(), ownership.data());
+        ownership_size = static_cast<std::uint16_t>(go::kBoardArea);
+    }
+
     for (const PendingSample& sample : pending_samples) {
         if (sample.player != 0 && sample.player != 1) {
             throw std::logic_error("SelfPlayGame recorded sample with invalid player index");
         }
         const float scalar_value = sample.player == 0 ? result.outcome_player0 : result.outcome_player1;
-        replay_positions.push_back(ReplayPosition::make(
+        ReplayPosition replay_position = ReplayPosition::make(
             sample.encoded_state,
             sample.policy,
             scalar_value,
             wdl_target(scalar_value),
             game_id,
             sample.move_number,
-            sample.training_weight));
+            sample.training_weight);
+        replay_position.ownership = ownership;
+        replay_position.ownership_size = ownership_size;
+        replay_positions.push_back(std::move(replay_position));
     }
 
     add_game_fn_(replay_positions);

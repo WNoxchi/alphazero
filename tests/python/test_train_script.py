@@ -140,6 +140,7 @@ class _FakeSelfPlayGameConfig:
         self.enable_resignation = True
         self.resign_threshold = -0.9
         self.resign_disable_fraction = 0.1
+        self.compute_ownership = False
         self.random_seed = 123
 
 
@@ -559,6 +560,22 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         self.assertAlmostEqual(manager_config.game_config.full_playout_probability, 0.4)
         self.assertAlmostEqual(manager_config.game_config.c_fpu_root, 0.0)
         self.assertTrue(manager_config.game_config.dynamic_dirichlet_alpha)
+
+    def test_build_selfplay_manager_config_enables_ownership_targets_for_go_by_default(self) -> None:
+        """WHY: Go self-play must emit ownership targets unless explicitly disabled in mcts.compute_ownership."""
+        harness = _Harness()
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["game"] = "go"
+
+        manager_config = train_script._build_selfplay_manager_config(dependencies.cpp, config)
+        self.assertTrue(manager_config.game_config.compute_ownership)
+
+        mcts = dict(config["mcts"])
+        mcts["compute_ownership"] = False
+        config["mcts"] = mcts
+        manager_config_disabled = train_script._build_selfplay_manager_config(dependencies.cpp, config)
+        self.assertFalse(manager_config_disabled.game_config.compute_ownership)
 
     def test_build_selfplay_manager_config_rejects_reduced_simulations_above_full_budget(self) -> None:
         """WHY: invalid reduced playout budget should fail fast instead of crashing inside long-running workers."""

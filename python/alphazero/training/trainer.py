@@ -353,16 +353,19 @@ def _extract_packed_batch_fields(packed_batch: object) -> tuple[object, object, 
             return packed_batch[0], packed_batch[1], packed_batch[2], None
         if len(packed_batch) == 4:
             return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3]
+        if len(packed_batch) == 5:
+            # Forward-compat: ownership targets may be appended as a 5th field by newer bindings.
+            return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3]
         if len(packed_batch) != 3:
             raise ValueError(
-                "Replay packed batch sequence must contain exactly three or four entries: "
-                "(states, policies, values[, weights])"
+                "Replay packed batch sequence must contain exactly three, four, or five entries: "
+                "(states, policies, values[, weights[, ownership]])"
             )
         return packed_batch[0], packed_batch[1], packed_batch[2], None
 
     raise TypeError(
         "Replay packed batch must be either a mapping with keys "
-        "{'states', 'policies', 'values'} or a 3/4-tuple/list"
+        "{'states', 'policies', 'values'} or a 3/4/5-tuple/list"
     )
 
 
