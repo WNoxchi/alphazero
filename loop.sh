@@ -8,19 +8,21 @@ if [ $# -lt 1 ]; then
 fi
 
 N=$1
-BUILD_PROMPT='Read and execute `prompts/PROMPT_build.md`. Return "TASK COMPLETE" and HALT when done.'
-REVIEW_PROMPT='Read and execute `prompts/PROMPT_review.md`. Return "REVIEW COMPLETE" and HALT when done.'
-OUTFILE=$(mktemp)
+BUILD_PROMPT="$(cat prompts/PROMPT_build.md)"$'\n\nReturn \"TASK COMPLETE\" and HALT when done.'
+REVIEW_PROMPT="$(cat prompts/PROMPT_review.md)"$'\n\nReturn \"REVIEW COMPLETE\" and HALT when done.'
+BUILD_OUTFILE="logs/build_output.txt"
+REVIEW_OUTFILE="logs/review_output.json"
+mkdir -p logs
 
 for i in $(seq 1 "$N"); do
   echo "=== Iteration $i / $N — BUILD ==="
 
   codex exec \
     --color always \
-    -o "$OUTFILE" \
+    -o "$BUILD_OUTFILE" \
     "$BUILD_PROMPT"
 
-  if grep -q "TASK COMPLETE" "$OUTFILE" 2>/dev/null; then
+  if grep -q "TASK COMPLETE" "$BUILD_OUTFILE" 2>/dev/null; then
     echo ">>> Builder returned TASK COMPLETE on iteration $i"
   else
     echo ">>> WARNING: TASK COMPLETE not found in builder output on iteration $i"
@@ -28,17 +30,16 @@ for i in $(seq 1 "$N"); do
 
   echo "=== Iteration $i / $N — REVIEW ==="
 
-  codex exec \
-    --color always \
-    -o "$OUTFILE" \
-    "$REVIEW_PROMPT"
+  claude -p "$REVIEW_PROMPT" \
+    --output-format json \
+    --verbose \
+    2>&1 | tee /dev/stderr | jq '.' > "$REVIEW_OUTFILE"
 
-  if grep -q "REVIEW COMPLETE" "$OUTFILE" 2>/dev/null; then
+  if jq -r '.result // .content // empty' "$REVIEW_OUTFILE" 2>/dev/null | grep -q "REVIEW COMPLETE"; then
     echo ">>> Reviewer returned REVIEW COMPLETE on iteration $i"
   else
     echo ">>> WARNING: REVIEW COMPLETE not found in reviewer output on iteration $i"
   fi
 done
 
-rm -f "$OUTFILE"
 echo "=== All $N iterations finished ==="
