@@ -135,6 +135,55 @@ def wdl_value_loss(value: torch.Tensor, target_value: torch.Tensor) -> torch.Ten
     return -(target_probabilities * torch.log(predicted_probabilities)).sum(dim=-1).mean()
 
 
+def ownership_loss(
+    predicted_logits: torch.Tensor,
+    target: torch.Tensor,
+    weights: torch.Tensor,
+) -> torch.Tensor:
+    """Ownership BCE loss using {-1, 0, +1} targets mapped to {0, 0.5, 1}."""
+
+    if predicted_logits.ndim != 2:
+        raise ValueError(
+            "predicted_logits must have shape (batch, board_area), "
+            f"got {tuple(predicted_logits.shape)}"
+        )
+    if target.shape != predicted_logits.shape:
+        raise ValueError(
+            "target must match predicted_logits shape; "
+            f"got {tuple(target.shape)} vs {tuple(predicted_logits.shape)}"
+        )
+
+    target_values = target.to(dtype=torch.float32, device=predicted_logits.device)
+    if not bool(torch.isfinite(target_values).all()):
+        raise ValueError("target must contain only finite values")
+    if bool((target_values < -1.0).any()) or bool((target_values > 1.0).any()):
+        raise ValueError("target values must lie in [-1, 1]")
+
+    sample_weights = _to_scalar_vector("weights", weights).to(
+        dtype=torch.float32,
+        device=predicted_logits.device,
+    )
+    if tuple(sample_weights.shape) != (predicted_logits.shape[0],):
+        raise ValueError(
+            "weights must have one value per sample; "
+            f"expected {(predicted_logits.shape[0],)}, got {tuple(sample_weights.shape)}"
+        )
+    if not bool(torch.isfinite(sample_weights).all()):
+        raise ValueError("weights must be finite")
+    if bool((sample_weights < 0.0).any()):
+        raise ValueError("weights must be non-negative")
+
+    target_probs = (1.0 + target_values) * 0.5
+    scaled_logits = predicted_logits.to(dtype=torch.float32) * 2.0
+    per_point = functional.binary_cross_entropy_with_logits(
+        scaled_logits,
+        target_probs,
+        reduction="none",
+    )
+    per_sample = per_point.mean(dim=-1)
+    return (per_sample * sample_weights).mean()
+
+
 def l2_regularization_loss(model: nn.Module) -> torch.Tensor:
     """Compute explicit L2 regularization over all model parameters."""
 
@@ -232,6 +281,7 @@ __all__ = [
     "policy_cross_entropy_loss",
     "scalar_value_loss",
     "wdl_value_loss",
+    "ownership_loss",
     "l2_regularization_loss",
     "compute_loss_components",
     "compute_loss",

@@ -145,6 +145,7 @@ class TrainingConfigLike(Protocol):
     max_steps: int
     momentum: float
     l2_reg: float
+    ownership_loss_weight: float
     checkpoint_interval: int
     checkpoint_keep_last: int
     milestone_interval: int
@@ -375,7 +376,21 @@ def make_eval_queue_batch_evaluator(
                     dtype=torch.bfloat16,
                     enabled=use_mixed_precision,
                 ):
-                    policy_logits, value = model(model_inputs)
+                    model_output = model(model_inputs)
+                    if not isinstance(model_output, (tuple, list)):
+                        raise TypeError(
+                            "model(model_inputs) must return a tuple/list with policy/value "
+                            f"(and optional ownership), got {type(model_output).__name__}"
+                        )
+                    if len(model_output) == 2:
+                        policy_logits, value = model_output
+                    elif len(model_output) == 3:
+                        policy_logits, value, _ownership = model_output
+                    else:
+                        raise ValueError(
+                            "model(model_inputs) must return a 2-tuple (policy, value) "
+                            "or 3-tuple (policy, value, ownership)"
+                        )
 
             # Slice off padding before returning results.
             # All GPU ops stay on the inference stream so the subsequent
@@ -541,6 +556,26 @@ def run_parallel_pipeline(
     inference_worker_error: BaseException | None = None
     training_worker_error: BaseException | None = None
 
+    def _apply_ownership_symmetry(
+        ownership_target: Any,
+        symmetry_indices: Any,
+    ) -> Any:
+        batch_size = int(ownership_target.shape[0])
+        rows, cols = game_config.board_shape
+        board_area = rows * cols
+        reshaped = ownership_target.reshape(batch_size, rows, cols)
+        transformed = reshaped.clone()
+        for symmetry_index in range(8):
+            sample_mask = symmetry_indices == symmetry_index
+            if not bool(sample_mask.any()):
+                continue
+            sample_slice = reshaped[sample_mask]
+            rotated = torch.rot90(sample_slice, k=symmetry_index % 4, dims=(-2, -1))
+            if symmetry_index >= 4:
+                rotated = torch.flip(rotated, dims=(-1,))
+            transformed[sample_mask] = rotated
+        return transformed.reshape(batch_size, board_area)
+
     def inference_worker() -> None:
         nonlocal inference_worker_error
         nonlocal inference_batches_processed
@@ -581,14 +616,29 @@ def run_parallel_pipeline(
                 continue
 
             try:
-                states, target_policy, target_value, sample_weights = sample_replay_batch_tensors(
+                states, target_policy, target_value, sample_weights, ownership_target = sample_replay_batch_tensors(
                     replay_buffer,
                     game_config,
                     batch_size=training_config.batch_size,
                     device=device,
                 )
                 if game_config.supports_symmetry:
-                    states, target_policy = apply_random_go_symmetry(states, target_policy)
+                    symmetry_indices = torch.randint(
+                        low=0,
+                        high=8,
+                        size=(states.shape[0],),
+                        device=states.device,
+                    )
+                    states, target_policy = apply_random_go_symmetry(
+                        states,
+                        target_policy,
+                        symmetry_indices=symmetry_indices,
+                    )
+                    if ownership_target is not None:
+                        ownership_target = _apply_ownership_symmetry(
+                            ownership_target,
+                            symmetry_indices,
+                        )
 
                 step_start = time.perf_counter()
                 next_step = step_to_train + 1
@@ -602,7 +652,9 @@ def run_parallel_pipeline(
                     states=states,
                     target_policy=target_policy,
                     target_value=target_value,
+                    ownership_target=ownership_target,
                     sample_weights=sample_weights,
+                    ownership_loss_weight=float(training_config.ownership_loss_weight),
                     game_config=game_config,
                     lr_schedule=active_schedule,
                     global_step=step_to_train,
@@ -618,6 +670,7 @@ def run_parallel_pipeline(
                     loss_total=step_metrics.loss_total,
                     loss_policy=step_metrics.loss_policy,
                     loss_value=step_metrics.loss_value,
+                    loss_ownership=step_metrics.loss_ownership,
                     loss_l2=step_metrics.loss_l2,
                     lr=step_metrics.lr,
                     grad_global_norm=step_metrics.grad_global_norm,

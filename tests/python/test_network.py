@@ -23,6 +23,7 @@ if _TORCH_AVAILABLE:
 
     from alphazero.network import (  # noqa: E402
         AlphaZeroNetwork,
+        OwnershipHead,
         PolicyHead,
         ResNetSE,
         ScalarValueHead,
@@ -140,6 +141,22 @@ class NetworkHeadTests(unittest.TestCase):
             )
         )
 
+    def test_ownership_head_outputs_unbounded_board_logits(self) -> None:
+        """WHY: Go ownership supervision requires one raw logit per board point for BCE-with-logits training."""
+        head = OwnershipHead(num_filters=256)
+        features = torch.randn(2, 256, *GO_CONFIG.board_shape, dtype=torch.float32)
+        logits = head(features)
+        self.assertEqual(tuple(logits.shape), (2, GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]))
+        self.assertTrue(bool(torch.isfinite(logits).all()))
+
+    def test_ownership_head_initialization_uses_small_weights_and_zero_bias(self) -> None:
+        """WHY: small auxiliary-head init prevents ownership loss from overwhelming main heads at startup."""
+        torch.manual_seed(5)
+        head = OwnershipHead(num_filters=128)
+        weight_std = float(head.conv.weight.std().item())
+        self.assertTrue(0.005 <= weight_std <= 0.02)
+        self.assertTrue(torch.allclose(head.conv.bias, torch.zeros_like(head.conv.bias)))
+
 
 @unittest.skipUnless(_TORCH_AVAILABLE, "torch is required for ResNet+SE tests")
 class ResNetSETests(unittest.TestCase):
@@ -207,6 +224,8 @@ class ResNetSETests(unittest.TestCase):
 
         self.assertIsInstance(chess_model.value_head, WDLValueHead)
         self.assertIsInstance(go_model.value_head, ScalarValueHead)
+        self.assertIsNone(chess_model.ownership_head)
+        self.assertIsInstance(go_model.ownership_head, OwnershipHead)
 
     def test_forward_shapes_match_contract_for_chess_and_go(self) -> None:
         """Protects the policy/value output contract consumed by MCTS and training."""
@@ -228,10 +247,13 @@ class ResNetSETests(unittest.TestCase):
 
         go_model = ResNetSE.small(GO_CONFIG)
         go_input = torch.randn(3, GO_CONFIG.input_channels, *GO_CONFIG.board_shape, dtype=torch.float32)
-        go_policy, go_value = go_model(go_input)
+        go_output = go_model(go_input)
+        self.assertEqual(len(go_output), 3)
+        go_policy, go_value, go_ownership = go_output
 
         self.assertEqual(tuple(go_policy.shape), (3, GO_CONFIG.action_space_size))
         self.assertEqual(tuple(go_value.shape), (3, 1))
+        self.assertEqual(tuple(go_ownership.shape), (3, GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]))
         self.assertTrue(torch.all(go_value >= -1.0).item())
         self.assertTrue(torch.all(go_value <= 1.0).item())
 

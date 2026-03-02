@@ -242,7 +242,21 @@ def _build_evaluator(
                 dtype=torch.bfloat16,
                 enabled=use_mixed_precision and device.type == "cuda",
             ):
-                policy_logits, value = model(model_input)
+                model_output = model(model_input)
+                if not isinstance(model_output, (tuple, list)):
+                    raise TypeError(
+                        "model(model_input) must return tuple/list with policy/value "
+                        f"(and optional ownership), got {type(model_output).__name__}"
+                    )
+                if len(model_output) == 2:
+                    policy_logits, value = model_output
+                elif len(model_output) == 3:
+                    policy_logits, value, _ownership = model_output
+                else:
+                    raise ValueError(
+                        "model(model_input) must return a 2-tuple (policy, value) "
+                        "or 3-tuple (policy, value, ownership)"
+                    )
 
         if game_config.value_head_type == "scalar":
             scalar_value = float(value.reshape(1, -1)[0, 0].detach().item())

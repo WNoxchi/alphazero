@@ -262,8 +262,11 @@ This plan addresses the problem in two phases:
   `python/alphazero/training/loss.py`, `python/alphazero/config.py`,
   `python/alphazero/pipeline/orchestrator.py`, `python/alphazero/utils/checkpoint.py`,
   `configs/go.yaml`, `scripts/train.py`,
-  `tests/python/test_network.py`, `tests/python/test_training.py`
-- **Current state**: PENDING
+  `tests/python/test_network.py`, `tests/python/test_training.py`,
+  `python/alphazero/pipeline/evaluation.py`, `scripts/play.py`,
+  `tests/python/test_loss.py`, `tests/python/test_orchestrator.py`,
+  `tests/python/test_checkpoint_utils.py`, `tests/python/test_config.py`
+- **Current state**: COMPLETE (2026-03-02)
 - **Priority**: HIGH — the structural fix for Go training quality. Ownership prediction gives
   the network 361 spatial gradient signals per position instead of a single scalar, which
   dramatically accelerates learning and prevents degenerate equilibria.
@@ -488,10 +491,35 @@ This plan addresses the problem in two phases:
   - Test that `ownership_loss_weight=0.0` means ownership loss is not added
   - Test backward pass: gradients flow through ownership head to backbone
   - Test inference path: mock model returning 3-tuple, verify callback extracts policy/value
-  - Test checkpoint loading: load 2-head checkpoint into 3-head model without crash
-  - Document WHY: "Ownership prediction gives the network 361 spatial gradient signals per
-    position instead of a single scalar, dramatically accelerating Go training. KataGo's
-    ablation showed 1.65x slowdown without ownership/score targets."
+- Test checkpoint loading: load 2-head checkpoint into 3-head model without crash
+- Document WHY: "Ownership prediction gives the network 361 spatial gradient signals per
+  position instead of a single scalar, dramatically accelerating Go training. KataGo's
+  ablation showed 1.65x slowdown without ownership/score targets."
+
+- **Completion notes (2026-03-02)**:
+  - Added `GameConfig.supports_ownership` (`go=True`, `chess=False`) and implemented
+    `OwnershipHead` with small initialization (`std=0.01`, zero bias), wired into `ResNetSE`
+    so Go returns `(policy, value, ownership)` while chess remains `(policy, value)`.
+  - Added `ownership_loss()` (BCE-with-logits with 2x-logit scaling), threaded optional
+    ownership targets through replay batch parsing, training-step loss composition, and
+    `TrainingStepMetrics` (`loss/ownership`).
+  - Added `TrainingConfig.ownership_loss_weight` (default `0.0`) and set
+    `training.ownership_loss_weight: 1.5` in `configs/go.yaml`.
+  - Updated inference compatibility for optional third model output in:
+    `pipeline/orchestrator.py`, `pipeline/evaluation.py`, `scripts/train.py` warmup, and
+    `scripts/play.py`.
+  - Updated checkpoint loading to support backward-compatible head additions:
+    `load_checkpoint(..., strict=False)` now logs missing/unexpected keys and preserves
+    `strict=True` opt-in behavior.
+  - Added/updated tests for ownership head shape/init, Go 3-tuple forward path, ownership BCE
+    behavior, replay ownership tensor parsing, ownership-loss enable/disable behavior,
+    3-output inference adapter compatibility, checkpoint strict/non-strict loading, and config
+    ownership flags.
+  - Validation run:
+    - `python3 -m pytest tests/python/test_config.py tests/python/test_network.py tests/python/test_loss.py tests/python/test_training.py tests/python/test_orchestrator.py tests/python/test_checkpoint_utils.py tests/python/test_evaluation.py tests/python/test_play_script.py`
+    - `python3 -m pytest tests/python/test_integration_smoke.py`
+    - `python3 -m compileall python/alphazero/config.py python/alphazero/network python/alphazero/training python/alphazero/pipeline/orchestrator.py python/alphazero/pipeline/evaluation.py python/alphazero/utils/checkpoint.py scripts/train.py scripts/play.py tests/python/test_config.py tests/python/test_network.py tests/python/test_loss.py tests/python/test_training.py tests/python/test_orchestrator.py tests/python/test_checkpoint_utils.py`
+    - `ruff` and `mypy` were unavailable in this environment.
 
 ---
 

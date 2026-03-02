@@ -8,7 +8,7 @@ from torch import nn
 
 from alphazero.config import GameConfig
 from alphazero.network.base import AlphaZeroNetwork
-from alphazero.network.heads import PolicyHead, ScalarValueHead, WDLValueHead
+from alphazero.network.heads import OwnershipHead, PolicyHead, ScalarValueHead, WDLValueHead
 
 
 def _validate_positive_int(name: str, value: int) -> None:
@@ -97,6 +97,10 @@ class ResNetSE(AlphaZeroNetwork):
         else:
             self.value_head = WDLValueHead(num_filters=num_filters, board_shape=self.game_config.board_shape)
 
+        self.ownership_head: OwnershipHead | None = None
+        if self.game_config.supports_ownership:
+            self.ownership_head = OwnershipHead(num_filters=num_filters)
+
         self._initialize_weights()
 
     @classmethod
@@ -140,8 +144,14 @@ class ResNetSE(AlphaZeroNetwork):
         nn.init.zeros_(self.policy_head.linear.bias)
         nn.init.zeros_(self.value_head.linear.weight)
         nn.init.zeros_(self.value_head.linear.bias)
+        if self.ownership_head is not None:
+            nn.init.normal_(self.ownership_head.conv.weight, std=0.01)
+            nn.init.zeros_(self.ownership_head.conv.bias)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         self.validate_input_shape(x)
 
         features = functional.relu(self.input_bn(self.input_conv(x)))
@@ -150,6 +160,9 @@ class ResNetSE(AlphaZeroNetwork):
 
         policy_logits = self.policy_head(features)
         value = self.value_head(features)
+        if self.ownership_head is not None:
+            ownership_logits = self.ownership_head(features)
+            return policy_logits, value, ownership_logits
         return policy_logits, value
 
 

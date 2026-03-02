@@ -17,6 +17,7 @@ from alphazero.training.loss import (
     DEFAULT_L2_WEIGHT,
     ValueHeadType,
     l2_regularization_loss,
+    ownership_loss,
 )
 from alphazero.training.lr_schedule import (
     StepDecayLRSchedule,
@@ -80,6 +81,7 @@ DEFAULT_LOG_INTERVAL = 100
 DEFAULT_MIN_BUFFER_SIZE = 10_000
 DEFAULT_WAIT_FOR_BUFFER_SECONDS = 1.0
 DEFAULT_CHECKPOINT_KEEP_LAST = DEFAULT_ROLLING_CHECKPOINT_KEEP_LAST
+DEFAULT_OWNERSHIP_LOSS_WEIGHT = 0.0
 _LOSS_EPSILON = 1.0e-8
 
 
@@ -97,6 +99,7 @@ class TrainingConfig:
     log_interval: int = DEFAULT_LOG_INTERVAL
     min_buffer_size: int = DEFAULT_MIN_BUFFER_SIZE
     wait_for_buffer_seconds: float = DEFAULT_WAIT_FOR_BUFFER_SECONDS
+    ownership_loss_weight: float = DEFAULT_OWNERSHIP_LOSS_WEIGHT
     use_mixed_precision: bool = True
     device: str | torch.device | None = None
     checkpoint_dir: Path | None = None
@@ -113,6 +116,7 @@ class TrainingConfig:
         _coerce_positive_int("log_interval", self.log_interval)
         _coerce_non_negative_int("min_buffer_size", self.min_buffer_size)
         _coerce_positive_float("wait_for_buffer_seconds", self.wait_for_buffer_seconds)
+        _coerce_non_negative_float("ownership_loss_weight", self.ownership_loss_weight)
 
         if self.checkpoint_dir is not None and not isinstance(self.checkpoint_dir, Path):
             object.__setattr__(self, "checkpoint_dir", Path(self.checkpoint_dir))
@@ -133,6 +137,7 @@ class TrainingStepMetrics:
     loss_total: float
     loss_policy: float
     loss_value: float
+    loss_ownership: float
     loss_l2: float
     lr: float
     grad_global_norm: float
@@ -145,6 +150,7 @@ class TrainingStepMetrics:
             "loss/total": self.loss_total,
             "loss/policy": self.loss_policy,
             "loss/value": self.loss_value,
+            "loss/ownership": self.loss_ownership,
             "loss/l2": self.loss_l2,
             "lr": self.lr,
             "grad/global_norm": self.grad_global_norm,
@@ -230,7 +236,7 @@ def _prepare_replay_batch_from_positions(
     game_config: GameConfig,
     *,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Convert replay samples into dense training tensors."""
 
     if not sampled_positions:
@@ -258,6 +264,9 @@ def _prepare_replay_batch_from_positions(
     else:
         target_value = torch.empty((batch_size, value_dim), dtype=torch.float32, device=device)
     sample_weights = torch.ones((batch_size,), dtype=torch.float32, device=device)
+    board_area = rows * cols
+    ownership_target = torch.zeros((batch_size, board_area), dtype=torch.float32, device=device)
+    ownership_presence: list[bool] = []
 
     for sample_index, position in enumerate(sampled_positions):
         raw_state = _extract_position_field(position, "encoded_state")
@@ -332,10 +341,63 @@ def _prepare_replay_batch_from_positions(
             else 1.0
         )
 
-    return states, _normalize_policy_targets(target_policy), target_value, sample_weights
+        has_ownership = (isinstance(position, Mapping) and "ownership" in position) or hasattr(position, "ownership")
+        if not has_ownership:
+            ownership_presence.append(False)
+            continue
+
+        has_ownership_size = (isinstance(position, Mapping) and "ownership_size" in position) or hasattr(
+            position,
+            "ownership_size",
+        )
+        ownership_size = (
+            int(_extract_position_field(position, "ownership_size"))
+            if has_ownership_size
+            else board_area
+        )
+        if ownership_size == 0:
+            ownership_presence.append(False)
+            continue
+        if ownership_size != board_area:
+            raise ValueError(
+                "Replay sample ownership_size does not match board area: "
+                f"expected {board_area}, got {ownership_size}"
+            )
+
+        ownership_values = _as_float_tensor(
+            _extract_position_field(position, "ownership"),
+            device=device,
+        ).flatten()
+        if ownership_values.numel() < board_area:
+            raise ValueError(
+                "Replay sample ownership is smaller than board area"
+            )
+        ownership_target[sample_index] = ownership_values[:board_area]
+        ownership_presence.append(True)
+
+    ownership_tensor: torch.Tensor | None
+    any_ownership = any(ownership_presence)
+    if any_ownership and not all(ownership_presence):
+        raise ValueError("Replay sample batch mixes rows with and without ownership targets")
+    if any_ownership:
+        if not bool(torch.isfinite(ownership_target).all()):
+            raise ValueError("Replay sample ownership targets must be finite")
+        ownership_tensor = ownership_target
+    else:
+        ownership_tensor = None
+
+    return (
+        states,
+        _normalize_policy_targets(target_policy),
+        target_value,
+        sample_weights,
+        ownership_tensor,
+    )
 
 
-def _extract_packed_batch_fields(packed_batch: object) -> tuple[object, object, object, object | None]:
+def _extract_packed_batch_fields(
+    packed_batch: object,
+) -> tuple[object, object, object, object | None, object | None]:
     if isinstance(packed_batch, Mapping):
         required = ("states", "policies", "values")
         missing = [field for field in required if field not in packed_batch]
@@ -346,22 +408,22 @@ def _extract_packed_batch_fields(packed_batch: object) -> tuple[object, object, 
             packed_batch["policies"],
             packed_batch["values"],
             packed_batch.get("weights"),
+            packed_batch.get("ownership"),
         )
 
     if isinstance(packed_batch, Sequence) and not isinstance(packed_batch, (str, bytes)):
         if len(packed_batch) == 3:
-            return packed_batch[0], packed_batch[1], packed_batch[2], None
+            return packed_batch[0], packed_batch[1], packed_batch[2], None, None
         if len(packed_batch) == 4:
-            return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3]
+            return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3], None
         if len(packed_batch) == 5:
-            # Forward-compat: ownership targets may be appended as a 5th field by newer bindings.
-            return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3]
+            return packed_batch[0], packed_batch[1], packed_batch[2], packed_batch[3], packed_batch[4]
         if len(packed_batch) != 3:
             raise ValueError(
                 "Replay packed batch sequence must contain exactly three, four, or five entries: "
                 "(states, policies, values[, weights[, ownership]])"
             )
-        return packed_batch[0], packed_batch[1], packed_batch[2], None
+        return packed_batch[0], packed_batch[1], packed_batch[2], None, None
 
     raise TypeError(
         "Replay packed batch must be either a mapping with keys "
@@ -375,13 +437,13 @@ def _prepare_replay_batch_from_packed_arrays(
     *,
     batch_size: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     rows, cols = game_config.board_shape
     encoded_state_size = game_config.input_channels * rows * cols
     action_space_size = game_config.action_space_size
     value_dim = _value_dim_for_game_config(game_config)
 
-    raw_states, raw_policies, raw_values, raw_weights = _extract_packed_batch_fields(packed_batch)
+    raw_states, raw_policies, raw_values, raw_weights, raw_ownership = _extract_packed_batch_fields(packed_batch)
     flat_states = _as_float_tensor(raw_states, device=device)
     flat_policy = _as_float_tensor(raw_policies, device=device)
     flat_values = _as_float_tensor(raw_values, device=device)
@@ -461,7 +523,37 @@ def _prepare_replay_batch_from_packed_arrays(
 
     states = flat_states.reshape(batch_size, game_config.input_channels, rows, cols)
     target_policy = _normalize_policy_targets(flat_policy)
-    return states, target_policy, target_value, sample_weights
+    ownership_target: torch.Tensor | None = None
+    if raw_ownership is not None:
+        ownership_tensor = _as_float_tensor(raw_ownership, device=device)
+        board_area = rows * cols
+        if ownership_tensor.ndim == 1:
+            if ownership_tensor.numel() == 0:
+                ownership_target = None
+            elif tuple(ownership_tensor.shape) == (batch_size * board_area,):
+                ownership_target = ownership_tensor.reshape(batch_size, board_area)
+            else:
+                raise ValueError(
+                    "Replay packed batch ownership has incorrect shape: "
+                    f"expected {(batch_size * board_area,)} or {(batch_size, board_area)}, "
+                    f"got {tuple(ownership_tensor.shape)}"
+                )
+        elif ownership_tensor.ndim == 2:
+            expected_ownership_shape = (batch_size, board_area)
+            if tuple(ownership_tensor.shape) != expected_ownership_shape:
+                raise ValueError(
+                    "Replay packed batch ownership has incorrect shape: "
+                    f"expected {expected_ownership_shape}, got {tuple(ownership_tensor.shape)}"
+                )
+            ownership_target = ownership_tensor
+        else:
+            raise ValueError(
+                "Replay packed batch ownership must be rank 1 or 2, "
+                f"got rank {ownership_tensor.ndim}"
+            )
+        if ownership_target is not None and not bool(torch.isfinite(ownership_target).all()):
+            raise ValueError("Replay packed batch ownership targets must be finite")
+    return states, target_policy, target_value, sample_weights, ownership_target
 
 
 def prepare_replay_batch(
@@ -472,7 +564,7 @@ def prepare_replay_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Convert replay samples into dense training tensors."""
 
-    states, target_policy, target_value, _sample_weights = _prepare_replay_batch_from_positions(
+    states, target_policy, target_value, _sample_weights, _ownership_target = _prepare_replay_batch_from_positions(
         sampled_positions,
         game_config,
         device=device,
@@ -486,7 +578,7 @@ def sample_replay_batch_tensors(
     *,
     batch_size: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Sample one mini-batch from replay and convert it into dense training tensors."""
 
     rows, cols = game_config.board_shape
@@ -584,6 +676,43 @@ def apply_random_go_symmetry(
     return transformed_states, transformed_policy
 
 
+def _apply_go_symmetry_to_ownership_targets(
+    ownership_target: torch.Tensor,
+    *,
+    board_shape: tuple[int, int],
+    symmetry_indices: torch.Tensor,
+) -> torch.Tensor:
+    if ownership_target.ndim != 2:
+        raise ValueError(
+            "ownership_target must have shape (batch, board_area), "
+            f"got {tuple(ownership_target.shape)}"
+        )
+    batch_size = ownership_target.shape[0]
+    rows, cols = board_shape
+    board_area = rows * cols
+    if tuple(ownership_target.shape) != (batch_size, board_area):
+        raise ValueError(
+            f"ownership_target must have shape ({batch_size}, {board_area}), "
+            f"got {tuple(ownership_target.shape)}"
+        )
+    if tuple(symmetry_indices.shape) != (batch_size,):
+        raise ValueError(
+            f"symmetry_indices must have shape ({batch_size},), got {tuple(symmetry_indices.shape)}"
+        )
+
+    ownership_board = ownership_target.reshape(batch_size, rows, cols)
+    transformed_ownership_board = ownership_board.clone()
+    for symmetry_index in range(8):
+        sample_mask = symmetry_indices == symmetry_index
+        if not bool(sample_mask.any()):
+            continue
+        transformed_ownership_board[sample_mask] = _apply_dihedral_transform(
+            ownership_board[sample_mask],
+            symmetry_index,
+        )
+    return transformed_ownership_board.reshape(batch_size, board_area)
+
+
 def _create_grad_scaler(*, device: torch.device, enabled: bool) -> Any:
     try:
         return torch.amp.GradScaler(device=device.type, enabled=enabled)
@@ -671,7 +800,9 @@ def train_one_step(
     states: torch.Tensor,
     target_policy: torch.Tensor,
     target_value: torch.Tensor,
+    ownership_target: torch.Tensor | None = None,
     sample_weights: torch.Tensor | None = None,
+    ownership_loss_weight: float = DEFAULT_OWNERSHIP_LOSS_WEIGHT,
     game_config: GameConfig,
     lr_schedule: StepDecayLRSchedule,
     global_step: int,
@@ -696,6 +827,8 @@ def train_one_step(
         batch_size=batch_size,
         device=states.device,
     )
+    if ownership_loss_weight < 0.0:
+        raise ValueError(f"ownership_loss_weight must be non-negative, got {ownership_loss_weight}")
 
     value_type: ValueHeadType
     if game_config.value_head_type == "scalar":
@@ -712,7 +845,22 @@ def train_one_step(
         dtype=torch.bfloat16,
         enabled=use_mixed_precision,
     ):
-        policy_logits, predicted_value = model(states)
+        model_output = model(states)
+        if not isinstance(model_output, (tuple, list)):
+            raise TypeError(
+                "model(states) must return a tuple/list containing policy/value tensors "
+                f"(and optional ownership), got {type(model_output).__name__}"
+            )
+        if len(model_output) == 2:
+            policy_logits, predicted_value = model_output
+            predicted_ownership_logits = None
+        elif len(model_output) == 3:
+            policy_logits, predicted_value, predicted_ownership_logits = model_output
+        else:
+            raise ValueError(
+                "model(states) must return a 2-tuple (policy, value) or "
+                "3-tuple (policy, value, ownership)"
+            )
         if policy_logits.ndim != 2:
             raise ValueError(
                 "policy_logits must have shape (batch, action_space_size), "
@@ -782,10 +930,27 @@ def train_one_step(
             )
         value_loss = (value_per_sample * weights).mean()
 
+        loss_ownership = torch.zeros((), dtype=torch.float32, device=policy_loss.device)
+        if (
+            ownership_loss_weight > 0.0
+            and predicted_ownership_logits is not None
+            and ownership_target is not None
+        ):
+            loss_ownership = ownership_loss(
+                predicted_ownership_logits,
+                ownership_target.to(device=policy_loss.device),
+                weights.to(device=policy_loss.device),
+            )
+
         l2_loss = l2_regularization_loss(model)
         if l2_loss.device != policy_loss.device:
             l2_loss = l2_loss.to(device=policy_loss.device)
-        total_loss = policy_loss + value_loss + (float(l2_reg) * l2_loss)
+        total_loss = (
+            policy_loss
+            + value_loss
+            + (float(ownership_loss_weight) * loss_ownership)
+            + (float(l2_reg) * l2_loss)
+        )
 
     if not torch.isfinite(total_loss):
         raise FloatingPointError("Encountered non-finite total loss")
@@ -793,6 +958,8 @@ def train_one_step(
         raise FloatingPointError("Encountered non-finite policy loss")
     if not torch.isfinite(value_loss):
         raise FloatingPointError("Encountered non-finite value loss")
+    if not torch.isfinite(loss_ownership):
+        raise FloatingPointError("Encountered non-finite ownership loss")
 
     scaler.scale(total_loss).backward()
     scaler.unscale_(optimizer)
@@ -812,6 +979,7 @@ def train_one_step(
             total_loss.detach(),
             policy_loss.detach(),
             value_loss.detach(),
+            loss_ownership.detach(),
             l2_loss.detach(),
         ]
     ).cpu().tolist()
@@ -820,7 +988,8 @@ def train_one_step(
         loss_total=loss_values[0],
         loss_policy=loss_values[1],
         loss_value=loss_values[2],
-        loss_l2=loss_values[3],
+        loss_ownership=loss_values[3],
+        loss_l2=loss_values[4],
         lr=lr,
         grad_global_norm=grad_global_norm,
         grad_nonzero_param_count=nonzero_grad_parameters,
@@ -942,6 +1111,9 @@ def load_training_config_from_config(config: Mapping[str, Any]) -> TrainingConfi
         milestone_interval=int(training.get("milestone_interval", DEFAULT_MILESTONE_INTERVAL)),
         log_interval=int(training.get("log_interval", DEFAULT_LOG_INTERVAL)),
         min_buffer_size=int(training.get("min_buffer_size", DEFAULT_MIN_BUFFER_SIZE)),
+        ownership_loss_weight=float(
+            training.get("ownership_loss_weight", DEFAULT_OWNERSHIP_LOSS_WEIGHT)
+        ),
         checkpoint_dir=checkpoint_dir,
     )
 
@@ -1003,7 +1175,7 @@ def training_loop(
             sleep_fn(training_config.wait_for_buffer_seconds)
             continue
 
-        states, target_policy, target_value, sample_weights = sample_replay_batch_tensors(
+        states, target_policy, target_value, sample_weights, ownership_target = sample_replay_batch_tensors(
             replay_buffer,
             game_config,
             batch_size=training_config.batch_size,
@@ -1011,7 +1183,23 @@ def training_loop(
         )
 
         if game_config.supports_symmetry:
-            states, target_policy = apply_random_go_symmetry(states, target_policy)
+            symmetry_indices = torch.randint(
+                low=0,
+                high=8,
+                size=(states.shape[0],),
+                device=states.device,
+            )
+            states, target_policy = apply_random_go_symmetry(
+                states,
+                target_policy,
+                symmetry_indices=symmetry_indices,
+            )
+            if ownership_target is not None:
+                ownership_target = _apply_go_symmetry_to_ownership_targets(
+                    ownership_target,
+                    board_shape=game_config.board_shape,
+                    symmetry_indices=symmetry_indices,
+                )
 
         step_metrics = train_one_step(
             model,
@@ -1019,7 +1207,9 @@ def training_loop(
             states=states,
             target_policy=target_policy,
             target_value=target_value,
+            ownership_target=ownership_target,
             sample_weights=sample_weights,
+            ownership_loss_weight=training_config.ownership_loss_weight,
             game_config=game_config,
             lr_schedule=active_schedule,
             global_step=step,
@@ -1034,6 +1224,7 @@ def training_loop(
             loss_total=step_metrics.loss_total,
             loss_policy=step_metrics.loss_policy,
             loss_value=step_metrics.loss_value,
+            loss_ownership=step_metrics.loss_ownership,
             loss_l2=step_metrics.loss_l2,
             lr=step_metrics.lr,
             grad_global_norm=step_metrics.grad_global_norm,

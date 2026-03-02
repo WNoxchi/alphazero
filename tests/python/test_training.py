@@ -179,9 +179,25 @@ if _TORCH_AVAILABLE:
             return policy_logits, value
 
 
+if _TORCH_AVAILABLE:
+
+    class _TinyPolicyValueOwnershipNetwork(_TinyPolicyValueNetwork):
+        def __init__(self, game_config: GameConfig) -> None:
+            super().__init__(game_config)
+            rows, cols = game_config.board_shape
+            self._ownership = nn.Linear(64, rows * cols)
+
+        def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            features = torch.tanh(self._hidden(self._flatten(x)))
+            policy_logits = self._policy(features)
+            value = torch.tanh(self._value(features))
+            ownership = self._ownership(features)
+            return policy_logits, value, ownership
+
+
 @unittest.skipUnless(_TORCH_AVAILABLE, "torch is required for training-loop tests")
 class TrainingLoopTests(unittest.TestCase):
-    def _toy_game_config(self, *, supports_symmetry: bool) -> GameConfig:
+    def _toy_game_config(self, *, supports_symmetry: bool, supports_ownership: bool = False) -> GameConfig:
         num_symmetries = 8 if supports_symmetry else 1
         return GameConfig(
             name="toy",
@@ -191,6 +207,7 @@ class TrainingLoopTests(unittest.TestCase):
             value_head_type="scalar",
             supports_symmetry=supports_symmetry,
             num_symmetries=num_symmetries,
+            supports_ownership=supports_ownership,
         )
 
     def _make_replay_positions(self, game_config: GameConfig, *, count: int = 8) -> list[_ReplayPosition]:
@@ -349,7 +366,7 @@ class TrainingLoopTests(unittest.TestCase):
             action_to_weight[action] = position.training_weight
 
         replay_buffer = _PackedReplayBuffer(positions)
-        _states, target_policy, _target_value, sample_weights = sample_replay_batch_tensors(
+        _states, target_policy, _target_value, sample_weights, ownership_target = sample_replay_batch_tensors(
             replay_buffer,
             config,
             batch_size=8,
@@ -357,6 +374,7 @@ class TrainingLoopTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(sample_weights.shape), (8,))
+        self.assertIsNone(ownership_target)
         for row in range(sample_weights.shape[0]):
             action = int(torch.argmax(target_policy[row]).item())
             self.assertAlmostEqual(float(sample_weights[row]), action_to_weight[action], places=6)
@@ -369,7 +387,7 @@ class TrainingLoopTests(unittest.TestCase):
             position.training_weight = 0.5 + (0.1 * index)
         replay_buffer = _LegacyPackedReplayBuffer(positions)
 
-        _states, _target_policy, _target_value, sample_weights = sample_replay_batch_tensors(
+        _states, _target_policy, _target_value, sample_weights, ownership_target = sample_replay_batch_tensors(
             replay_buffer,
             config,
             batch_size=8,
@@ -377,6 +395,7 @@ class TrainingLoopTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.allclose(sample_weights, torch.ones_like(sample_weights)))
+        self.assertIsNone(ownership_target)
 
     def test_sample_replay_batch_tensors_accepts_five_field_batches_with_ownership_suffix(self) -> None:
         """Ensures packed replay parsing remains forward-compatible when bindings append ownership arrays."""
@@ -384,7 +403,7 @@ class TrainingLoopTests(unittest.TestCase):
         positions = self._make_replay_positions(config, count=4)
         replay_buffer = _OwnershipPackedReplayBuffer(positions)
 
-        _states, _target_policy, _target_value, sample_weights = sample_replay_batch_tensors(
+        _states, _target_policy, _target_value, sample_weights, ownership_target = sample_replay_batch_tensors(
             replay_buffer,
             config,
             batch_size=8,
@@ -392,6 +411,79 @@ class TrainingLoopTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(sample_weights.shape), (8,))
+        self.assertIsNotNone(ownership_target)
+        assert ownership_target is not None
+        self.assertEqual(tuple(ownership_target.shape), (8, 9))
+
+    def test_train_one_step_reports_nonzero_ownership_loss_when_enabled(self) -> None:
+        """WHY: Go ownership supervision must contribute an explicit loss term when head outputs and targets exist."""
+        torch.manual_seed(11)
+        config = self._toy_game_config(supports_symmetry=False, supports_ownership=True)
+        model = _TinyPolicyValueOwnershipNetwork(config)
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer = create_optimizer(model, lr_schedule=schedule, momentum=0.9)
+        scaler = self._make_scaler()
+
+        positions = self._make_replay_positions(config, count=4)
+        states, target_policy, target_value = prepare_replay_batch(
+            positions,
+            config,
+            device=torch.device("cpu"),
+        )
+        ownership_target = torch.zeros((states.shape[0], 9), dtype=torch.float32)
+
+        metrics = train_one_step(
+            model,
+            optimizer,
+            states=states,
+            target_policy=target_policy,
+            target_value=target_value,
+            ownership_target=ownership_target,
+            ownership_loss_weight=1.5,
+            game_config=config,
+            lr_schedule=schedule,
+            global_step=0,
+            l2_reg=0.0,
+            scaler=scaler,
+            use_mixed_precision=False,
+        )
+
+        self.assertGreater(metrics.loss_ownership, 0.0)
+
+    def test_train_one_step_disables_ownership_loss_when_weight_is_zero(self) -> None:
+        """WHY: ownership_loss_weight=0 must cleanly disable auxiliary ownership optimization for ablations."""
+        torch.manual_seed(13)
+        config = self._toy_game_config(supports_symmetry=False, supports_ownership=True)
+        model = _TinyPolicyValueOwnershipNetwork(config)
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer = create_optimizer(model, lr_schedule=schedule, momentum=0.9)
+        scaler = self._make_scaler()
+
+        positions = self._make_replay_positions(config, count=4)
+        states, target_policy, target_value = prepare_replay_batch(
+            positions,
+            config,
+            device=torch.device("cpu"),
+        )
+        ownership_target = torch.ones((states.shape[0], 9), dtype=torch.float32)
+
+        metrics = train_one_step(
+            model,
+            optimizer,
+            states=states,
+            target_policy=target_policy,
+            target_value=target_value,
+            ownership_target=ownership_target,
+            ownership_loss_weight=0.0,
+            game_config=config,
+            lr_schedule=schedule,
+            global_step=0,
+            l2_reg=0.0,
+            scaler=scaler,
+            use_mixed_precision=False,
+        )
+
+        self.assertAlmostEqual(metrics.loss_ownership, 0.0, places=7)
 
     def test_train_one_step_uses_sample_weights_for_policy_and_value_terms(self) -> None:
         """Verifies playout-cap weights scale optimization loss so zero-weight batches do not update model parameters."""
@@ -552,8 +644,8 @@ class TrainingLoopTests(unittest.TestCase):
         self.assertGreater(metrics.grad_nonzero_param_count, 0)
         self.assertGreater(metrics.grad_global_norm, 0.0)
 
-    def test_train_one_step_batches_loss_metric_transfer_with_single_four_scalar_stack(self) -> None:
-        """Guards TASK-04's GPU sync reduction by requiring one dedicated 4-loss stack in train_one_step."""
+    def test_train_one_step_batches_loss_metric_transfer_with_single_five_scalar_stack(self) -> None:
+        """Guards loss-metric transfer efficiency by requiring one dedicated 5-loss stack in train_one_step."""
         torch.manual_seed(17)
         config = self._toy_game_config(supports_symmetry=False)
         model = _TinyPolicyValueNetwork(config)
@@ -600,11 +692,12 @@ class TrainingLoopTests(unittest.TestCase):
                 use_mixed_precision=False,
             )
 
-        four_scalar_stacks = [signature for signature in stack_signatures if signature == (4, (0, 0, 0, 0))]
-        self.assertEqual(len(four_scalar_stacks), 1)
+        five_scalar_stacks = [signature for signature in stack_signatures if signature == (5, (0, 0, 0, 0, 0))]
+        self.assertEqual(len(five_scalar_stacks), 1)
         self.assertIsInstance(metrics.loss_total, float)
         self.assertIsInstance(metrics.loss_policy, float)
         self.assertIsInstance(metrics.loss_value, float)
+        self.assertIsInstance(metrics.loss_ownership, float)
         self.assertIsInstance(metrics.loss_l2, float)
 
     def test_training_loop_waits_for_min_buffer_then_reduces_loss_and_logs(self) -> None:

@@ -23,6 +23,7 @@ if _TORCH_AVAILABLE:
         compute_loss,
         compute_loss_components,
         l2_regularization_loss,
+        ownership_loss,
         policy_cross_entropy_loss,
         scalar_value_loss,
         wdl_value_loss,
@@ -113,6 +114,27 @@ class LossFunctionTests(unittest.TestCase):
         expected = -(math.log(0.7) + math.log(0.6) + math.log(0.6)) / 3.0
 
         self.assertAlmostEqual(observed.item(), expected, places=6)
+
+    def test_ownership_loss_matches_reference_values_at_zero_logits(self) -> None:
+        """WHY: ownership BCE should match analytic 0.693 baseline for neutral logits across {-1,0,+1} targets."""
+        logits = torch.zeros((2, 3), dtype=torch.float32)
+        target = torch.tensor(
+            [[1.0, 0.0, -1.0], [0.0, 1.0, -1.0]],
+            dtype=torch.float32,
+        )
+        weights = torch.ones((2,), dtype=torch.float32)
+
+        observed = ownership_loss(logits, target, weights)
+        self.assertAlmostEqual(observed.item(), math.log(2.0), places=6)
+
+    def test_ownership_loss_is_near_zero_for_confident_correct_predictions(self) -> None:
+        """WHY: auxiliary head must reward strongly correct territorial predictions with near-zero error."""
+        logits = torch.tensor([[5.0, -5.0]], dtype=torch.float32)
+        target = torch.tensor([[1.0, -1.0]], dtype=torch.float32)
+        weights = torch.ones((1,), dtype=torch.float32)
+
+        observed = ownership_loss(logits, target, weights)
+        self.assertLess(observed.item(), 1e-3)
 
     def test_l2_regularization_includes_weights_and_biases(self) -> None:
         """Guards explicit L2 behavior expected by the pipeline loss pseudocode."""

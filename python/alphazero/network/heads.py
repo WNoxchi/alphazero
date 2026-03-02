@@ -85,4 +85,18 @@ class WDLValueHead(_ValueHeadBase):
         return torch.softmax(self._forward_logits(x), dim=-1)
 
 
-__all__ = ["PolicyHead", "ScalarValueHead", "WDLValueHead"]
+class OwnershipHead(nn.Module):
+    """Predict per-intersection ownership logits for auxiliary Go training."""
+
+    def __init__(self, *, num_filters: int) -> None:
+        super().__init__()
+        _validate_positive_int("num_filters", num_filters)
+        self.conv = nn.Conv2d(num_filters, 1, kernel_size=1, stride=1, padding=0, bias=True)
+        nn.init.normal_(self.conv.weight, std=0.01)
+        nn.init.zeros_(self.conv.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x).flatten(start_dim=1)
+
+
+__all__ = ["OwnershipHead", "PolicyHead", "ScalarValueHead", "WDLValueHead"]

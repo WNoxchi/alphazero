@@ -43,6 +43,7 @@ training:
     - [500000, 0.0002]
   momentum: 0.9
   l2_reg: 0.0001
+  ownership_loss_weight: 1.5      # KataGo-style auxiliary ownership BCE loss
   checkpoint_interval: 1000
   milestone_interval: 25000
   log_interval: 50

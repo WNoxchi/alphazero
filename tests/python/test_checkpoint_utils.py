@@ -210,6 +210,48 @@ class CheckpointUtilityTests(unittest.TestCase):
         from_fields = extract_replay_buffer_metadata(_ReplayWithFields())
         self.assertEqual(from_fields, {"write_head": 4, "count": 3})
 
+    def test_load_checkpoint_supports_non_strict_model_loading_for_new_heads(self) -> None:
+        """WHY: backward-compatible resume must load old checkpoints into newer models with extra heads."""
+        model, optimizer = self._build_model_and_optimizer()
+        self._prime_optimizer_state(model, optimizer)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_dir = pathlib.Path(temp_dir)
+            saved = save_checkpoint(
+                model,
+                optimizer,
+                step=42,
+                checkpoint_dir=checkpoint_dir,
+                export_folded_weights=False,
+            )
+
+            class _ModelWithAuxHead(_TinyCheckpointNet):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.aux = nn.Linear(8, 8)
+
+            upgraded_model = _ModelWithAuxHead()
+            aux_before = upgraded_model.aux.weight.detach().clone()
+
+            loaded = load_checkpoint(
+                saved.checkpoint_path,
+                upgraded_model,
+                optimizer=None,
+                map_location="cpu",
+                strict=False,
+            )
+            self.assertEqual(loaded.step, 42)
+            self.assertTrue(torch.allclose(upgraded_model.aux.weight, aux_before))
+
+            with self.assertRaises(RuntimeError):
+                load_checkpoint(
+                    saved.checkpoint_path,
+                    upgraded_model,
+                    optimizer=None,
+                    map_location="cpu",
+                    strict=True,
+                )
+
 
 def _import_cpp_bindings():
     """Try to import alphazero_cpp (same approach as test_bindings.py)."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
@@ -19,6 +20,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional tor
 
 DEFAULT_ROLLING_CHECKPOINT_KEEP_LAST = 10
 _CHECKPOINT_FILE_RE = re.compile(r"^(checkpoint|milestone)_(\d{8})\.pt$")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +462,7 @@ def load_checkpoint(
     optimizer: Any | None = None,
     *,
     map_location: str | Any | None = None,
+    strict: bool = False,
 ) -> LoadedCheckpoint:
     """Load model, optimizer, and scheduler metadata from a checkpoint."""
 
@@ -473,7 +476,18 @@ def load_checkpoint(
             "Checkpoint payload is missing required keys: 'model_state_dict' and 'step'"
         )
 
-    model.load_state_dict(payload["model_state_dict"])
+    load_result = model.load_state_dict(payload["model_state_dict"], strict=strict)
+    if not strict:
+        if load_result.missing_keys:
+            _LOGGER.info(
+                "Checkpoint missing model keys (layers use initialization defaults): %s",
+                list(load_result.missing_keys),
+            )
+        if load_result.unexpected_keys:
+            _LOGGER.warning(
+                "Checkpoint contains unexpected model keys: %s",
+                list(load_result.unexpected_keys),
+            )
     if optimizer is not None and "optimizer_state_dict" in payload:
         optimizer.load_state_dict(payload["optimizer_state_dict"])
 
@@ -512,6 +526,7 @@ def load_latest_checkpoint(
     *,
     include_milestones: bool = True,
     map_location: str | Any | None = None,
+    strict: bool = False,
 ) -> LoadedCheckpoint | None:
     """Load the newest checkpoint from a directory if one exists."""
 
@@ -526,6 +541,7 @@ def load_latest_checkpoint(
         model,
         optimizer,
         map_location=map_location,
+        strict=strict,
     )
 
 

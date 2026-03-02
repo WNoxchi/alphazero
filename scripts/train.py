@@ -328,7 +328,21 @@ def _warmup_compiled_model(
         dtype=torch.bfloat16,
         enabled=use_mixed_precision,
     ):
-        policy, value = model(dummy_train)
+        model_output = model(dummy_train)
+        if not isinstance(model_output, (tuple, list)):
+            raise TypeError(
+                "model(dummy_train) must return tuple/list with policy/value "
+                f"(and optional ownership), got {type(model_output).__name__}"
+            )
+        if len(model_output) == 2:
+            policy, value = model_output
+        elif len(model_output) == 3:
+            policy, value, _ownership = model_output
+        else:
+            raise ValueError(
+                "model(dummy_train) must return a 2-tuple (policy, value) "
+                "or 3-tuple (policy, value, ownership)"
+            )
         loss = policy.sum() + value.sum()
         loss.backward()
     model.zero_grad(set_to_none=True)

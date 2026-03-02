@@ -247,6 +247,43 @@ class EvalQueueModelAdapterTests(unittest.TestCase):
         self.assertAlmostEqual(float(value_scalars[0]), -0.5, places=6)
         self.assertAlmostEqual(float(value_scalars[1]), 0.5, places=6)
 
+    def test_adapter_ignores_optional_ownership_output_from_three_head_model(self) -> None:
+        """WHY: Go ownership head is auxiliary-only; eval queue must still consume policy/value without unpack errors."""
+
+        class _ScalarOwnershipModel(nn.Module):
+            def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                batch_size = x.shape[0]
+                policy = torch.zeros(
+                    (batch_size, GO_CONFIG.action_space_size),
+                    dtype=torch.float32,
+                    device=x.device,
+                )
+                value = torch.full((batch_size, 1), 0.25, dtype=torch.float32, device=x.device)
+                ownership = torch.ones(
+                    (batch_size, GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]),
+                    dtype=torch.float32,
+                    device=x.device,
+                )
+                return policy, value, ownership
+
+        model = _ScalarOwnershipModel()
+        evaluator = make_eval_queue_batch_evaluator(
+            model,
+            GO_CONFIG,
+            device="cpu",
+            use_mixed_precision=False,
+        )
+        import numpy as np
+
+        encoded_size = GO_CONFIG.input_channels * GO_CONFIG.board_shape[0] * GO_CONFIG.board_shape[1]
+        policy_logits, value_scalars = evaluator(
+            np.asarray([[0.0] * encoded_size], dtype=np.float32)
+        )
+
+        self.assertEqual(tuple(policy_logits.shape), (1, GO_CONFIG.action_space_size))
+        self.assertEqual(tuple(value_scalars.shape), (1,))
+        self.assertAlmostEqual(float(value_scalars[0]), 0.25, places=6)
+
     def test_wdl_value_head_adapter_maps_wdl_to_scalar_win_minus_loss(self) -> None:
         """Protects chess value conversion contract used by MCTS backup."""
 

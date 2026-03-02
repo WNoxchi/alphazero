@@ -41,14 +41,19 @@ class AlphaZeroNetwork(nn.Module, ABC):
             )
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run a forward pass.
 
         Args:
             x: Board state tensor with shape `(batch, C_in, H, W)`.
 
         Returns:
-            A tuple of `(policy_logits, value)` where:
+            A tuple of `(policy_logits, value)` or
+            `(policy_logits, value, ownership_logits)` where:
             - `policy_logits` has shape `(batch, action_space_size)`.
             - `value` has shape `(batch, 1)` for scalar heads or `(batch, 3)` for WDL heads.
+            - `ownership_logits` has shape `(batch, board_area)` when present.
         """

@@ -21,6 +21,7 @@ class GameConfig:
     value_head_type: str
     supports_symmetry: bool
     num_symmetries: int
+    supports_ownership: bool = False
     float_plane_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
@@ -78,6 +79,7 @@ CHESS_CONFIG = GameConfig(
     action_space_size=4672,
     value_head_type="wdl",
     supports_symmetry=False,
+    supports_ownership=False,
     num_symmetries=1,
     float_plane_indices=(113, 118),
 )
@@ -89,6 +91,7 @@ GO_CONFIG = GameConfig(
     action_space_size=362,
     value_head_type="scalar",
     supports_symmetry=True,
+    supports_ownership=True,
     num_symmetries=8,
     float_plane_indices=(),
 )
