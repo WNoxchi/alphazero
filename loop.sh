@@ -19,6 +19,7 @@ for i in $(seq 1 "$N"); do
 
   codex exec \
     --color always \
+    --full-auto \
     -o "$BUILD_OUTFILE" \
     "$BUILD_PROMPT"
 
@@ -31,6 +32,7 @@ for i in $(seq 1 "$N"); do
   echo "=== Iteration $i / $N — REVIEW ==="
 
   claude -p "$REVIEW_PROMPT" \
+    --allowedTools "Read Write Edit Glob Grep Bash(git:*)" \
     --output-format json \
     --verbose \
     2>&1 | tee /dev/stderr | jq '.' > "$REVIEW_OUTFILE"
