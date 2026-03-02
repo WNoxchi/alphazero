@@ -17,6 +17,7 @@ using alphazero::go::kBoardArea;
 using alphazero::go::kBoardSize;
 using alphazero::go::kDefaultKomi;
 using alphazero::go::kEmpty;
+using alphazero::go::kMinPassMove;
 using alphazero::go::kPassAction;
 using alphazero::go::kWhite;
 
@@ -326,10 +327,22 @@ TEST(GoRulesEngineTest, SelfCaptureIsRejectedWhenNoOpponentGroupIsCaptured) {
     EXPECT_EQ(alphazero::go::stone_at(result.position, I(10, 10)), kEmpty);
 }
 
+// WHY: Forbidding opening passes removes degenerate double-pass self-play trajectories in early Go training.
+TEST(GoRulesEngineTest, PassIsRejectedBeforeMinimumMoveNumber) {
+    GoPosition position{};
+    position.side_to_move = kBlack;
+    position.move_number = kMinPassMove - 1;
+
+    const auto result = alphazero::go::play_action(position, kPassAction);
+    EXPECT_FALSE(result.legal());
+    EXPECT_EQ(result.status, MoveStatus::kPassTooEarly);
+}
+
 // WHY: Pass handling drives Go game termination; two consecutive passes must be detectable as terminal.
 TEST(GoRulesEngineTest, PassesIncrementCounterAndTwoPassesEndTheGame) {
     GoPosition position{};
     position.side_to_move = kBlack;
+    position.move_number = kMinPassMove;
 
     const auto first_pass = alphazero::go::play_action(position, kPassAction);
     ASSERT_TRUE(first_pass.legal());

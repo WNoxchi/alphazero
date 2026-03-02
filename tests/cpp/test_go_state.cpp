@@ -1,6 +1,8 @@
 #include "games/go/go_config.h"
+#include "games/go/go_rules.h"
 #include "games/go/go_state.h"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -16,6 +18,7 @@ using alphazero::go::kBlack;
 using alphazero::go::kBoardArea;
 using alphazero::go::kBoardSize;
 using alphazero::go::kEmpty;
+using alphazero::go::kMinPassMove;
 using alphazero::go::kPassAction;
 using alphazero::go::kWhite;
 
@@ -87,7 +90,9 @@ TEST(GoStateTest, GoGameConfigMatchesSpecAndCreatesInitialState) {
     ASSERT_NE(go_state, nullptr);
     EXPECT_EQ(go_state->current_player(), GoState::kBlackPlayer);
     EXPECT_EQ(go_state->history_size(), 1);
-    EXPECT_EQ(go_state->legal_actions().size(), static_cast<std::size_t>(kActionSpaceSize));
+    const std::vector<int> legal_actions = go_state->legal_actions();
+    EXPECT_EQ(legal_actions.size(), static_cast<std::size_t>(kBoardArea));
+    EXPECT_EQ(std::find(legal_actions.begin(), legal_actions.end(), kPassAction), legal_actions.end());
 }
 
 // WHY: Self-play depends on immutable transitions and legal-action filtering, including robust rejection of illegal moves.
@@ -101,7 +106,7 @@ TEST(GoStateTest, ApplyActionTransitionsStateAndRejectsIllegalMoves) {
     EXPECT_EQ(next_state->current_player(), GoState::kWhitePlayer);
     EXPECT_EQ(next_state->position().move_number, 1);
     EXPECT_EQ(next_state->history_size(), 2);
-    EXPECT_EQ(next_state->legal_actions().size(), static_cast<std::size_t>(kActionSpaceSize - 1));
+    EXPECT_EQ(next_state->legal_actions().size(), static_cast<std::size_t>(kBoardArea - 1));
     EXPECT_NE(next_state->hash(), state.hash());
 
     std::unique_ptr<alphazero::GameState> cloned_base = next_state->clone();
@@ -112,6 +117,53 @@ TEST(GoStateTest, ApplyActionTransitionsStateAndRejectsIllegalMoves) {
 
     EXPECT_THROW(state.apply_action(-1), std::invalid_argument);
     EXPECT_THROW(next_state->apply_action(I(3, 3)), std::invalid_argument);
+}
+
+// WHY: Early Go passes create a degenerate self-play equilibrium; enforcing a minimum move index removes that trap.
+TEST(GoStateTest, PassIsForbiddenBeforeMoveThirtyAndLegalAfterward) {
+    for (const int move_number : {0, 15, 29}) {
+        SCOPED_TRACE("move_number=" + std::to_string(move_number));
+        GoPosition position{};
+        position.move_number = move_number;
+        const GoState state(position);
+        const std::vector<int> legal_actions = state.legal_actions();
+
+        EXPECT_FALSE(alphazero::go::is_legal_action(position, kPassAction));
+        EXPECT_EQ(std::find(legal_actions.begin(), legal_actions.end(), kPassAction), legal_actions.end());
+        EXPECT_THROW(state.apply_action(kPassAction), std::invalid_argument);
+    }
+
+    for (const int move_number : {kMinPassMove, 31, 100}) {
+        SCOPED_TRACE("move_number=" + std::to_string(move_number));
+        GoPosition position{};
+        position.move_number = move_number;
+        const GoState state(position);
+        const std::vector<int> legal_actions = state.legal_actions();
+
+        EXPECT_TRUE(alphazero::go::is_legal_action(position, kPassAction));
+        EXPECT_NE(std::find(legal_actions.begin(), legal_actions.end(), kPassAction), legal_actions.end());
+
+        std::unique_ptr<GoState> passed_state = apply_action_as_go_state(state, kPassAction);
+        EXPECT_EQ(passed_state->position().move_number, move_number + 1);
+        EXPECT_EQ(passed_state->position().consecutive_passes, 1);
+    }
+}
+
+// WHY: Restricting early passes must not break normal terminal handling once the opening phase is complete.
+TEST(GoStateTest, DoublePassStillTerminatesAfterMinimumPassMove) {
+    GoPosition position{};
+    position.move_number = kMinPassMove;
+
+    GoState state(position);
+    std::unique_ptr<GoState> first_pass = apply_action_as_go_state(state, kPassAction);
+    ASSERT_NE(first_pass, nullptr);
+    EXPECT_FALSE(first_pass->is_terminal());
+    EXPECT_EQ(first_pass->position().consecutive_passes, 1);
+
+    std::unique_ptr<GoState> second_pass = apply_action_as_go_state(*first_pass, kPassAction);
+    ASSERT_NE(second_pass, nullptr);
+    EXPECT_TRUE(second_pass->is_terminal());
+    EXPECT_EQ(second_pass->position().consecutive_passes, 2);
 }
 
 // WHY: Correct terminal/outcome semantics ensure training labels are accurate when games end by pass or move cap.

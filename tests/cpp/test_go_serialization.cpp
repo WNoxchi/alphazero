@@ -14,6 +14,7 @@ using alphazero::go::GoState;
 using alphazero::go::kActionSpaceSize;
 using alphazero::go::kBlack;
 using alphazero::go::kBoardSize;
+using alphazero::go::kMinPassMove;
 using alphazero::go::kPassAction;
 using alphazero::go::kWhite;
 
@@ -43,15 +44,15 @@ using alphazero::go::kWhite;
 
 // WHY: SGF export/import is the Go replay artifact; round-trip identity prevents silent corruption in analysis workflows.
 TEST(GoSerializationTest, ActionsToSgfRoundTripPreservesStateAndMetadata) {
-    const std::vector<int> actions = {
-        I(3, 3),
-        I(3, 4),
-        I(4, 3),
-        kPassAction,
-        I(4, 4),
-        kPassAction,
-        kPassAction,
-    };
+    std::vector<int> actions;
+    actions.reserve(static_cast<std::size_t>(kMinPassMove + 4));
+    for (int action = 0; action < kMinPassMove; ++action) {
+        actions.push_back(action);
+    }
+    actions.push_back(kPassAction);
+    actions.push_back(I(4, 4));
+    actions.push_back(kPassAction);
+    actions.push_back(kPassAction);
 
     GoPosition start{};
     start.komi = 6.5F;
@@ -80,12 +81,12 @@ TEST(GoSerializationTest, ActionsToSgfRoundTripPreservesStateAndMetadata) {
 // WHY: Debug SGF files commonly start from setup stones, so import must handle AB/AW/PL/KM root properties correctly.
 TEST(GoSerializationTest, FromSgfParsesRootSetupAndSideToMove) {
     const std::string sgf =
-        "(;GM[1]FF[4]SZ[19]KM[0.5]AB[dd][pd]AW[qp]PL[W];W[dc];B[])";
+        "(;GM[1]FF[4]SZ[19]KM[0.5]AB[dd][pd]AW[qp]PL[W];W[dc];B[ce])";
 
     const GoState state = GoState::from_sgf(sgf);
     EXPECT_FLOAT_EQ(state.position().komi, 0.5F);
     EXPECT_EQ(state.position().move_number, 2);
-    EXPECT_EQ(state.position().consecutive_passes, 1);
+    EXPECT_EQ(state.position().consecutive_passes, 0);
     EXPECT_EQ(state.position().side_to_move, kWhite);
     EXPECT_EQ(alphazero::go::stone_at(state.position(), intersection_from_sgf("dd")), kBlack);
     EXPECT_EQ(alphazero::go::stone_at(state.position(), intersection_from_sgf("pd")), kBlack);
@@ -140,6 +141,9 @@ TEST(GoSerializationTest, ActionsToSgfRejectsIllegalActionHistories) {
 // WHY: Passes are legal Go actions and must serialize as empty coordinates (`[]`) for SGF compatibility.
 TEST(GoSerializationTest, ToSgfEncodesPassMovesAsEmptyCoordinates) {
     GoState state{};
+    for (int action = 0; action < kMinPassMove; ++action) {
+        state = apply_action_or_throw(state, action);
+    }
     state = apply_action_or_throw(state, I(10, 10));
     state = apply_action_or_throw(state, kPassAction);
 

@@ -15,6 +15,7 @@ constexpr int kBoardSize = 19;
 constexpr int kBoardArea = kBoardSize * kBoardSize;
 constexpr int kPassAction = kBoardArea;
 constexpr int kActionSpaceSize = kBoardArea + 1;
+constexpr int kMinPassMove = 30;
 constexpr int kMaxGameLength = kBoardArea * 2;
 constexpr float kDefaultKomi = 7.5F;
 

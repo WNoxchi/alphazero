@@ -21,6 +21,7 @@ enum class MoveStatus {
     kKoViolation,
     kSuperkoViolation,
     kSelfCapture,
+    kPassTooEarly,
     kInvalidSideToMove,
 };
 

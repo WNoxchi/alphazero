@@ -198,6 +198,9 @@ bool is_pass_action(int action) { return action == kPassAction; }
 bool passes_end_game(const GoPosition& position) { return position.consecutive_passes >= 2; }
 
 MoveResult play_pass(const GoPosition& position) {
+    if (position.move_number < kMinPassMove) {
+        return illegal_result(position, kPassAction, MoveStatus::kPassTooEarly);
+    }
     if (!is_valid_color(position.side_to_move)) {
         return illegal_result(position, kPassAction, MoveStatus::kInvalidSideToMove);
     }

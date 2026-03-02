@@ -25,7 +25,7 @@ This plan addresses the problem in two phases:
 ### TASK-001: Forbid pass before move 30 in Go
 
 - **Files**: `src/games/go/go_state.h`, `src/games/go/go_rules.cpp`, `tests/cpp/test_go_state.cpp`
-- **Current state**: PENDING
+- **Current state**: COMPLETE (2026-03-02)
 - **Priority**: CRITICAL — training is stuck in a degenerate equilibrium and cannot make progress
   until this is fixed. The training run must be restarted after this change.
 - **Rationale**: In real Go, passing before move 30 is never correct play — there are always
@@ -88,6 +88,19 @@ This plan addresses the problem in two phases:
     (e.g., by playing 30 dummy moves first, or by constructing a position with
     `move_number >= 30`)
   - Document WHY: "Prevents degenerate double-pass equilibrium in early self-play training"
+
+- **Completion notes (2026-03-02)**:
+  - Implemented `kMinPassMove = 30`, added `MoveStatus::kPassTooEarly`, and enforced the new
+    legality check in `play_pass()`.
+  - Updated `move_status_to_string()` and Go tests to reflect the opening-phase pass restriction.
+  - Updated SGF serialization tests to build actual 30+ move histories before pass moves because
+    SGF import/export does not encode a non-zero starting `move_number`.
+  - Validation run:
+    - `cmake --build build --target alphazero_cpp -j$(nproc)`
+    - `cmake --build build --target alphazero_cpp_tests -j$(nproc)`
+    - `ctest --test-dir build --output-on-failure -R "(GoStateTest|GoRulesEngineTest|GoSerializationTest)\\."`
+    - `ctest --test-dir build --output-on-failure -R "GoStateTest\\."`
+    - `python3 -m compileall python` (`ruff` and `mypy` unavailable in this environment)
 
 ---
 

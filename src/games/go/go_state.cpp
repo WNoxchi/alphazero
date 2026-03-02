@@ -46,6 +46,8 @@ struct ZobristTable {
             return "superko_violation";
         case MoveStatus::kSelfCapture:
             return "self_capture";
+        case MoveStatus::kPassTooEarly:
+            return "pass_too_early";
         case MoveStatus::kInvalidSideToMove:
             return "invalid_side_to_move";
     }
