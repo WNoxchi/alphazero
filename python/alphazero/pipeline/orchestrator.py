@@ -146,6 +146,7 @@ class TrainingConfigLike(Protocol):
     momentum: float
     l2_reg: float
     ownership_loss_weight: float
+    max_grad_norm: float
     checkpoint_interval: int
     checkpoint_keep_last: int
     milestone_interval: int
@@ -661,6 +662,7 @@ def run_parallel_pipeline(
                     l2_reg=float(training_config.l2_reg),
                     scaler=scaler,
                     use_mixed_precision=bool(training_config.use_mixed_precision),
+                    max_grad_norm=float(training_config.max_grad_norm),
                     compute_gradient_stats=is_log_step,
                 )
                 training_step_seconds = max(time.perf_counter() - step_start, 0.0)

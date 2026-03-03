@@ -100,6 +100,7 @@ class TrainingConfig:
     min_buffer_size: int = DEFAULT_MIN_BUFFER_SIZE
     wait_for_buffer_seconds: float = DEFAULT_WAIT_FOR_BUFFER_SECONDS
     ownership_loss_weight: float = DEFAULT_OWNERSHIP_LOSS_WEIGHT
+    max_grad_norm: float = 0.0  # 0 = disabled; >0 clips gradient global norm
     use_mixed_precision: bool = True
     device: str | torch.device | None = None
     checkpoint_dir: Path | None = None
@@ -117,6 +118,7 @@ class TrainingConfig:
         _coerce_non_negative_int("min_buffer_size", self.min_buffer_size)
         _coerce_positive_float("wait_for_buffer_seconds", self.wait_for_buffer_seconds)
         _coerce_non_negative_float("ownership_loss_weight", self.ownership_loss_weight)
+        _coerce_non_negative_float("max_grad_norm", self.max_grad_norm)
 
         if self.checkpoint_dir is not None and not isinstance(self.checkpoint_dir, Path):
             object.__setattr__(self, "checkpoint_dir", Path(self.checkpoint_dir))
@@ -809,6 +811,7 @@ def train_one_step(
     l2_reg: float,
     scaler: Any,
     use_mixed_precision: bool,
+    max_grad_norm: float = 0.0,
     compute_gradient_stats: bool = True,
 ) -> TrainingStepMetrics:
     """Run one optimization step and return decomposed metrics."""
@@ -969,6 +972,8 @@ def train_one_step(
 
     scaler.scale(total_loss).backward()
     scaler.unscale_(optimizer)
+    if max_grad_norm > 0.0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
     if compute_gradient_stats:
         grad_global_norm, nonzero_grad_parameters = _gradient_statistics(model)
     else:
@@ -1120,6 +1125,7 @@ def load_training_config_from_config(config: Mapping[str, Any]) -> TrainingConfi
         ownership_loss_weight=float(
             training.get("ownership_loss_weight", DEFAULT_OWNERSHIP_LOSS_WEIGHT)
         ),
+        max_grad_norm=float(training.get("max_grad_norm", 0.0)),
         checkpoint_dir=checkpoint_dir,
     )
 
@@ -1222,6 +1228,7 @@ def training_loop(
             l2_reg=training_config.l2_reg,
             scaler=scaler,
             use_mixed_precision=training_config.use_mixed_precision,
+            max_grad_norm=training_config.max_grad_norm,
         )
 
         step += 1
