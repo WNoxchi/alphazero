@@ -485,6 +485,79 @@ class TrainingLoopTests(unittest.TestCase):
 
         self.assertAlmostEqual(metrics.loss_ownership, 0.0, places=7)
 
+    def test_train_one_step_rejects_missing_ownership_targets_when_loss_is_enabled(self) -> None:
+        """WHY: positive ownership loss weight must fail fast if replay batches do not provide ownership labels."""
+        torch.manual_seed(17)
+        config = self._toy_game_config(supports_symmetry=False, supports_ownership=True)
+        model = _TinyPolicyValueOwnershipNetwork(config)
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer = create_optimizer(model, lr_schedule=schedule, momentum=0.9)
+        scaler = self._make_scaler()
+
+        positions = self._make_replay_positions(config, count=4)
+        states, target_policy, target_value = prepare_replay_batch(
+            positions,
+            config,
+            device=torch.device("cpu"),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership_loss_weight > 0 requires ownership_target values",
+        ):
+            train_one_step(
+                model,
+                optimizer,
+                states=states,
+                target_policy=target_policy,
+                target_value=target_value,
+                ownership_target=None,
+                ownership_loss_weight=1.5,
+                game_config=config,
+                lr_schedule=schedule,
+                global_step=0,
+                l2_reg=0.0,
+                scaler=scaler,
+                use_mixed_precision=False,
+            )
+
+    def test_train_one_step_rejects_model_without_ownership_head_when_loss_is_enabled(self) -> None:
+        """WHY: enabling ownership loss against a 2-head model should raise instead of silently training without ownership."""
+        torch.manual_seed(19)
+        config = self._toy_game_config(supports_symmetry=False, supports_ownership=True)
+        model = _TinyPolicyValueNetwork(config)
+        schedule = StepDecayLRSchedule(entries=((0, 0.1),))
+        optimizer = create_optimizer(model, lr_schedule=schedule, momentum=0.9)
+        scaler = self._make_scaler()
+
+        positions = self._make_replay_positions(config, count=4)
+        states, target_policy, target_value = prepare_replay_batch(
+            positions,
+            config,
+            device=torch.device("cpu"),
+        )
+        ownership_target = torch.zeros((states.shape[0], 9), dtype=torch.float32)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership_loss_weight > 0 requires model\\(states\\) to return ownership logits",
+        ):
+            train_one_step(
+                model,
+                optimizer,
+                states=states,
+                target_policy=target_policy,
+                target_value=target_value,
+                ownership_target=ownership_target,
+                ownership_loss_weight=1.5,
+                game_config=config,
+                lr_schedule=schedule,
+                global_step=0,
+                l2_reg=0.0,
+                scaler=scaler,
+                use_mixed_precision=False,
+            )
+
     def test_train_one_step_uses_sample_weights_for_policy_and_value_terms(self) -> None:
         """Verifies playout-cap weights scale optimization loss so zero-weight batches do not update model parameters."""
         torch.manual_seed(29)

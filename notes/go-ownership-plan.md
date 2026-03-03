@@ -523,6 +523,56 @@ This plan addresses the problem in two phases:
 
 ---
 
+### TASK-004: Enforce ownership supervision invariants (fail fast on missing ownership data)
+
+- **Files**: `scripts/train.py`, `python/alphazero/training/trainer.py`,
+  `tests/python/test_train_script.py`, `tests/python/test_training.py`
+- **Current state**: COMPLETE (2026-03-03)
+- **Priority**: HIGH — Go runs can silently disable ownership learning if ownership targets are
+  absent in sampled batches while `ownership_loss_weight > 0`, undermining the structural fix.
+- **Rationale**: Ownership supervision is the core anti-collapse signal for Go. If a run starts
+  with `training.ownership_loss_weight > 0` but ownership targets are not being produced
+  (`mcts.compute_ownership=false`, legacy replay rows, or a model path without ownership output),
+  training currently proceeds without explicit failure and the ownership term contributes zero.
+  This can look healthy in aggregate metrics while removing the main learning signal that
+  prevents double-pass collapse.
+
+- **Fix**:
+  1. Add runtime configuration validation in `scripts/train.py`:
+     - If `training.ownership_loss_weight > 0`:
+       - Require `game_config.supports_ownership == True`
+       - Require self-play config `compute_ownership == True` (when available)
+     - Raise a clear `ValueError` when violated.
+  2. Add strict training-step invariants in `train_one_step()`:
+     - If `ownership_loss_weight > 0` and model output has no ownership head, raise `ValueError`
+     - If `ownership_loss_weight > 0` and `ownership_target is None`, raise `ValueError`
+  3. Preserve existing behavior for ablations:
+     - `ownership_loss_weight == 0` must continue to allow missing ownership targets/output.
+
+- **Acceptance criteria**:
+  1. Go config with `ownership_loss_weight > 0` and `mcts.compute_ownership=false` fails during
+     runtime construction with a descriptive error
+  2. Non-Go config with `ownership_loss_weight > 0` fails during runtime construction
+  3. `train_one_step()` raises when `ownership_loss_weight > 0` but ownership target is absent
+  4. `train_one_step()` raises when `ownership_loss_weight > 0` but model output has no ownership
+     tensor
+  5. Existing `ownership_loss_weight == 0` behavior remains unchanged
+
+- **Completion notes (2026-03-03)**:
+  - Added ownership-supervision runtime validation in `build_training_runtime()`:
+    - `training.ownership_loss_weight > 0` now requires:
+      - a game config with ownership support (Go), and
+      - `SelfPlayGameConfig.compute_ownership == true` in self-play manager config.
+  - Added strict `train_one_step()` invariants so positive ownership loss weight now raises if:
+    - the model does not return ownership logits, or
+    - replay batches do not provide `ownership_target`.
+  - Added regression tests covering both runtime/config validation and training-step failure paths.
+  - Validation run:
+    - `python3 -m pytest tests/python/test_training.py tests/python/test_train_script.py`
+    - `ruff check python scripts tests` (`ruff` unavailable in this environment)
+    - `mypy python scripts` (`mypy` unavailable in this environment)
+    - `python3 -m compileall python/alphazero/training/trainer.py scripts/train.py tests/python/test_training.py tests/python/test_train_script.py`
+
 ## Reference
 
 ### KataGo Auxiliary Targets

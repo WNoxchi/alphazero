@@ -28,6 +28,7 @@ _SPEC.loader.exec_module(train_script)
 class _FakeTrainingConfig:
     batch_size: int = 1024
     momentum: float = 0.9
+    ownership_loss_weight: float = 0.0
     wait_for_buffer_seconds: float = 1.0
     use_mixed_precision: bool = True
     export_folded_checkpoints: bool = True
@@ -175,6 +176,7 @@ class _FakeSelfPlayManager:
 class _Harness:
     def __init__(self) -> None:
         self.logger = _FakeLogger()
+        self.training_config = _FakeTrainingConfig()
         self.resume_calls: list[Path] = []
         self.saved_steps: list[int] = []
         self.run_mode = "return"
@@ -218,7 +220,7 @@ class _Harness:
             load_lr_schedule_from_config=lambda _config: "initial_lr_schedule",
             load_pipeline_config_from_config=lambda _config: "pipeline_config",
             load_training_checkpoint=self._load_training_checkpoint,
-            load_training_config_from_config=lambda _config: _FakeTrainingConfig(),
+            load_training_config_from_config=lambda _config: self.training_config,
             make_eval_queue_batch_evaluator=lambda *_args, **_kwargs: "batch_evaluator",
             make_selfplay_evaluator_from_eval_queue=self._make_selfplay_evaluator_from_eval_queue,
             run_parallel_pipeline=self._run_parallel_pipeline,
@@ -576,6 +578,46 @@ class TrainScriptRuntimeTests(unittest.TestCase):
         config["mcts"] = mcts
         manager_config_disabled = train_script._build_selfplay_manager_config(dependencies.cpp, config)
         self.assertFalse(manager_config_disabled.game_config.compute_ownership)
+
+    def test_build_runtime_rejects_positive_ownership_loss_weight_for_non_go_games(self) -> None:
+        """WHY: ownership supervision must fail fast when enabled for games that cannot emit ownership labels."""
+        harness = _Harness()
+        harness.training_config = _FakeTrainingConfig(ownership_loss_weight=1.5)
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "training\\.ownership_loss_weight > 0 requires a game with ownership support",
+        ):
+            train_script.build_training_runtime(
+                config_path="configs/chess_default.yaml",
+                resume_path=None,
+                dependencies=dependencies,
+                config_override=config,
+            )
+
+    def test_build_runtime_rejects_disabled_selfplay_ownership_when_loss_is_enabled(self) -> None:
+        """WHY: ownership loss must not run without self-play ownership targets, or training silently drops the aux signal."""
+        harness = _Harness()
+        harness.training_config = _FakeTrainingConfig(ownership_loss_weight=1.5)
+        dependencies = harness.build_dependencies()
+        config = _minimal_config()
+        config["game"] = "go"
+        mcts = dict(config["mcts"])
+        mcts["compute_ownership"] = False
+        config["mcts"] = mcts
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "training\\.ownership_loss_weight > 0 requires mcts\\.compute_ownership=true",
+        ):
+            train_script.build_training_runtime(
+                config_path="configs/go_default.yaml",
+                resume_path=None,
+                dependencies=dependencies,
+                config_override=config,
+            )
 
     def test_build_selfplay_manager_config_rejects_reduced_simulations_above_full_budget(self) -> None:
         """WHY: invalid reduced playout budget should fail fast instead of crashing inside long-running workers."""

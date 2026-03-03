@@ -53,6 +53,13 @@ def _coerce_positive_float(name: str, value: object) -> float:
     return numeric
 
 
+def _coerce_non_negative_float(name: str, value: object) -> float:
+    numeric = _coerce_numeric(name, value)
+    if numeric < 0.0:
+        raise ValueError(f"{name} must be >= 0, got {numeric}")
+    return numeric
+
+
 def _coerce_bool(name: str, value: object) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{name} must be a bool, got {type(value).__name__}")
@@ -609,6 +616,50 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
     return manager_config
 
 
+def _ownership_loss_weight_from_training_config(training_config: Any) -> float:
+    if not hasattr(training_config, "ownership_loss_weight"):
+        return 0.0
+    return _coerce_non_negative_float(
+        "training.ownership_loss_weight",
+        getattr(training_config, "ownership_loss_weight"),
+    )
+
+
+def _validate_ownership_supervision_requirements(
+    *,
+    game_config: GameConfig,
+    training_config: Any,
+    selfplay_manager_config: Any,
+) -> None:
+    ownership_loss_weight = _ownership_loss_weight_from_training_config(training_config)
+    if ownership_loss_weight <= 0.0:
+        return
+
+    if not bool(getattr(game_config, "supports_ownership", False)):
+        raise ValueError(
+            "training.ownership_loss_weight > 0 requires a game with ownership support "
+            "(set game: go or reduce ownership_loss_weight to 0)."
+        )
+
+    manager_game_config = getattr(selfplay_manager_config, "game_config", None)
+    if manager_game_config is None:
+        raise ValueError(
+            "training.ownership_loss_weight > 0 requires a self-play game config "
+            "to validate ownership target generation."
+        )
+
+    if not hasattr(manager_game_config, "compute_ownership"):
+        raise ValueError(
+            "training.ownership_loss_weight > 0 requires alphazero_cpp bindings with "
+            "SelfPlayGameConfig.compute_ownership support."
+        )
+    if not bool(getattr(manager_game_config, "compute_ownership")):
+        raise ValueError(
+            "training.ownership_loss_weight > 0 requires mcts.compute_ownership=true "
+            "so self-play emits ownership targets."
+        )
+
+
 def build_training_runtime(
     *,
     config_path: str | Path,
@@ -668,6 +719,11 @@ def build_training_runtime(
 
     eval_queue_config = _build_eval_queue_config(cpp, config)
     selfplay_manager_config = _build_selfplay_manager_config(cpp, config)
+    _validate_ownership_supervision_requirements(
+        game_config=game_config,
+        training_config=training_config,
+        selfplay_manager_config=selfplay_manager_config,
+    )
 
     if _resolve_compile_model(config):
         import torch

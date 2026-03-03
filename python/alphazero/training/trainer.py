@@ -931,11 +931,17 @@ def train_one_step(
         value_loss = (value_per_sample * weights).mean()
 
         loss_ownership = torch.zeros((), dtype=torch.float32, device=policy_loss.device)
-        if (
-            ownership_loss_weight > 0.0
-            and predicted_ownership_logits is not None
-            and ownership_target is not None
-        ):
+        if ownership_loss_weight > 0.0:
+            if predicted_ownership_logits is None:
+                raise ValueError(
+                    "ownership_loss_weight > 0 requires model(states) to return ownership logits "
+                    "as a third output tensor."
+                )
+            if ownership_target is None:
+                raise ValueError(
+                    "ownership_loss_weight > 0 requires ownership_target values in replay batches; "
+                    "ensure mcts.compute_ownership=true and replay data includes ownership labels."
+                )
             loss_ownership = ownership_loss(
                 predicted_ownership_logits,
                 ownership_target.to(device=policy_loss.device),
