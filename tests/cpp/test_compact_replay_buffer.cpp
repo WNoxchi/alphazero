@@ -386,6 +386,61 @@ TEST(CompactReplayBufferTest, RoundtripSampleAndPackedBatchPreserveOwnershipTarg
     }
 }
 
+// WHY: Python export paths need deterministic ownership metadata from compact buffers to avoid random ownership
+// dropping when legacy and ownership-bearing rows coexist.
+TEST(CompactReplayBufferTest, OwnershipPayloadSizeIsDeterministicAndRejectsMixedPayloads) {
+    CompactReplayBuffer empty_buffer(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kGoBinaryPlanes,
+        /*num_float_planes=*/0U,
+        /*float_plane_indices=*/{},
+        /*full_policy_size=*/kGoPolicySize,
+        /*random_seed=*/100U,
+        /*sampling_strategy=*/SamplingStrategy::kUniform,
+        /*recency_weight_lambda=*/1.0F,
+        /*squares_per_plane=*/kGoSquaresPerPlane);
+    EXPECT_EQ(empty_buffer.ownership_payload_size(), 0U);
+
+    CompactReplayBuffer no_ownership_buffer(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kGoBinaryPlanes,
+        /*num_float_planes=*/0U,
+        /*float_plane_indices=*/{},
+        /*full_policy_size=*/kGoPolicySize,
+        /*random_seed=*/101U,
+        /*sampling_strategy=*/SamplingStrategy::kUniform,
+        /*recency_weight_lambda=*/1.0F,
+        /*squares_per_plane=*/kGoSquaresPerPlane);
+    no_ownership_buffer.add_game({make_go_position(601U, 0U), make_go_position(601U, 1U)});
+    EXPECT_EQ(no_ownership_buffer.ownership_payload_size(), 0U);
+
+    CompactReplayBuffer ownership_buffer(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kGoBinaryPlanes,
+        /*num_float_planes=*/0U,
+        /*float_plane_indices=*/{},
+        /*full_policy_size=*/kGoPolicySize,
+        /*random_seed=*/102U,
+        /*sampling_strategy=*/SamplingStrategy::kUniform,
+        /*recency_weight_lambda=*/1.0F,
+        /*squares_per_plane=*/kGoSquaresPerPlane);
+    ownership_buffer.add_game({make_go_position_with_ownership(602U, 0U), make_go_position_with_ownership(602U, 1U)});
+    EXPECT_EQ(ownership_buffer.ownership_payload_size(), kGoSquaresPerPlane);
+
+    CompactReplayBuffer mixed_buffer(
+        /*capacity=*/4U,
+        /*num_binary_planes=*/kGoBinaryPlanes,
+        /*num_float_planes=*/0U,
+        /*float_plane_indices=*/{},
+        /*full_policy_size=*/kGoPolicySize,
+        /*random_seed=*/103U,
+        /*sampling_strategy=*/SamplingStrategy::kUniform,
+        /*recency_weight_lambda=*/1.0F,
+        /*squares_per_plane=*/kGoSquaresPerPlane);
+    mixed_buffer.add_game({make_go_position(603U, 0U), make_go_position_with_ownership(603U, 1U)});
+    EXPECT_THROW(static_cast<void>(mixed_buffer.ownership_payload_size()), std::invalid_argument);
+}
+
 // WHY: Replay semantics require fixed-capacity ring behavior; once full, oldest positions must be evicted.
 TEST(CompactReplayBufferTest, RingBufferRetainsMostRecentPositionsAfterWrap) {
     CompactReplayBuffer buffer(

@@ -815,6 +815,46 @@ std::size_t CompactReplayBuffer::write_head() const noexcept {
     return write_head_.load(std::memory_order_acquire);
 }
 
+std::size_t CompactReplayBuffer::ownership_payload_size() const {
+    std::shared_lock lock(mutex_);
+    const std::size_t current_count = count_.load(std::memory_order_relaxed);
+    if (current_count == 0U) {
+        return 0U;
+    }
+    const std::size_t current_head = write_head_.load(std::memory_order_relaxed);
+    const std::size_t expected_ownership_words = 2U * words_per_plane_;
+
+    bool saw_missing_ownership = false;
+    bool saw_present_ownership = false;
+
+    for (std::size_t logical_index = 0U; logical_index < current_count; ++logical_index) {
+        const std::size_t physical_index = to_physical_index(logical_index, current_count, current_head);
+        const CompactReplayPosition& position = buffer_[physical_index];
+        if (!has_valid_compact_shape(position)) {
+            throw std::invalid_argument(
+                "CompactReplayBuffer ownership_payload_size encountered malformed CompactReplayPosition");
+        }
+        if (position.num_ownership_words == 0U) {
+            saw_missing_ownership = true;
+            continue;
+        }
+        if (position.num_ownership_words != expected_ownership_words) {
+            throw std::invalid_argument(
+                "CompactReplayBuffer ownership_payload_size encountered inconsistent ownership layout");
+        }
+        saw_present_ownership = true;
+    }
+
+    if (saw_missing_ownership && saw_present_ownership) {
+        throw std::invalid_argument(
+            "CompactReplayBuffer ownership_payload_size encountered mixed ownership presence");
+    }
+    if (!saw_present_ownership) {
+        return 0U;
+    }
+    return squares_per_plane_;
+}
+
 SamplingStrategy CompactReplayBuffer::sampling_strategy() const noexcept { return sampling_strategy_; }
 
 float CompactReplayBuffer::recency_weight_lambda() const noexcept { return recency_weight_lambda_; }

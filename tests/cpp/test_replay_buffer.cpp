@@ -423,6 +423,25 @@ TEST(ReplayBufferTest, SampleBatchCarriesOwnershipWhenAllSampledRowsContainIt) {
     }
 }
 
+// WHY: Checkpoint/export paths require deterministic ownership-shape introspection; mixed payloads must fail fast
+// instead of randomly dropping ownership labels based on sample order.
+TEST(ReplayBufferTest, OwnershipPayloadSizeIsDeterministicAndRejectsMixedPayloads) {
+    ReplayBuffer empty_buffer(4U, 0x1111ULL);
+    EXPECT_EQ(empty_buffer.ownership_payload_size(), 0U);
+
+    ReplayBuffer no_ownership_buffer(4U, 0x2222ULL);
+    no_ownership_buffer.add_game({make_position(51U, 0U), make_position(51U, 1U)});
+    EXPECT_EQ(no_ownership_buffer.ownership_payload_size(), 0U);
+
+    ReplayBuffer ownership_buffer(4U, 0x3333ULL);
+    ownership_buffer.add_game({make_position_with_ownership(52U, 0U), make_position_with_ownership(52U, 1U)});
+    EXPECT_EQ(ownership_buffer.ownership_payload_size(), ReplayPosition::kMaxBoardArea);
+
+    ReplayBuffer mixed_buffer(4U, 0x4444ULL);
+    mixed_buffer.add_game({make_position(53U, 0U), make_position_with_ownership(53U, 1U)});
+    EXPECT_THROW(static_cast<void>(mixed_buffer.ownership_payload_size()), std::invalid_argument);
+}
+
 // WHY: Packed sampling must fail fast for invalid target shapes/dimensions so training does not silently consume
 // malformed tensors.
 TEST(ReplayBufferTest, SampleBatchValidatesRequestedShapesAndDimensions) {

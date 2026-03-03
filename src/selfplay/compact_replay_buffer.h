@@ -50,6 +50,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] std::size_t capacity() const noexcept;
     [[nodiscard]] std::size_t write_head() const noexcept;
+    [[nodiscard]] std::size_t ownership_payload_size() const;
     [[nodiscard]] SamplingStrategy sampling_strategy() const noexcept;
     [[nodiscard]] float recency_weight_lambda() const noexcept;
 

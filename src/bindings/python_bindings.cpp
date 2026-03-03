@@ -263,10 +263,7 @@ template <typename ReplayBufferType>
     std::size_t ownership_size = 0U;
     {
         py::gil_scoped_release release_gil;
-        const std::vector<ReplayPosition> probe = replay_buffer.sample(1U);
-        if (!probe.empty()) {
-            ownership_size = probe.front().ownership_size;
-        }
+        ownership_size = replay_buffer.ownership_payload_size();
     }
     if (ownership_size > ReplayPosition::kMaxBoardArea) {
         throw std::invalid_argument("export_buffer: ownership_size is out of range");
@@ -285,34 +282,16 @@ template <typename ReplayBufferType>
     std::size_t exported;
     {
         py::gil_scoped_release release_gil;
-        try {
-            exported = replay_buffer.export_positions(
-                states.mutable_data(),
-                policies.mutable_data(),
-                values_wdl.mutable_data(),
-                game_ids.mutable_data(),
-                move_numbers.mutable_data(),
-                encoded_state_size,
-                policy_size,
-                ownership_size > 0U ? ownership.mutable_data() : nullptr,
-                ownership_size);
-        } catch (const std::invalid_argument&) {
-            if (ownership_size == 0U) {
-                throw;
-            }
-            ownership_size = 0U;
-            ownership = py::array_t<float>(std::vector<py::ssize_t>{py::ssize_t(0)});
-            exported = replay_buffer.export_positions(
-                states.mutable_data(),
-                policies.mutable_data(),
-                values_wdl.mutable_data(),
-                game_ids.mutable_data(),
-                move_numbers.mutable_data(),
-                encoded_state_size,
-                policy_size,
-                nullptr,
-                0U);
-        }
+        exported = replay_buffer.export_positions(
+            states.mutable_data(),
+            policies.mutable_data(),
+            values_wdl.mutable_data(),
+            game_ids.mutable_data(),
+            move_numbers.mutable_data(),
+            encoded_state_size,
+            policy_size,
+            ownership_size > 0U ? ownership.mutable_data() : nullptr,
+            ownership_size);
     }
     // Trim if fewer positions were exported than expected (shouldn't happen, but be safe).
     if (exported < n) {

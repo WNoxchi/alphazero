@@ -108,6 +108,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] std::size_t capacity() const noexcept;
     [[nodiscard]] std::size_t write_head() const noexcept;
+    [[nodiscard]] std::size_t ownership_payload_size() const;
 
     /// Export all valid positions into pre-allocated flat arrays (logical order).
     /// Returns the number of positions exported.  Caller must allocate arrays

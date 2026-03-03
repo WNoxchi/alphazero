@@ -359,6 +359,53 @@ std::size_t ReplayBuffer::capacity() const noexcept { return buffer_.size(); }
 
 std::size_t ReplayBuffer::write_head() const noexcept { return write_head_.load(std::memory_order_acquire); }
 
+std::size_t ReplayBuffer::ownership_payload_size() const {
+    std::shared_lock lock(mutex_);
+    const std::size_t current_count = count_.load(std::memory_order_relaxed);
+    if (current_count == 0U) {
+        return 0U;
+    }
+    const std::size_t current_head = write_head_.load(std::memory_order_relaxed);
+
+    bool saw_missing_ownership = false;
+    bool saw_present_ownership = false;
+    std::size_t expected_ownership_size = 0U;
+
+    for (std::size_t logical_index = 0U; logical_index < current_count; ++logical_index) {
+        const std::size_t physical_index = to_physical_index(logical_index, current_count, current_head);
+        const ReplayPosition& position = buffer_[physical_index];
+        if (!has_valid_shape(position)) {
+            throw std::invalid_argument(
+                "ReplayBuffer ownership_payload_size encountered malformed ReplayPosition");
+        }
+
+        if (position.ownership_size == 0U) {
+            saw_missing_ownership = true;
+            continue;
+        }
+
+        saw_present_ownership = true;
+        const std::size_t position_ownership_size = static_cast<std::size_t>(position.ownership_size);
+        if (expected_ownership_size == 0U) {
+            expected_ownership_size = position_ownership_size;
+            continue;
+        }
+        if (position_ownership_size != expected_ownership_size) {
+            throw std::invalid_argument(
+                "ReplayBuffer ownership_payload_size encountered inconsistent ownership sizes");
+        }
+    }
+
+    if (saw_missing_ownership && saw_present_ownership) {
+        throw std::invalid_argument(
+            "ReplayBuffer ownership_payload_size encountered mixed ownership presence");
+    }
+    if (!saw_present_ownership) {
+        return 0U;
+    }
+    return expected_ownership_size;
+}
+
 bool ReplayBuffer::has_valid_shape(const ReplayPosition& position) noexcept {
     return position.encoded_state_size > 0U && position.encoded_state_size <= ReplayPosition::kMaxEncodedStateSize &&
            position.policy_size > 0U && position.policy_size <= ReplayPosition::kMaxPolicySize &&

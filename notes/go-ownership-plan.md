@@ -573,6 +573,60 @@ This plan addresses the problem in two phases:
     - `mypy python scripts` (`mypy` unavailable in this environment)
     - `python3 -m compileall python/alphazero/training/trainer.py scripts/train.py tests/python/test_training.py tests/python/test_train_script.py`
 
+---
+
+### TASK-005: Make replay ownership export deterministic and fail-fast on mixed payloads
+
+- **Files**: `src/selfplay/replay_buffer.h`, `src/selfplay/replay_buffer.cpp`,
+  `src/selfplay/compact_replay_buffer.h`, `src/selfplay/compact_replay_buffer.cpp`,
+  `src/bindings/python_bindings.cpp`, `tests/cpp/test_replay_buffer.cpp`,
+  `tests/cpp/test_compact_replay_buffer.cpp`, `tests/python/test_bindings.py`
+- **Current state**: COMPLETE (2026-03-03)
+- **Priority**: HIGH — mixed ownership/non-ownership replay rows can cause checkpoint/export
+  ownership labels to be dropped nondeterministically, and the existing fallback path can crash.
+- **Rationale**: `export_buffer` inferred ownership width by calling `sample(1)`, which is random.
+  On mixed payloads this means ownership export behavior depends on RNG outcome (sometimes empty,
+  sometimes attempts ownership export). The fallback handler also allocated Python arrays while the
+  GIL was released, which can segfault under repeated export calls.
+
+- **Fix**:
+  1. Add deterministic ownership payload introspection to both replay buffers:
+     - `ReplayBuffer::ownership_payload_size()`
+     - `CompactReplayBuffer::ownership_payload_size()`
+  2. Make these methods:
+     - return `0` when all rows have no ownership,
+     - return uniform payload width when all rows include ownership,
+     - throw `std::invalid_argument` when rows are mixed/inconsistent.
+  3. Update pybind `export_buffer` implementation to use deterministic
+     `ownership_payload_size()` instead of random `sample(1)` probing.
+  4. Remove the catch/fallback path that mutated Python arrays while GIL was released.
+  5. Add C++ and Python regression tests for deterministic ownership-size behavior and mixed
+     payload rejection.
+
+- **Acceptance criteria**:
+  1. Ownership export no longer depends on random sampling order
+  2. Mixed ownership payloads fail fast with clear errors
+  3. Repeated mixed export calls do not crash
+  4. All replay buffer ownership tests continue to pass for uniform payloads
+
+- **Completion notes (2026-03-03)**:
+  - Implemented deterministic `ownership_payload_size()` scans in dense and compact replay buffers.
+  - Updated pybind `export_buffer` to rely on deterministic ownership metadata and removed the
+    unsafe fallback that performed Python allocations without the GIL.
+  - Added C++ regression tests:
+    - `ReplayBufferTest.OwnershipPayloadSizeIsDeterministicAndRejectsMixedPayloads`
+    - `CompactReplayBufferTest.OwnershipPayloadSizeIsDeterministicAndRejectsMixedPayloads`
+  - Added Python regression test:
+    - `PythonBindingsTests.test_export_buffer_rejects_mixed_ownership_payloads`
+  - Validation run:
+    - `cmake --build build --target alphazero_cpp -j$(nproc)`
+    - `cmake --build build --target alphazero_cpp_tests -j$(nproc)`
+    - `ctest --test-dir build --output-on-failure -R "(ReplayBufferTest|CompactReplayBufferTest)\\."`
+    - `python3 -m pytest tests/python/test_bindings.py -k "ownership or export_buffer_rejects_mixed"`
+    - `ruff check src python scripts tests` (`ruff` unavailable in this environment)
+    - `mypy python scripts` (`mypy` unavailable in this environment)
+    - `python3 -m compileall tests/python/test_bindings.py`
+
 ## Reference
 
 ### KataGo Auxiliary Targets

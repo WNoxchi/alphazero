@@ -324,6 +324,69 @@ class PythonBindingsTests(unittest.TestCase):
         self.assertAlmostEqual(float(sampled_ownership[0, 2]), 0.0)
         self.assertAlmostEqual(float(sampled_ownership[1, 4]), 1.0)
 
+    def test_export_buffer_rejects_mixed_ownership_payloads(self) -> None:
+        """WHY: mixed ownership/non-ownership rows must fail deterministically so checkpoints cannot silently drop ownership labels."""
+        bindings = _require_bindings()
+
+        no_ownership = bindings.ReplayPosition.make(
+            encoded_state=[1.0, 2.0, 3.0, 4.0],
+            policy=[0.5, 0.3, 0.2],
+            value=0.0,
+            value_wdl=[0.0, 1.0, 0.0],
+            game_id=70,
+            move_number=0,
+        )
+        with_ownership = bindings.ReplayPosition.make(
+            encoded_state=[4.0, 3.0, 2.0, 1.0],
+            policy=[0.2, 0.3, 0.5],
+            value=1.0,
+            value_wdl=[1.0, 0.0, 0.0],
+            game_id=70,
+            move_number=1,
+            ownership=[1.0] * int(bindings.ReplayPosition.MAX_BOARD_AREA),
+        )
+
+        dense_buffer = bindings.ReplayBuffer(capacity=8, random_seed=71)
+        dense_buffer.add_game([no_ownership, with_ownership])
+        with self.assertRaisesRegex(ValueError, "mixed ownership presence"):
+            dense_buffer.export_buffer(encoded_state_size=4, policy_size=3)
+
+        compact_buffer = bindings.CompactReplayBuffer(
+            capacity=8,
+            num_binary_planes=1,
+            num_float_planes=0,
+            float_plane_indices=[],
+            full_policy_size=4,
+            random_seed=72,
+            squares_per_plane=bindings.ReplayPosition.MAX_BOARD_AREA,
+        )
+        compact_buffer.add_game(
+            [
+                bindings.ReplayPosition.make(
+                    encoded_state=[0.0] * int(bindings.ReplayPosition.MAX_BOARD_AREA),
+                    policy=[1.0, 0.0, 0.0, 0.0],
+                    value=0.0,
+                    value_wdl=[0.0, 1.0, 0.0],
+                    game_id=71,
+                    move_number=0,
+                ),
+                bindings.ReplayPosition.make(
+                    encoded_state=[1.0] * int(bindings.ReplayPosition.MAX_BOARD_AREA),
+                    policy=[0.0, 1.0, 0.0, 0.0],
+                    value=0.0,
+                    value_wdl=[0.0, 1.0, 0.0],
+                    game_id=71,
+                    move_number=1,
+                    ownership=[-1.0] * int(bindings.ReplayPosition.MAX_BOARD_AREA),
+                ),
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "mixed ownership presence"):
+            compact_buffer.export_buffer(
+                encoded_state_size=int(bindings.ReplayPosition.MAX_BOARD_AREA),
+                policy_size=4,
+            )
+
     def test_compact_replay_buffer_binding_exposes_recency_sampling_controls(self) -> None:
         """WHY: Python training entrypoints must be able to select recency-weighted replay sampling when configured."""
         bindings = _require_bindings()
