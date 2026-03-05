@@ -1408,6 +1408,7 @@ PYBIND11_MODULE(alphazero_cpp, module) {
         .def_readwrite("enable_resignation", &alphazero::selfplay::SelfPlayGameConfig::enable_resignation)
         .def_readwrite("resign_threshold", &alphazero::selfplay::SelfPlayGameConfig::resign_threshold)
         .def_readwrite("resign_disable_fraction", &alphazero::selfplay::SelfPlayGameConfig::resign_disable_fraction)
+        .def_readwrite("resign_min_move", &alphazero::selfplay::SelfPlayGameConfig::resign_min_move)
         .def_readwrite("compute_ownership", &alphazero::selfplay::SelfPlayGameConfig::compute_ownership)
         .def_readwrite("random_seed", &alphazero::selfplay::SelfPlayGameConfig::random_seed);
 

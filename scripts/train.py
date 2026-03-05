@@ -570,6 +570,10 @@ def _build_selfplay_manager_config(cpp: Any, config: Mapping[str, Any]) -> Any:
         "mcts.resign_disable_fraction",
         float(mcts.get("resign_disable_fraction", game_config.resign_disable_fraction)),
     )
+    game_config.resign_min_move = _coerce_non_negative_int(
+        "mcts.resign_min_move",
+        int(mcts.get("resign_min_move", game_config.resign_min_move)),
+    )
     game_config.random_seed = _coerce_non_negative_int(
         "mcts.search_random_seed",
         int(mcts.get("search_random_seed", game_config.random_seed)),

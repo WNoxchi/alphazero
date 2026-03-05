@@ -46,6 +46,7 @@ struct SelfPlayGameConfig {
     bool enable_resignation = true;
     float resign_threshold = -0.9F;
     float resign_disable_fraction = 0.1F;
+    int resign_min_move = 0;  // Minimum moves before resignation is allowed (0 = no minimum)
     bool compute_ownership = false;
 
     std::uint64_t random_seed = 0xD1CEB00B5EED1234ULL;

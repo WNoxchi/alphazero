@@ -24,6 +24,7 @@ mcts:
   node_arena_capacity: 2048        # 400 sims needs ~400 nodes; saves 22 GB vs default 8192
   resign_threshold: -0.9
   resign_disable_fraction: 0.1
+  resign_min_move: 100           # block resignation before move 100 to prevent early-training feedback loop
   compute_ownership: true
 
 training:

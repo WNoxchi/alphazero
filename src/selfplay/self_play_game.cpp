@@ -112,6 +112,9 @@ SelfPlayGame::SelfPlayGame(
         config_.resign_disable_fraction > 1.0F) {
         throw std::invalid_argument("SelfPlayGame resign_disable_fraction must be finite and in [0, 1]");
     }
+    if (config_.resign_min_move < 0) {
+        throw std::invalid_argument("SelfPlayGame resign_min_move must be non-negative");
+    }
 
     if (encoded_state_size() > ReplayPosition::kMaxEncodedStateSize) {
         throw std::invalid_argument("SelfPlayGame encoded state exceeds ReplayPosition storage capacity");
@@ -171,7 +174,9 @@ SelfPlayGameResult SelfPlayGame::play(const std::uint32_t game_id) {
         ++result.simulation_batches_executed;
         result.total_simulations += simulations_this_move;
 
-        if (config_.enable_resignation && search_.should_resign()) {
+        if (config_.enable_resignation
+            && static_cast<int>(result.move_count) >= config_.resign_min_move
+            && search_.should_resign()) {
             result.resignation_would_have_triggered = true;
             result.resignation_candidate_player = search_.root_state().current_player();
             if (!result.resignation_was_disabled) {
