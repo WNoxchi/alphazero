@@ -42,6 +42,7 @@ class PipelineConfigLoadingTests(unittest.TestCase):
         self.assertEqual(config.inference_batches_per_cycle, 50)
         self.assertEqual(config.training_steps_per_cycle, 1)
         self.assertIsNone(config.max_cycles)
+        self.assertEqual(config.max_replay_ratio, 0)
 
     def test_load_pipeline_config_reads_overrides_from_mapping(self) -> None:
         """Guards S:T override parsing so tuning values in config mappings are applied exactly."""
@@ -55,6 +56,22 @@ class PipelineConfigLoadingTests(unittest.TestCase):
             }
         )
         self.assertEqual(parsed, PipelineConfig(7, 3, 9))
+
+    def test_load_pipeline_config_reads_max_replay_ratio_from_mapping(self) -> None:
+        """Guards replay ratio cap parsing so the training worker gate activates at the configured ratio."""
+        parsed = load_pipeline_config_from_config(
+            {
+                "pipeline": {
+                    "max_replay_ratio": 8,
+                }
+            }
+        )
+        self.assertEqual(parsed.max_replay_ratio, 8)
+
+    def test_pipeline_config_rejects_negative_max_replay_ratio(self) -> None:
+        """Prevents misconfiguration where a negative replay ratio would invert the gate logic."""
+        with self.assertRaises(ValueError):
+            PipelineConfig(max_replay_ratio=-1)
 
     @unittest.skipUnless(_YAML_AVAILABLE, "PyYAML is required to parse nested pipeline YAML overrides")
     def test_load_pipeline_config_reads_overrides_from_yaml(self) -> None:

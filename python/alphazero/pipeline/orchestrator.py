@@ -47,6 +47,7 @@ class PipelineConfig:
     inference_batches_per_cycle: int = DEFAULT_INFERENCE_BATCHES_PER_CYCLE
     training_steps_per_cycle: int = DEFAULT_TRAINING_STEPS_PER_CYCLE
     max_cycles: int | None = None
+    max_replay_ratio: int = 0
 
     def __post_init__(self) -> None:
         _coerce_positive_int(
@@ -59,6 +60,7 @@ class PipelineConfig:
         )
         if self.max_cycles is not None:
             _coerce_positive_int("max_cycles", self.max_cycles)
+        _coerce_non_negative_int("max_replay_ratio", self.max_replay_ratio)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +136,9 @@ class ReplayBufferLike(Protocol):
     def size(self) -> int:
         ...
 
+    def write_head(self) -> int:
+        ...
+
     def sample(self, batch_size: int) -> Sequence[object]:
         ...
 
@@ -196,6 +201,7 @@ def load_pipeline_config_from_config(config: Mapping[str, Any]) -> PipelineConfi
             )
         ),
         max_cycles=normalized_max_cycles,
+        max_replay_ratio=int(pipeline.get("max_replay_ratio", 0)),
     )
 
 
@@ -604,6 +610,10 @@ def run_parallel_pipeline(
         nonlocal training_steps_completed
         nonlocal cumulative_training_seconds
         nonlocal training_worker_error
+
+        max_replay_ratio = pipeline_config.max_replay_ratio
+        last_train_write_head = int(replay_buffer.write_head())
+
         while not pipeline_stop_event.is_set():
             with progress_condition:
                 if current_step >= max_steps:
@@ -615,6 +625,14 @@ def run_parallel_pipeline(
             if current_buffer_size < training_config.min_buffer_size:
                 sleep_fn(float(training_config.wait_for_buffer_seconds))
                 continue
+
+            if max_replay_ratio > 0:
+                min_new_per_step = training_config.batch_size // max_replay_ratio
+                current_wh = int(replay_buffer.write_head())
+                if current_wh - last_train_write_head < min_new_per_step:
+                    sleep_fn(0.1)
+                    continue
+                last_train_write_head = current_wh
 
             try:
                 states, target_policy, target_value, sample_weights, ownership_target = sample_replay_batch_tensors(

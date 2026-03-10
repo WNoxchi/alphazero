@@ -59,11 +59,15 @@ if _TORCH_AVAILABLE:
             self._capacity = capacity
             self._positions: list[_ReplayPosition] = []
             self._rng = random.Random(random_seed)
-            self.write_head = 0
+            self._write_idx = 0
+            self._write_count = 0
             self.games_total = 0
 
         def size(self) -> int:
             return len(self._positions)
+
+        def write_head(self) -> int:
+            return self._write_count
 
         def sample(self, batch_size: int) -> list[_ReplayPosition]:
             if not self._positions:
@@ -74,12 +78,13 @@ if _TORCH_AVAILABLE:
             if len(self._positions) < self._capacity:
                 self._positions.append(position)
             else:
-                self._positions[self.write_head] = position
-            self.write_head = (self.write_head + 1) % self._capacity
+                self._positions[self._write_idx] = position
+            self._write_idx = (self._write_idx + 1) % self._capacity
+            self._write_count += 1
 
         def checkpoint_metadata(self) -> dict[str, int]:
             return {
-                "write_head": self.write_head,
+                "write_head": self._write_count,
                 "count": len(self._positions),
                 "games_total": self.games_total,
             }
